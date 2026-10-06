@@ -3,8 +3,8 @@ import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { contentUrl, fetchText, textQueryKey, type EntryRow, type TextContent } from '@/api/entries'
-import { ErrorBanner } from '@/app/ErrorBanner'
 import { cn } from '@/lib/utils'
+import { ContentError } from '@/viewer/ContentError'
 import { highlightCode } from '@/viewer/highlight'
 import { renderMarkdown } from '@/viewer/markdown'
 import { viewerKind } from '@/viewer/viewerKind'
@@ -53,7 +53,7 @@ function TextView({ entry }: { entry: EntryRow }) {
     )
   }
   if (text.isError) {
-    return <ErrorBanner error={text.error} onRetry={() => void text.refetch()} />
+    return <ContentError entry={entry} error={text.error} onRetry={() => void text.refetch()} />
   }
   return (
     <div className="grid gap-2">

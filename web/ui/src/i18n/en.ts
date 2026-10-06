@@ -439,6 +439,7 @@ export const en = {
       failed: 'This file cannot be shown here. You can download it instead.',
       firstLines: 'The first {{count}} lines are shown. Open the file to see the rest.',
       changed: 'This file changed on disk after the last scan. Scan its source again to preview it.',
+      unreadable: 'Precious could not read this file, so it can’t be previewed. Its permissions may not allow it.',
       offline: 'The disk of this source is not connected. Connect it to preview this file.',
     },
   },
