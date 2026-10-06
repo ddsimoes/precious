@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"precious/internal/config"
+	"precious/internal/corpus"
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
 	"precious/internal/fsaccess/instrument"
@@ -431,6 +432,26 @@ func diffGroups(t *testing.T, got, want [][]string) {
 	for k := range w {
 		if !g[k] {
 			t.Errorf("missing group: %q", k)
+		}
+	}
+}
+
+// coverage returns the published coverage of src.
+func (e *env) coverage(src domain.SourceID) Coverage {
+	e.t.Helper()
+	c, err := CoverageOf(context.Background(), e.st.Reader(), src)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return c
+}
+
+// addLarge adds large-file fixtures to dir, as corpus.AddLargeFiles does.
+func addLarge(dir *synthfs.Node, files ...corpus.LargeFile) {
+	for _, lf := range files {
+		n := dir.File(lf.Name, lf.Size, fileTime).Seed(lf.Seed)
+		for _, p := range lf.Patches {
+			n.Patch(p.Off, p.Data)
 		}
 	}
 }
