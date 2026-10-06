@@ -619,3 +619,39 @@ No R2 command writes an audit event, because none changes an owner decision. `se
 | `review.Refresh` of one generation | 41 s | within `relate`'s 3 minutes |
 
 The slowest page is the decided duplicates page when no duplicates row is decided: it evaluates every row's open state (about 2 µs per duplicate group) before finding that none is closed. The cards cost the same evaluation once per row.
+
+### Relations and Compare at 2 million entries (task 4.6)
+
+`go test -tags slow -run Relate ./internal/relations/` on the development machine, 2026-10-06. The index had 2,019,621 entries: 19,821 folders, about 2.0 M hashed files, and about 1.8 M contents.
+
+| Measurement | Result | Target |
+|---|---|---|
+| One whole `relate` job: load, relate, write relations and `dir_dups` | 4.24 s | 3 minutes |
+| Peak resident memory of the test process, seeding included | 430 MiB (36 MiB after seeding) | 1.5 GB |
+| Compare of two sides of 99,990 files each | 0.65 s | 2 s |
+
+Together with `review.Refresh` (41 s, task 5.6), one refresh of 2 million entries takes under a minute on this machine.
+
+## Addendum: decisions made during implementation
+
+- **B1.** The scanner deletes a file's `file_content` and `archives` rows only when the file's own facts change: size, mtime, ctime, or identity. A classification-only update, such as a new rules version, keeps digests, and so does a missing file that returns with the same facts. ctime is compared with the same tolerance as mtime, because vfat's ctime moves with its mtime. (Task 1.4.)
+- **B2.** `review_rows_content` indexes the foreign key into `contents`, so pruning `contents` stays cheap.
+- **B3.** `content.NewService` takes `config.Duplicates` for the pace of hashing checkpoints, instead of a setter that could be forgotten.
+- **B4.** Archive types and reading:
+  - `archive.Classify` returns `("", false)` for 7z, rar, xz, and zst, which are then hashed as plain files.
+  - A tar hard link is reported as `Kind = file`, with `LinkTo` naming its earlier target, and is stored with `link_member`.
+  - `Zip.Section` covers only stored members whose local header and sizes check out.
+- **B5.** Relation naming and partners:
+  - A `same` relation names both sides by their deepest equivalent folder, stopping at an archive. m4b's highest-folder `lift` named the corpus's Winamp copy by its parent folder.
+  - `inside` and `overlap` keep `lift`.
+  - A file in an ancestor of a folder is never proposed as that folder's partner, which m4b got wrong ("ISOs/copia inside ISOs").
+  - Stored relations hold no file results. An overlap is one pair, oriented by the larger matched share.
+- **B6.** Compare counts a checked file as unchecked when its size occurs on the other side only among unchecked or unreadable files, because its absence there is not proven (I7).
+- **B7.** Review rows:
+  - `gems_only_in_copy` is computed in SQL as the unique files below an overlap side, without `relations.Compare`.
+  - Gems rows ignore decisions.
+  - Sort keys: `gems_unique` by `mtime_ns`, `gems_rescue` by group rank, `gems_only_in_copy` by relation.
+  - A duplicate group's row counts only the copies outside every listed relation's `a` side, so no byte counts twice beside a relation row.
+- **B8.** `check-now` coalesces folders into the active `hash_now` job's payload, which the job re-reads until nothing is new. A folder that arrives after the job's last read is still covered by the source's regular hashing job, but not first.
+- **B9.** A file that became `changed` or `unreadable` is not retried by later hashing jobs until a rescan updates its entry. A `chmod` or an edit moves ctime, so the rescan sends the file back to `pending`.
+- **B10.** Test seeding: `indextest.Attach` gives the seeded view of a source indexed by a real scan, and `SeedContent` follows D7 for streamed archives.

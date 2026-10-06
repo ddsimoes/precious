@@ -79,17 +79,17 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - a stored member's section reads its exact bytes at any offset;
   - a deflate member has no section;
   - a tar hard link names its earlier target.
-- [ ] 2.3 Write the archives section of `docs/operator.md`: formats, budgets, outcomes, what stays unopened, and the in-memory rule. Verify with the docs tests.
+- [x] 2.3 Write the archives section of `docs/operator.md`: formats, budgets, outcomes, what stays unopened, and the in-memory rule. Verify with the docs tests.
 
 ## 3. Hashing (slice H)
 
-- [ ] 3.1 Implement planning and coverage (D3, D8): size groups across sources and listed members, hard links counted once, the states, and coverage recomputed and kept by deltas. Paths: `internal/content`. Verify with tests that:
+- [x] 3.1 Implement planning and coverage (D3, D8): size groups across sources and listed members, hard links counted once, the states, and coverage recomputed and kept by deltas. Paths: `internal/content`. Verify with tests that:
   - 990 unique sizes give `unique_size` and no read;
   - hard links are one copy;
   - a size shared across sources makes both files `pending`;
   - a `sampled` file whose group gains an equal sample goes back to `pending`;
   - coverage equals a direct `GROUP BY` after every step.
-- [ ] 3.2 Implement the `hash` and `hash_now` jobs (D4, D5, D6): reading order, samples, chunked identity-checked reads, hard links read once, 64-file commits with the I9 re-check, yields, cancel, and refresh requests at checkpoints and at the end. Paths: `internal/content`. Verify with synthfs and `instrument` tests that:
+- [x] 3.2 Implement the `hash` and `hash_now` jobs (D4, D5, D6): reading order, samples, chunked identity-checked reads, hard links read once, 64-file commits with the I9 re-check, yields, cancel, and refresh requests at checkpoints and at the end. Paths: `internal/content`. Verify with synthfs and `instrument` tests that:
   - a second run opens no file;
   - different samples read at most 192 KiB each;
   - equal samples with different content are not one group;
@@ -99,46 +99,46 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - a cancelled job's successor reads only unchecked files;
   - the reading order follows D4, with candidate folders before other small files;
   - `hash_now` reads its subtrees first.
-- [ ] 3.3 Implement zip listing, member hashing by shared size, and tar-family streaming (D7), with `listing` and `complete` states and identity re-checks. Paths: `internal/content`. Verify with tests that:
+- [x] 3.3 Implement zip listing, member hashing by shared size, and tar-family streaming (D7), with `listing` and `complete` states and identity re-checks. Paths: `internal/content`. Verify with tests that:
   - an unchanged archive is not re-read;
   - a changed archive is re-listed after a rescan;
   - a 64 MiB tar.gz with 1,000 members is read once;
   - a budget leaves the archive `partial` with no members;
   - a nested zip stays closed;
   - unique-size zip members cost no reads.
-- [ ] 3.4 Implement `OpenMember` (D17): archive identity checks shared with the viewer, stored sections, in-memory inflate up to `view_max_bytes`, streaming beyond it, and tar members. Paths: `internal/content`. Verify with tests for:
+- [x] 3.4 Implement `OpenMember` (D17): archive identity checks shared with the viewer, stored sections, in-memory inflate up to `view_max_bytes`, streaming beyond it, and tar members. Paths: `internal/content`. Verify with tests for:
   - each case;
   - a changed archive returning `invalid_entry_state`;
   - no file written under the state directory or `TMPDIR`.
-- [ ] 3.5 Register `start-hash` and `check-now`, together with `AfterScan` and `Startup`. Paths: `internal/content`. Verify with command tests:
+- [x] 3.5 Register `start-hash` and `check-now`, together with `AfterScan` and `Startup`. Paths: `internal/content`. Verify with command tests:
   - coalescing;
   - 409 `source_offline`;
   - 404;
   - 400 for a file ref or three refs;
   - `AfterScan` enqueuing every online source.
-- [ ] 3.6 Write the test for **R2.1**: hashing the corpus gives exactly the ground truth's duplicate groups, members included, and the published coverage grows during the run and ends at 100% with nothing unreadable. Verify with `go test -race -run R2_1 ./internal/content/`.
-- [ ] 3.7 Write an e2e test (build tag `e2e`): scanning and hashing the corpus on a read-only tmpfs, archives included, leaves every entry's times and the mount unchanged. Paths: `internal/content/*_e2e_test.go`. Verify that it passes in privileged Docker `golang:1.27.1` through `scripts/e2e-docker.sh`.
-- [ ] 3.8 Write the hashing section of `docs/operator.md`: when it runs, the reading order, coverage, `check-now`, and the cost on large archives. Verify with the docs tests.
+- [x] 3.6 Write the test for **R2.1**: hashing the corpus gives exactly the ground truth's duplicate groups, members included, and the published coverage grows during the run and ends at 100% with nothing unreadable. Verify with `go test -race -run R2_1 ./internal/content/`.
+- [x] 3.7 Write an e2e test (build tag `e2e`): scanning and hashing the corpus on a read-only tmpfs, archives included, leaves every entry's times and the mount unchanged. Paths: `internal/content/*_e2e_test.go`. Verify that it passes in privileged Docker `golang:1.27.1` through `scripts/e2e-docker.sh`.
+- [x] 3.8 Write the hashing section of `docs/operator.md`: when it runs, the reading order, coverage, `check-now`, and the cost on large archives. Verify with the docs tests.
 
 ## 4. Relations and Compare (slice R)
 
-- [ ] 4.1 Restore `relate.go`'s snapshot, `partner`, `Relate`, `maximal`, `lift`, and `Candidates` into `internal/relations`, loading the snapshot from the index (D9), with `overlap` at 50%, and restore its relation tests. Paths: `internal/relations`. Verify:
+- [x] 4.1 Restore `relate.go`'s snapshot, `partner`, `Relate`, `maximal`, `lift`, and `Candidates` into `internal/relations`, loading the snapshot from the index (D9), with `overlap` at 50%, and restore its relation tests. Paths: `internal/relations`. Verify:
   - the restored tests pass on index-seeded worlds: renamed and rearranged photos, a gap preventing inside, a hard-linked copy freeing nothing, one line per copy, an archive next to its unpacked copy, a folder inside an archive, and twin copies;
   - the personal-information scan finds nothing.
-- [ ] 4.2 Implement the `relate` job (D5, D6, D10): the dirty flag, the generation swap, inserts guarded by existence, the `dir_dups` upsert of changed rows, pruning of `contents`, and the `after` hook. Paths: `internal/relations`. Verify with tests that:
+- [x] 4.2 Implement the `relate` job (D5, D6, D10): the dirty flag, the generation swap, inserts guarded by existence, the `dir_dups` upsert of changed rows, pruning of `contents`, and the `after` hook. Paths: `internal/relations`. Verify with tests that:
   - readers never see two generations;
   - a refresh requested during a run causes a second run;
   - a source removed mid-run leaves no orphan rows;
   - `dir_dups` equals a direct computation on the seeded corpus.
-- [ ] 4.3 Write the test for **R2.3**: on the corpus seeded with `SeedContent`, the two zips are `same` as their unpacked folders, and the Winamp copy is `same` as the original. Verify with `go test -race -run R2_3 ./internal/relations/`.
-- [ ] 4.4 Implement `Compare` (D11): buckets, size-based proofs, the wrapper rule, the 400 for containment, and paging. Paths: `internal/relations`. Verify with tests for:
+- [x] 4.3 Write the test for **R2.3**: on the corpus seeded with `SeedContent`, the two zips are `same` as their unpacked folders, and the Winamp copy is `same` as the original. Verify with `go test -race -run R2_3 ./internal/relations/`.
+- [x] 4.4 Implement `Compare` (D11): buckets, size-based proofs, the wrapper rule, the 400 for containment, and paging. Paths: `internal/relations`. Verify with tests for:
   - the zip against `Fotos/2005`;
   - `site_antigo` against its copy (`contato.php` different);
   - a gap counted as unchecked;
   - a folder against its subfolder giving 400.
-- [ ] 4.5 Write the test for **R2.2**: Compare of `Fotos` with `Fotos - Copia` on the seeded corpus lists `2006/Praia/DSC_editada.JPG` only on the right, the three missing photos only on the left, and nothing unchecked. Verify with `go test -race -run R2_2 ./internal/relations/`.
-- [ ] 4.6 Write a slow test (tag `slow`): `relate` over a 2,000,000-entry seeded tree finishes within 3 minutes and 1.5 GB resident, and a Compare of two 100,000-file sides answers within 2 s (D20). Verify with `go test -tags slow -run Relate ./internal/relations/`, and record the numbers in the design addendum.
-- [ ] 4.7 Write the duplicates and Compare section of `docs/operator.md`: the relation kinds, percent duplicated, Compare's groups, and why "not checked" appears. Verify with the docs tests.
+- [x] 4.5 Write the test for **R2.2**: Compare of `Fotos` with `Fotos - Copia` on the seeded corpus lists `2006/Praia/DSC_editada.JPG` only on the right, the three missing photos only on the left, and nothing unchecked. Verify with `go test -race -run R2_2 ./internal/relations/`.
+- [x] 4.6 Write a slow test (tag `slow`): `relate` over a 2,000,000-entry seeded tree finishes within 3 minutes and 1.5 GB resident, and a Compare of two 100,000-file sides answers within 2 s (D20). Verify with `go test -tags slow -run Relate ./internal/relations/`, and record the numbers in the design addendum.
+- [x] 4.7 Write the duplicates and Compare section of `docs/operator.md`: the relation kinds, percent duplicated, Compare's groups, and why "not checked" appears. Verify with the docs tests.
 
 ## 5. Review lists and Gems (slice V)
 
@@ -182,8 +182,8 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
 
 ## 7. Interface (slice U)
 
-- [ ] 7.1 Home (D16, §11.1): the coverage figure with not-checked and unreadable counts, live hashing progress through events (`hash`, `hash_now`, and `relate` kinds added to `events.ts`), and the opportunity cards linking to their lists. Paths: `web/ui/src/home`, `web/ui/src/app/events.ts`, `web/ui/src/api`. Verify with Vitest using mocked responses and events.
-- [ ] 7.2 Opportunities and the review list (D12, D13):
+- [x] 7.1 Home (D16, §11.1): the coverage figure with not-checked and unreadable counts, live hashing progress through events (`hash`, `hash_now`, and `relate` kinds added to `events.ts`), and the opportunity cards linking to their lists. Paths: `web/ui/src/home`, `web/ui/src/app/events.ts`, `web/ui/src/api`. Verify with Vitest using mocked responses and events.
+- [x] 7.2 Opportunities and the review list (D12, D13):
   - cards ranked by bytes;
   - rows with summary lines through translation keys;
   - duplicates rows expanding into copies with the R1 decision controls;
@@ -192,15 +192,15 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - the keyboard: K, D, L, J or ↓, ↑, and Enter, ignored in inputs and dialogs.
 
   Paths: `web/ui/src/opportunities`. Verify with Vitest for the keys, the toggle, and the missing select-all in duplicates.
-- [ ] 7.3 Compare (D11):
+- [x] 7.3 Compare (D11):
   - the two sides from `?left=&right=`;
   - the five groups with counts and bytes, paged lists, and decision controls on rows;
   - "Check now";
   - "Compare with…" in the detail panel, choosing a second folder through the Map or Search.
 
   Paths: `web/ui/src/compare`, `web/ui/src/detail`. Verify with Vitest for the chooser flow and for the URL round trip.
-- [ ] 7.4 Gems: three sections with the checked share, decision controls, and select-all. Paths: `web/ui/src/gems`. Verify with Vitest.
-- [ ] 7.5 The Map, Search, and the detail panel:
+- [x] 7.4 Gems: three sections with the checked share, decision controls, and select-all. Paths: `web/ui/src/gems`. Verify with Vitest.
+- [x] 7.5 The Map, Search, and the detail panel:
   - the percent-duplicated column (hide rank above triage);
   - the `duplication` color mode with its bands and legend;
   - drilling into archives, with member rows and no decision controls on members;
@@ -208,8 +208,8 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - copies and relations sections, the SHA-256 in the technical details, and the coverage wording of claims.
 
   Paths: `web/ui/src/map`, `web/ui/src/search`, `web/ui/src/detail`, `web/ui/src/components`. Verify with Vitest, and with `npm run lint` and `npm run build`, whose inline check passes.
-- [ ] 7.6 Add the English strings for every new screen. Verify that the vocabulary test passes, so no banned internal term is used.
-- [ ] 7.7 Write the interface section of `docs/operator.md`: Home, Opportunities, review keys, Compare, Gems, and the Map's duplication view. Verify with the docs tests.
+- [x] 7.6 Add the English strings for every new screen. Verify that the vocabulary test passes, so no banned internal term is used.
+- [x] 7.7 Write the interface section of `docs/operator.md`: Home, Opportunities, review keys, Compare, Gems, and the Map's duplication view. Verify with the docs tests.
 
 ## 8. Integration (coordinator)
 
