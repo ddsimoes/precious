@@ -151,6 +151,13 @@ export function entryRow(overrides: Partial<EntryRow> = {}): EntryRow {
     decision: null,
     eff_decision: 'undecided',
     tag_ids: [],
+    content_state: null,
+    copies: null,
+    candidate_bytes: null,
+    checked_bytes: null,
+    duplicated_bytes: null,
+    archive_state: null,
+    archive_id: null,
     ...overrides,
   }
 }

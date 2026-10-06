@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -45,6 +46,14 @@ type entryRow struct {
 	TagIDs        []int64          `json:"tag_ids"`
 	// Composition is the entry's bytes and files by family (design D21).
 	Composition []search.FamilyAmount `json:"composition"`
+	// The R2 content fields (R2 design D16), null where they do not apply.
+	ContentState    *domain.ContentState `json:"content_state"`
+	Copies          *int64               `json:"copies"`
+	CandidateBytes  *int64               `json:"candidate_bytes"`
+	CheckedBytes    *int64               `json:"checked_bytes"`
+	DuplicatedBytes *int64               `json:"duplicated_bytes"`
+	ArchiveState    *string              `json:"archive_state"`
+	ArchiveID       *string              `json:"archive_id"`
 }
 
 // noTags is the tag_ids of an entry without own tags: [] rather than null.
@@ -56,8 +65,13 @@ func rowJSON(r *search.Row) entryRow {
 	if tags == nil {
 		tags = noTags
 	}
+	var archiveID *string
+	if r.ArchiveID != 0 {
+		s := r.ArchiveID.String()
+		archiveID = &s
+	}
 	return entryRow{
-		ID: r.ID.String(), SourceID: r.Source,
+		ID: domain.Ref{Entry: r.ID, Member: r.Member}.String(), SourceID: r.Source,
 		Name: domain.DisplayName(r.Name), NameB64: r.Name,
 		Path: domain.DisplayName(r.Path), PathB64: r.Path,
 		Kind:     r.Kind,
@@ -68,8 +82,13 @@ func rowJSON(r *search.Row) entryRow {
 		MTime: nonZero(&r.MTime), Newest: nonZero(&r.Newest), Oldest: nonZero(&r.Oldest),
 		State: r.State, Partial: r.Partial, MountBoundary: r.MountBoundary,
 		Decision: nonEmpty(&r.Decision), EffDecision: r.EffDecision,
-		TagIDs:      tags,
-		Composition: r.Composition,
+		TagIDs:       tags,
+		Composition:  r.Composition,
+		ContentState: nonEmpty(&r.ContentState),
+		Copies:       nullInt(&r.Copies), CandidateBytes: nullInt(&r.CandidateBytes),
+		CheckedBytes: nullInt(&r.CheckedBytes), DuplicatedBytes: nullInt(&r.DuplicatedBytes),
+		ArchiveState: nonEmpty(&r.ArchiveState),
+		ArchiveID:    archiveID,
 	}
 }
 
@@ -96,6 +115,14 @@ func nonZero(p *time.Time) *time.Time {
 		return nil
 	}
 	return p
+}
+
+// nullInt is p's value, or nil when it is NULL.
+func nullInt(p *sql.NullInt64) *int64 {
+	if !p.Valid {
+		return nil
+	}
+	return &p.Int64
 }
 
 // amount is one cell of a breakdown, as dir_stats stores it.

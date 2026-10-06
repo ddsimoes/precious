@@ -88,6 +88,22 @@ export type Trait =
   | 'contains_vcs'
   | 'possible_generated_content'
 
+// ContentState is what hashing knows about a file or a file member (R2
+// design D3).
+export type ContentState = 'unique_size' | 'pending' | 'sampled' | 'hashed' | 'changed' | 'unreadable'
+
+// ArchiveState is an archive file's listing outcome (R2 design D7).
+export type ArchiveState =
+  | 'listing'
+  | 'complete'
+  | 'partial'
+  | 'rejected'
+  | 'encrypted'
+  | 'corrupt'
+  | 'unsupported'
+  | 'changed'
+  | 'unreadable'
+
 // EntryRow is the row of children, treemap, and search responses. name and
 // path are escaped display strings; name_b64 and path_b64 are the raw bytes.
 // Times are RFC 3339 or null.
@@ -125,6 +141,18 @@ export interface EntryRow {
   // holding nothing are omitted; the order is that of families. A server
   // older than D21 omits the field.
   composition?: FamilyAmount[]
+  // The R2 content fields (R2 design D16), null where they do not apply:
+  // content_state and copies for files and file members; candidate_bytes,
+  // checked_bytes, and duplicated_bytes for folders; archive_state for an
+  // archive file (null when unlisted); archive_id for a member, whose id is
+  // "m<id>".
+  content_state: ContentState | null
+  copies: number | null
+  candidate_bytes: number | null
+  checked_bytes: number | null
+  duplicated_bytes: number | null
+  archive_state: ArchiveState | null
+  archive_id: string | null
 }
 
 export interface Ancestor {

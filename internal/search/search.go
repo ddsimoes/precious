@@ -80,9 +80,13 @@ type Query struct {
 	Triages    []domain.Triage   `json:"triage,omitempty"`
 	Tags       []int64           `json:"tag,omitempty"`
 	Decisions  []domain.Decision `json:"decision,omitempty"`
-	Within     *domain.EntryID   `json:"within,omitempty,string"`
-	Sort       string            `json:"sort,omitempty"`
-	Order      string            `json:"order,omitempty"`
+	// Dup filters by duplicate state (R2 design D15); elsewhere requires
+	// Within. It is parsed and validated; Page and Resolve do not match on
+	// it until the duplicate filter's SQL lands with the content index.
+	Dup    []domain.DupFilter `json:"dup,omitempty"`
+	Within *domain.EntryID    `json:"within,omitempty,string"`
+	Sort   string             `json:"sort,omitempty"`
+	Order  string             `json:"order,omitempty"`
 }
 
 // Sort keys.
@@ -147,6 +151,24 @@ type Row struct {
 	// the others follow domain.Families order. Empty for other kinds and
 	// for a folder not scanned yet.
 	Composition []FamilyAmount
+
+	// The R2 content fields (design D16), each null (zero, or not Valid)
+	// where it does not apply.
+
+	// ContentState is a file's or file member's content state.
+	ContentState domain.ContentState
+	// Copies is how many copies of the content exist, this one included.
+	Copies sql.NullInt64
+	// CandidateBytes, CheckedBytes, and DuplicatedBytes are a folder's
+	// figures from dir_dups.
+	CandidateBytes, CheckedBytes, DuplicatedBytes sql.NullInt64
+	// ArchiveState is an archive file's listing state (a domain.ArchiveState
+	// value), "" when it was not listed.
+	ArchiveState string
+	// Member is set, and ID is 0, on the row of an archive member; ArchiveID
+	// is then the archive's entry.
+	Member    domain.MemberID
+	ArchiveID domain.EntryID
 }
 
 // FamilyAmount is one family's share of a composition.
@@ -251,7 +273,9 @@ func Resolve(ctx context.Context, q store.Queryer, query Query, max int) ([]doma
 const Columns = `e.id, e.source_id, e.name, e.path, e.kind, e.special_kind, e.file_kind, e.main_kind,
 	e.category, e.family, e.triage, e.is_group, e.veto, e.size, e.total_bytes, e.total_files,
 	e.mtime_ns, e.newest_ns, e.oldest_ns, e.state, e.partial, e.mount_boundary, e.decision, e.eff_decision,
-	ds.by_family`
+	ds.by_family,
+	NULL AS content_state, NULL AS copies, NULL AS candidate_bytes, NULL AS checked_bytes,
+	NULL AS duplicated_bytes, NULL AS archive_state, NULL AS archive_id`
 
 // From is what Columns read: entries aliased e, and a folder's dir_stats
 // aliased ds, joined on its primary key.
@@ -349,10 +373,13 @@ func ScanRow(rows *sql.Rows, lead ...any) (Row, error) {
 		group, veto, partial, boundary   bool
 		mtime, newest, oldest            sql.NullInt64
 		byFamily                         []byte
+		contentState, archiveState       sql.NullString
+		archiveID                        sql.NullInt64
 	)
 	dest := append(lead[:len(lead):len(lead)], &id, &source, &r.Name, &r.Path, &kind, &special, &fileKind, &mainKind,
 		&category, &family, &triage, &group, &veto, &r.Size, &r.TotalBytes, &r.TotalFiles,
-		&mtime, &newest, &oldest, &state, &partial, &boundary, &decide, &eff, &byFamily)
+		&mtime, &newest, &oldest, &state, &partial, &boundary, &decide, &eff, &byFamily,
+		&contentState, &r.Copies, &r.CandidateBytes, &r.CheckedBytes, &r.DuplicatedBytes, &archiveState, &archiveID)
 	if err := rows.Scan(dest...); err != nil {
 		return Row{}, err
 	}
@@ -376,6 +403,9 @@ func ScanRow(rows *sql.Rows, lead ...any) (Row, error) {
 	r.State = state
 	r.Decision = domain.Decision(decide.String)
 	r.EffDecision = domain.Decision(eff)
+	r.ContentState = domain.ContentState(contentState.String)
+	r.ArchiveState = archiveState.String
+	r.ArchiveID = domain.EntryID(archiveID.Int64)
 	switch r.Kind {
 	case domain.EntryFile:
 		r.Composition = []FamilyAmount{{Family: domain.FileFamily(r.Category, r.FileKind), Bytes: r.Size, Files: 1}}
