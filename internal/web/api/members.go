@@ -157,11 +157,13 @@ func (a *memberAgg) add(pol *rules.Policy, kind string, name []byte, size int64,
 		}
 		a.dated = true
 	}
-	if state.Valid && state.String != string(domain.ContentUniqueSize) {
+	switch st := domain.ContentState(state.String); {
+	case !state.Valid, st == domain.ContentUniqueSize, st == domain.ContentUnreadable:
+	case st == domain.ContentHashed, st == domain.ContentSampled:
 		a.candidate += size
-	}
-	if state.String == string(domain.ContentHashed) {
 		a.checked += size
+	default:
+		a.candidate += size
 	}
 	if copied {
 		a.duplicated += size

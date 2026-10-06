@@ -1,0 +1,60 @@
+package api
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"testing"
+
+	"precious/internal/domain"
+	"precious/internal/index/indextest"
+)
+
+// R2 fixes of the owner's walkthrough (tasks 9.x).
+
+func digest(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:]
+}
+
+// 9.2 (A2): a folder whose only unchecked file is unreadable reads as fully
+// checked (candidate bytes equal checked bytes), entry folder and member
+// folder alike, while the source's coverage still counts the unreadable
+// file and member.
+func TestR2_9_2UnreadableFilesAreNoCandidates(t *testing.T) {
+	e := newEnv(t)
+	s := indextest.Seed(t, e.st, indextest.Tree{Source: "pen", CreateSource: true, MountPoint: "/media/pen",
+		Nodes: []indextest.Node{
+			{Path: "Pasta/lida.jpg", Size: 300},
+			{Path: "Pasta/ilegivel.jpg", Size: 50},
+			{Path: "Pasta/pacote.zip", Size: 900},
+		}})
+	s.SetContent(e.st, "Pasta/lida.jpg", indextest.Content{State: domain.ContentHashed, SHA256: digest("lida")})
+	s.SetContent(e.st, "Pasta/ilegivel.jpg", indextest.Content{State: domain.ContentUnreadable})
+	s.SetContent(e.st, "Pasta/pacote.zip", indextest.Content{State: domain.ContentHashed, SHA256: digest("pacote")})
+	arc := s.SeedArchive(e.st, "Pasta/pacote.zip", indextest.Archive{Format: domain.ArchiveZip, Members: []indextest.Member{
+		{Path: "f/a.txt", Size: 40, Content: indextest.Content{State: domain.ContentHashed, SHA256: digest("a")}},
+		{Path: "f/b.txt", Size: 7, Content: indextest.Content{State: domain.ContentUnreadable}},
+	}})
+	indextest.RecomputeCoverage(t, e.st)
+	(&contentWorld{env: e}).relate(t)
+
+	pasta := e.contentDetail(t, s.ID("Pasta").String())
+	if c := pasta.Entry; c.CandidateBytes == nil || c.CheckedBytes == nil || *c.CandidateBytes != 1200 || *c.CheckedBytes != 1200 {
+		t.Errorf("Pasta: candidate %v, checked %v; want 1200 both", c.CandidateBytes, c.CheckedBytes)
+	}
+	f := e.contentDetail(t, domain.Ref{Member: arc.Member("f")}.String())
+	if c := f.Entry; c.CandidateBytes == nil || c.CheckedBytes == nil || *c.CandidateBytes != 40 || *c.CheckedBytes != 40 {
+		t.Errorf("member folder f: candidate %v, checked %v; want 40 both", c.CandidateBytes, c.CheckedBytes)
+	}
+	if u := pasta.Coverage.Unreadable; u.Files != 2 || u.Bytes != 57 {
+		t.Errorf("coverage unreadable %+v; want 2 files, 57 bytes", u)
+	}
+}
+
+// contentDetail reads GET /api/entries/{ref} with the R2 fields.
+func (e *env) contentDetail(t *testing.T, ref string) detailRes {
+	t.Helper()
+	var d detailRes
+	e.get(t, fmt.Sprintf("/api/entries/%s", ref), 200, &d)
+	return d
+}
