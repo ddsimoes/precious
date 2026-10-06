@@ -576,7 +576,7 @@ function DuplicatesRow({ row, section, cursorKey, expanded, onSelect, onToggle }
       </div>
       <p className="text-muted-foreground">
         {row.relation !== null && `${t(`review.relation.${row.relation.kind}`)} · `}
-        {summaryLine(row.summary, t, fmt)}
+        {summaryLine(row.summary, t, fmt, { files: row.copies === null })}
       </p>
       <div className="flex flex-wrap gap-2">
         <Button

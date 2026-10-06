@@ -406,6 +406,8 @@ describe('Review list', () => {
 
     const groupRow = list.getByText('3 copies of Setup.exe').closest('li')!
     expect(groupRow).toHaveTextContent('6 MiB in extra copies')
+    // Its title counts the copies: its summary does not count files.
+    expect(within(groupRow).getByText('Installers and disk images · 2004 · 9 MiB')).toBeInTheDocument()
     const show = within(groupRow).getByRole('button', { name: 'Show copies' })
     expect(show).toHaveAttribute('aria-expanded', 'false')
     await user.click(show)

@@ -23,7 +23,14 @@ function signalLabel(signal: string, t: TFunction): string {
 // from its structured fields: its category, its oldest and newest year, its
 // files, its bytes, and up to two notable signals, such as "Installed
 // application · 2003–2004 · 120 files · 400 MiB · holds Office document".
-export function summaryLine(summary: RowSummary, t: TFunction, fmt: Formatters): string {
+// files: false leaves the file count out, for a group of copies of one file
+// whose title counts them.
+export function summaryLine(
+  summary: RowSummary,
+  t: TFunction,
+  fmt: Formatters,
+  { files = true }: { files?: boolean } = {},
+): string {
   const parts: string[] = []
   if (summary.category !== null) {
     parts.push(t(`entry.category.${summary.category}`))
@@ -34,7 +41,9 @@ export function summaryLine(summary: RowSummary, t: TFunction, fmt: Formatters):
   } else if (from !== null || to !== null) {
     parts.push(String(from ?? to))
   }
-  parts.push(t('units.files', { count: summary.files, formatted: fmt.count(summary.files) }))
+  if (files) {
+    parts.push(t('units.files', { count: summary.files, formatted: fmt.count(summary.files) }))
+  }
   parts.push(fmt.bytes(summary.bytes))
   const signals = summary.signals.slice(0, 2).map((signal) => signalLabel(signal, t))
   if (signals.length > 0) {
