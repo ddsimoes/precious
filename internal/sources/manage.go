@@ -19,6 +19,8 @@ import (
 	"precious/internal/clock"
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
+	"precious/internal/jobs"
+	"precious/internal/relations"
 	"precious/internal/store"
 	"precious/internal/web/clientip"
 )
@@ -223,13 +225,16 @@ func (s *Service) Rename(ctx context.Context, tx *sql.Tx, id domain.SourceID, la
 }
 
 // Remove deletes source id and its whole index (entries, folder aggregates,
-// decisions, tag assignments, name index rows, selection rows, and its
-// finished jobs), in tx, with the source_removed audit event. Nothing on disk
-// is touched. A queued, running, or paused job of the source is job_active,
-// and an unknown ID unknown_source.
-func (s *Service) Remove(ctx context.Context, tx *sql.Tx, id domain.SourceID) error {
+// decisions, tag assignments, name index rows, selection rows, content data,
+// and its jobs), in tx, with the source_removed audit event. Nothing on disk
+// is touched. A queued, running, or paused scan of the source is job_active,
+// and an unknown ID unknown_source. Any other active job of the source (its
+// hashing) is cancelled, a running attempt as soon as tx commits, and goes
+// away with it; relations are marked for a refresh, so the other sources'
+// relations and review rows drop the removed copies.
+func (s *Service) Remove(ctx context.Context, tx *jobs.Tx, id domain.SourceID) error {
 	var label string
-	err := tx.QueryRowContext(ctx, `SELECT label FROM sources WHERE id = ?`, string(id)).Scan(&label)
+	err := tx.SQL().QueryRowContext(ctx, `SELECT label FROM sources WHERE id = ?`, string(id)).Scan(&label)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Errorf(domain.CodeUnknownSource, "unknown source %q", id)
 	}
@@ -237,16 +242,22 @@ func (s *Service) Remove(ctx context.Context, tx *sql.Tx, id domain.SourceID) er
 		return err
 	}
 	var job int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE source_id = ? AND state IN ('queued', 'running', 'paused')
-		ORDER BY id LIMIT 1`, string(id)).Scan(&job)
+	err = tx.SQL().QueryRowContext(ctx, `SELECT id FROM jobs WHERE source_id = ? AND kind = ?
+		AND state IN ('queued', 'running', 'paused') ORDER BY id LIMIT 1`, string(id), string(jobs.KindScan)).Scan(&job)
 	switch {
 	case err == nil:
 		return domain.Errorf(domain.CodeJobActive, "source %q has the active job %d; cancel it first", id, job)
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
+	if err := cancelJobs(ctx, tx, id); err != nil {
+		return err
+	}
+	if err := relations.RequestRefresh(tx); err != nil {
+		return err
+	}
 	var entries int64
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM entries WHERE source_id = ?`, string(id)).Scan(&entries); err != nil {
+	if err := tx.SQL().QueryRowContext(ctx, `SELECT count(*) FROM entries WHERE source_id = ?`, string(id)).Scan(&entries); err != nil {
 		return err
 	}
 	// The name index and selections do not reference entries by foreign key.
@@ -255,11 +266,39 @@ func (s *Service) Remove(ctx context.Context, tx *sql.Tx, id domain.SourceID) er
 		`DELETE FROM selection_entries WHERE entry_id IN (SELECT id FROM entries WHERE source_id = ?)`,
 		`DELETE FROM sources WHERE id = ?`,
 	} {
-		if _, err := tx.ExecContext(ctx, q, string(id)); err != nil {
+		if _, err := tx.SQL().ExecContext(ctx, q, string(id)); err != nil {
 			return err
 		}
 	}
-	return s.audit(ctx, tx, AuditSourceRemoved, map[string]any{"source_id": id, "label": label, "entries": entries})
+	return s.audit(ctx, tx.SQL(), AuditSourceRemoved, map[string]any{"source_id": id, "label": label, "entries": entries})
+}
+
+// cancelJobs cancels every active job of source id in tx.
+func cancelJobs(ctx context.Context, tx *jobs.Tx, id domain.SourceID) error {
+	rows, err := tx.SQL().QueryContext(ctx, `SELECT id FROM jobs WHERE source_id = ?
+		AND state IN ('queued', 'running', 'paused') ORDER BY id`, string(id))
+	if err != nil {
+		return err
+	}
+	var ids []domain.JobID
+	for rows.Next() {
+		var job int64
+		if err := rows.Scan(&job); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, domain.JobID(job))
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, job := range ids {
+		if _, err := tx.Cancel(job); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) audit(ctx context.Context, tx *sql.Tx, kind string, detail map[string]any) error {
