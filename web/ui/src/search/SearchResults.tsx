@@ -12,24 +12,21 @@ import {
   type DecisionChoice,
   type DecisionTargets,
   type Selection,
-  type SetDecisionResult,
 } from '@/api/decisions'
 import { childSorts, type ChildSort, type EntryRow, type SortOrder } from '@/api/entries'
 import { fetchSearch, searchQueryKey, selectionQuery } from '@/api/search'
-import { refreshAfterTagChange, setTags, useTags, type SetTagsResult, type TagTargets } from '@/api/tags'
+import { refreshAfterTagChange, setTags, useTags, type TagTargets } from '@/api/tags'
 import { ApiError } from '@/app/api'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { useCsrfToken } from '@/app/session'
+import { BulkReport, SelectAllDialog, type Report } from '@/components/BulkSelection'
 import { EntryTable } from '@/components/EntryTable'
 import { Button } from '@/components/ui/button'
-import { Dialog } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { useFormat } from '@/lib/format'
 
 // countCap is the largest exact match count the server reports.
 const countCap = 10_000
-
-type Report = { kind: 'decision'; result: SetDecisionResult } | { kind: 'tags'; result: SetTagsResult }
 
 // SearchResults lists the matches of one search, virtualized and paged by
 // cursor, and applies decisions and tags to the rows picked one by one or to
@@ -260,6 +257,7 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
 
       {proposal !== null && (
         <SelectAllDialog
+          title={t('search.confirmTitle')}
           selection={proposal}
           onConfirm={() => {
             setPicked(new Set())
@@ -269,92 +267,6 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
           onCancel={() => setProposal(null)}
         />
       )}
-    </section>
-  )
-}
-
-function SelectAllDialog({
-  selection,
-  onConfirm,
-  onCancel,
-}: {
-  selection: Selection
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  const { t } = useTranslation()
-  const fmt = useFormat()
-  return (
-    <Dialog title={t('search.confirmTitle')} onClose={onCancel} alert>
-      <ul className="grid gap-1 text-sm">
-        <li className="font-medium">
-          {t('search.confirmCount', { count: selection.count, formatted: fmt.count(selection.count) })}
-        </li>
-        <li>{t('search.confirmBytes', { bytes: fmt.bytes(selection.bytes) })}</li>
-        <li>
-          {selection.kept.count === 0
-            ? t('search.confirmNoneKept')
-            : t('search.confirmKept', {
-                count: selection.kept.count,
-                formatted: fmt.count(selection.kept.count),
-                bytes: fmt.bytes(selection.kept.bytes),
-              })}
-        </li>
-        <li className="text-muted-foreground">{t('search.confirmExpiry')}</li>
-      </ul>
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" onClick={onCancel}>
-          {t('search.cancel')}
-        </Button>
-        <Button onClick={onConfirm}>{t('search.confirm')}</Button>
-      </div>
-    </Dialog>
-  )
-}
-
-function BulkReport({ report, onClose }: { report: Report; onClose: () => void }) {
-  const { t } = useTranslation()
-  const fmt = useFormat()
-  const { result } = report
-  return (
-    <section aria-label={t('search.report')} className="grid gap-2 rounded-lg border bg-card p-3 text-sm">
-      {report.kind === 'tags' ? (
-        <p>{t('search.tagsApplied', { count: result.applied, formatted: fmt.count(result.applied) })}</p>
-      ) : (
-        <>
-          <p>{t('search.applied', { count: result.applied, formatted: fmt.count(result.applied) })}</p>
-          {report.result.skipped_count > 0 && (
-            <>
-              <p className="font-medium">
-                {t('search.skipped', {
-                  count: report.result.skipped_count,
-                  formatted: fmt.count(report.result.skipped_count),
-                })}
-              </p>
-              <ul aria-label={t('search.skipped', { count: report.result.skipped_count, formatted: fmt.count(report.result.skipped_count) })} className="grid gap-0.5 pl-4">
-                {report.result.skipped.map((entry) => (
-                  <li key={entry.entry_id} className="break-all">
-                    {entry.path}
-                  </li>
-                ))}
-              </ul>
-              {report.result.skipped_count > report.result.skipped.length && (
-                <p className="text-muted-foreground">
-                  {t('search.skippedMore', {
-                    count: report.result.skipped_count - report.result.skipped.length,
-                    formatted: fmt.count(report.result.skipped_count - report.result.skipped.length),
-                  })}
-                </p>
-              )}
-            </>
-          )}
-        </>
-      )}
-      <div>
-        <Button variant="ghost" size="sm" onClick={onClose}>
-          {t('search.closeReport')}
-        </Button>
-      </div>
     </section>
   )
 }

@@ -4,6 +4,7 @@ import '@/i18n'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, vi } from 'vitest'
 
+import { chooseCompareFirst } from '@/compare/compareChoice'
 import { MockEventSource } from '@/test/eventSource'
 
 // jsdom has no modal dialogs: showModal opens the dialog in place.
@@ -21,6 +22,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  // "Compare with…" remembers its first side in session storage.
+  chooseCompareFirst(null)
 })
 
 // jsdom lays nothing out. Virtualized lists read their scroll container's

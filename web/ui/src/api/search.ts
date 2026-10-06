@@ -6,7 +6,16 @@ import { apiGet } from '@/app/api'
 // the request's.
 
 // searchListParams repeat, one value each; every other parameter is single.
-export const searchListParams = ['ext', 'file_kind', 'category', 'tag', 'decision', 'triage'] as const
+// dup is the duplicate state (R2 design D15).
+export const searchListParams = ['ext', 'file_kind', 'category', 'tag', 'decision', 'triage', 'dup'] as const
+
+// DupFilter is a duplicate state: has another copy, has a copy outside the
+// folder searched within (which needs `within`), no other copy, and not
+// checked.
+export type DupFilter = 'copies' | 'elsewhere' | 'unique' | 'unchecked'
+
+export const dupFilters: DupFilter[] = ['copies', 'elsewhere', 'unique', 'unchecked']
+
 export const searchSingleParams = [
   'source',
   'name',

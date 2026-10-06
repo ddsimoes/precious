@@ -1,6 +1,16 @@
 import type { QueryClient } from '@tanstack/react-query'
 
-import { displayState, isTerminal, scanKind, type JobEvent, type JobState, type Progress } from '@/api/jobs'
+import type { Coverage, HashingJob } from '@/api/content'
+import {
+  displayState,
+  isHashKind,
+  isTerminal,
+  scanKind,
+  type JobEvent,
+  type JobState,
+  type Progress,
+} from '@/api/jobs'
+import type { Card } from '@/api/opportunities'
 import type { Totals } from '@/api/sources'
 import { apiGet } from '@/app/api'
 
@@ -56,6 +66,12 @@ export interface Home {
   // partial is set when part of a counted tree could not be read.
   partial: boolean
   scans: HomeScan[]
+  // coverage tells how much of what could have a copy was checked (R2).
+  coverage: Coverage
+  // cards are the opportunity cards, with the bytes of their open rows.
+  cards: Card[]
+  // hashing lists the active hashing jobs.
+  hashing: HashingJob[]
 }
 
 export const homeQueryRoot = ['home'] as const
@@ -70,34 +86,37 @@ export function fetchHome(source: string | null, signal?: AbortSignal): Promise<
   return apiGet<Home>(`/api/home${query}`, signal)
 }
 
-// applyJobEventToHome keeps the active scans of every cached Home current. A
-// scan that ends refetches Home, whose figures it changed.
+// withJob puts a job's latest state into a list of active jobs, or takes it
+// out once it ended.
+function withJob<T extends { job_id: string }>(jobs: T[], job: T, done: boolean): T[] {
+  if (done) {
+    return jobs.filter((j) => j.job_id !== job.job_id)
+  }
+  return jobs.some((j) => j.job_id === job.job_id)
+    ? jobs.map((j) => (j.job_id === job.job_id ? job : j))
+    : [...jobs, job]
+}
+
+// applyJobEventToHome keeps the active scans and hashing jobs of every
+// cached Home current. A scan or hashing job that ends refetches Home,
+// whose figures it changed.
 export function applyJobEventToHome(queryClient: QueryClient, event: JobEvent) {
   const sourceId = event.source_id
-  if (event.kind !== scanKind || sourceId === undefined) {
+  const hashing = isHashKind(event.kind)
+  if ((event.kind !== scanKind && !hashing) || sourceId === undefined) {
     return
   }
   const done = isTerminal(event.state)
-  const scan: HomeScan = {
-    source_id: sourceId,
-    job_id: event.job_id,
-    state: displayState(event),
-    progress: event.progress,
-  }
+  const job = { source_id: sourceId, job_id: event.job_id, state: displayState(event), progress: event.progress }
   for (const [key, home] of queryClient.getQueriesData<Home>({ queryKey: homeQueryRoot })) {
     const filter = key[1]
     if (home === undefined || (filter !== null && filter !== sourceId)) {
       continue
     }
-    let scans: HomeScan[]
-    if (done) {
-      scans = home.scans.filter((s) => s.job_id !== event.job_id)
-    } else if (home.scans.some((s) => s.job_id === event.job_id)) {
-      scans = home.scans.map((s) => (s.job_id === event.job_id ? scan : s))
-    } else {
-      scans = [...home.scans, scan]
-    }
-    queryClient.setQueryData<Home>(key, { ...home, scans })
+    const next = hashing
+      ? { ...home, hashing: withJob(home.hashing, { ...job, kind: event.kind }, done) }
+      : { ...home, scans: withJob(home.scans, job, done) }
+    queryClient.setQueryData<Home>(key, next)
   }
   if (done) {
     void queryClient.invalidateQueries({ queryKey: homeQueryRoot })

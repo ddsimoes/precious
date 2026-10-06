@@ -1,6 +1,8 @@
+import type { Copy, Coverage, Relation } from '@/api/content'
 import type { EntryDetail, EntryRow } from '@/api/entries'
 import type { Home } from '@/api/home'
 import type { JobEvent } from '@/api/jobs'
+import type { Card } from '@/api/opportunities'
 import type { Capabilities, PickerItem, Source } from '@/api/sources'
 
 // API responses in the shapes of the design's Interfaces section.
@@ -105,6 +107,55 @@ export function homeResponse(overrides: Partial<Home> = {}): Home {
     },
     partial: false,
     scans: [],
+    coverage: coverage(),
+    cards: [],
+    hashing: [],
+    ...overrides,
+  }
+}
+
+// coverage is a CoverageJSON; by default 90 GiB could have a copy and 80 GiB
+// of it was checked.
+export function coverage(overrides: Partial<Coverage> = {}): Coverage {
+  return {
+    candidate: { bytes: 90 * GiB, files: 200_000 },
+    checked: { bytes: 80 * GiB, files: 150_000 },
+    unchecked: { bytes: 9 * GiB, files: 49_000 },
+    unreadable: { bytes: 1 * GiB, files: 1_000 },
+    ...overrides,
+  }
+}
+
+export function card(list: Card['list'], bytes: number, rows: number, overrides: Partial<Card> = {}): Card {
+  return { list, bytes, rows, basis: list === 'duplicates' || list === 'unpacked_archives' ? 'content' : 'rules', ...overrides }
+}
+
+// copyOf is a CopyJSON of row.
+export function copyOf(row: EntryRow, overrides: Partial<Copy> = {}): Copy {
+  return {
+    ref: row.id,
+    source_id: row.source_id,
+    path: row.path,
+    path_b64: row.path_b64,
+    archive_id: row.archive_id,
+    hard_link: false,
+    offline: false,
+    eff_decision: row.eff_decision,
+    ...overrides,
+  }
+}
+
+// relationTo is a RelationJSON whose other side is other.
+export function relationTo(other: EntryRow, overrides: Partial<Relation> = {}): Relation {
+  return {
+    id: '7',
+    kind: 'same',
+    self: 'a',
+    other,
+    matched_bytes: other.total_bytes,
+    redundant_bytes: other.total_bytes,
+    only_here: { files: 0, bytes: 0 },
+    only_there: { files: 0, bytes: 0 },
     ...overrides,
   }
 }
@@ -202,6 +253,10 @@ export function entryDetail(row: EntryRow, overrides: Partial<EntryDetail> = {})
     },
     intent: { decision: row.decision, eff_decision: row.eff_decision, from: null, tags: [] },
     stats: null,
+    content: null,
+    relations: [],
+    archive: null,
+    coverage: coverage(),
     ...overrides,
   }
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { EntryRow, Treemap as TreemapData } from '@/api/entries'
+import { isDrillable, type EntryRow, type Treemap as TreemapData } from '@/api/entries'
 import { Button } from '@/components/ui/button'
 import { colorOf, legendOf, otherColor, type ColorContext, type ColorMode } from '@/map/colors'
 import { init, type ECElementEvent, type ECharts, type TreemapOption } from '@/map/echarts'
@@ -82,7 +82,7 @@ export function Treemap({
       if (row === undefined) {
         return
       }
-      if (row.kind === 'directory') {
+      if (isDrillable(row)) {
         handlers.current.onDrill(row.id)
       } else {
         handlers.current.onSelect(row.id)
@@ -160,9 +160,9 @@ export function Treemap({
               variant="ghost"
               onFocus={() => onHover(row.id)}
               onBlur={() => onHover(null)}
-              onClick={() => (row.kind === 'directory' ? onDrill(row.id) : onSelect(row.id))}
+              onClick={() => (isDrillable(row) ? onDrill(row.id) : onSelect(row.id))}
             >
-              {row.kind === 'directory'
+              {isDrillable(row)
                 ? t('map.openFolder', { name: row.name })
                 : t('map.showDetails', { name: row.name })}{' '}
               ({fmt.bytes(row.total_bytes)})

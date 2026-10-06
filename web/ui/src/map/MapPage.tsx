@@ -10,6 +10,8 @@ import {
   fetchChildren,
   fetchEntry,
   fetchTreemap,
+  isDrillable,
+  isMember,
   treemapQueryKey,
   type ChildSort,
   type EntryRow,
@@ -163,7 +165,7 @@ function MapFolder({ folderId }: { folderId: string }) {
   )
 
   const detail = folder.data
-  if (detail !== undefined && detail.entry.kind !== 'directory') {
+  if (detail !== undefined && !isDrillable(detail.entry)) {
     // A file opens in its folder, with its details.
     const parent = detail.ancestors.at(-1)
     if (parent !== undefined) {
@@ -214,9 +216,12 @@ function MapFolder({ folderId }: { folderId: string }) {
                 </select>
               </div>
             )}
-            <Button asChild variant="outline" size="sm">
-              <Link to={{ pathname: '/search', search: `?within=${folderId}` }}>{t('detail.searchHere')}</Link>
-            </Button>
+            {/* Search has no items inside archives. */}
+            {detail?.entry.kind === 'directory' && !isMember(detail.entry) && (
+              <Button asChild variant="outline" size="sm">
+                <Link to={{ pathname: '/search', search: `?within=${folderId}` }}>{t('detail.searchHere')}</Link>
+              </Button>
+            )}
           </div>
         </div>
 

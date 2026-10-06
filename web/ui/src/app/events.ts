@@ -1,16 +1,18 @@
 import { useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import { useEffect } from 'react'
 
-import { applyJobEventToEntries, entriesQueryRoot } from '@/api/entries'
-import { applyJobEventToHome, homeQueryRoot } from '@/api/home'
+import { applyJobEventToDuplicates, duplicatesQueryRoots } from '@/api/content'
+import { applyJobEventToEntries } from '@/api/entries'
+import { applyJobEventToHome } from '@/api/home'
 import type { JobEvent } from '@/api/jobs'
-import { searchQueryRoot } from '@/api/search'
 import { applyJobEventToSources, sourcesQueryKey } from '@/api/sources'
 import { sessionQueryKey } from '@/app/session'
 
-// liveQueryRoots are the cached responses that job events keep current. They
-// are fetched again whenever events may have been missed.
-const liveQueryRoots: QueryKey[] = [sourcesQueryKey, homeQueryRoot, entriesQueryRoot, searchQueryRoot]
+// liveQueryRoots are the cached responses that job events keep current:
+// sources, and everything built from the index and its duplicates (Home,
+// entries, Search, Opportunities, Gems, and Compare). They are fetched again
+// whenever events may have been missed.
+const liveQueryRoots: QueryKey[] = [sourcesQueryKey, ...duplicatesQueryRoots]
 
 const minRetryDelay = 1_000
 const maxRetryDelay = 30_000
@@ -69,6 +71,7 @@ export class JobEventStream {
       applyJobEventToSources(this.queryClient, event)
       applyJobEventToHome(this.queryClient, event)
       applyJobEventToEntries(this.queryClient, event)
+      applyJobEventToDuplicates(this.queryClient, event)
     })
     source.addEventListener('reset', (message: MessageEvent<string>) => {
       this.lastEventId = message.lastEventId
