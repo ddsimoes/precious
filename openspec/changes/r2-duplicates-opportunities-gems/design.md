@@ -632,6 +632,15 @@ The slowest page is the decided duplicates page when no duplicates row is decide
 
 Together with `review.Refresh` (41 s, task 5.6), one refresh of 2 million entries takes under a minute on this machine.
 
+### R1.10 again, with the R2 joins (task 6.8)
+
+`go test -tags slow -run R1_10 ./internal/web/api/` on the development machine, 2026-10-06, after scanning 2,000,000 entries (1 m 40 s). Every file was seeded as hashed with two copies per content, and every folder got `dir_dups`, so each row runs the copy subqueries.
+
+| Measurement | Result | Target |
+|---|---|---|
+| Children pages of 200 rows, sorted by bytes | p50 7.5 ms, p95 10.8 ms, max 14.2 ms | p95 < 300 ms |
+| Treemap levels | p50 1.75 ms, p95 9.5 ms, max 32.5 ms | p95 < 500 ms |
+
 ## Addendum: decisions made during implementation
 
 - **B1.** The scanner deletes a file's `file_content` and `archives` rows only when the file's own facts change: size, mtime, ctime, or identity. A classification-only update, such as a new rules version, keeps digests, and so does a missing file that returns with the same facts. ctime is compared with the same tolerance as mtime, because vfat's ctime moves with its mtime. (Task 1.4.)
@@ -655,3 +664,10 @@ Together with `review.Refresh` (41 s, task 5.6), one refresh of 2 million entrie
 - **B8.** `check-now` coalesces folders into the active `hash_now` job's payload, which the job re-reads until nothing is new. A folder that arrives after the job's last read is still covered by the source's regular hashing job, but not first.
 - **B9.** A file that became `changed` or `unreadable` is not retried by later hashing jobs until a rescan updates its entry. A `chmod` or an edit moves ctime, so the rescan sends the file back to `pending`.
 - **B10.** Test seeding: `indextest.Attach` gives the seeded view of a source indexed by a real scan, and `SeedContent` follows D7 for streamed archives.
+- **B11.** Read API:
+  - `copies` in an EntryRow counts the physical copies including the row itself; it is 1 for `unique_size` and `sampled`, and null while unchecked;
+  - `archive_state` is null while an archive is still being listed;
+  - a member's path reads `archive!member/path`, and its detail lists the archive and its member folders as ancestors;
+  - a malformed ref stays 404, as in R1.
+- **B12.** `set-decision` and `set-tags` answer 400 `invalid_request` for a member ref (`m45`); any other malformed ID stays 404 `not_found`, as in R1.
+- **B13.** The viewer opens files through `content.OpenAt`, so the viewer and hashing share one identity-checked walk. `viewer.Register` takes the `*content.Service` for members.

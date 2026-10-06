@@ -249,6 +249,66 @@ func readIntent(t *testing.T, st *store.Store) intent {
 	return in
 }
 
+// TestServeHashesTheCorpus drives the wired R2 server over the corpus: after
+// the scan, hashing starts without any request, relate runs, and the
+// opportunities and Gems read through the API are not empty.
+func TestServeHashesTheCorpus(t *testing.T) {
+	disk := corpusDisk(t)
+	cfg := r2Config(t, disk)
+	setAdminPassword(t, cfg)
+	origin, _ := serveAt(t, cfg)
+	c := newBrowser(t, origin)
+	csrf := c.login()
+	src := addAndScan(t, c, origin, csrf)
+
+	st := openStore(t, cfg)
+	defer st.Close()
+	awaitQuiet(t, st, "hash", "relate")
+	var hashJobs int
+	if err := st.Reader().QueryRow(`SELECT count(*) FROM jobs WHERE kind = 'hash' AND source_id = ?`, src).Scan(&hashJobs); err != nil {
+		t.Fatal(err)
+	}
+	if hashJobs == 0 {
+		t.Fatal("no hashing job ran for the source, though nobody asked for one")
+	}
+
+	var opp struct {
+		Cards []struct {
+			List  string `json:"list"`
+			Bytes int64  `json:"bytes"`
+			Rows  int64  `json:"rows"`
+		} `json:"cards"`
+		Coverage struct {
+			Candidate struct {
+				Bytes int64 `json:"bytes"`
+			} `json:"candidate"`
+			Checked struct {
+				Bytes int64 `json:"bytes"`
+			} `json:"checked"`
+		} `json:"coverage"`
+	}
+	c.getJSON("/api/opportunities", &opp)
+	byList := map[string]int64{}
+	for _, card := range opp.Cards {
+		byList[card.List] = card.Rows
+	}
+	if len(opp.Cards) != 7 || byList["duplicates"] == 0 || byList["unpacked_archives"] == 0 || byList["system_junk"] == 0 {
+		t.Errorf("opportunities %+v: want seven cards with duplicates, unpacked archives, and system junk", opp.Cards)
+	}
+	if opp.Coverage.Candidate.Bytes == 0 || opp.Coverage.Checked.Bytes != opp.Coverage.Candidate.Bytes {
+		t.Errorf("coverage %+v, want every candidate byte checked", opp.Coverage)
+	}
+	for _, section := range []string{"unique", "rescue", "only_in_copy"} {
+		var gems struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		c.getJSON("/api/gems?section="+section, &gems)
+		if len(gems.Items) == 0 {
+			t.Errorf("gems section %s is empty", section)
+		}
+	}
+}
+
 // TestServeUpgradesAnR1Database starts the R2 server on a database that R1
 // left, with a scanned source, decisions, and tags (state-store "R1
 // databases upgrade in place"): the migration is recorded, entries keep their
