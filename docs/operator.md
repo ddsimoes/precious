@@ -316,7 +316,7 @@ The renamed `pre-restore-*` files still form a matching set; delete them once th
 
 ## Upgrades
 
-This release starts from a fresh database: on first start Precious creates `precious.db` with its baseline schema in the state directory. A database from the earlier release, `curator.db`, is never opened, imported, or changed; when one is in the state directory, Precious logs a line naming it and leaves it as it is.
+Precious R1 started from a fresh database: on first start Precious creates `precious.db` with its baseline schema in the state directory. A database from the earlier release, `curator.db`, is never opened, imported, or changed; when one is in the state directory, Precious logs a line naming it and leaves it as it is.
 
 Upgrade a running installation in this order:
 
@@ -327,6 +327,16 @@ Upgrade a running installation in this order:
 At startup Precious applies pending numbered migrations, each in its own transaction, and records each applied version. If a migration fails, its changes are rolled back, the database stays at the previous version, and Precious exits with the error.
 
 Migrations only move forward. An older binary refuses to start against a database that a newer one has migrated, and leaves the file unmodified; the error reads `store: database schema is newer than this binary supports: database has version N, binary supports up to M`. A database whose recorded migrations have different names from the binary's, such as an older release's database renamed to `precious.db`, is refused the same way. To roll back an upgrade, stop Precious, reinstall the older binary or image, restore the backup taken in step 1, and start it. Never edit `schema_migrations` by hand to get past these checks.
+
+### Upgrading from R1 to R2
+
+R2 adds hashing, archives, duplicates, Compare, opportunities, and Gems. Its migration, `0002_content`, only adds tables: every R1 entry, decision, tag, selection, job, and audit event stays as it was, and no rescan is needed.
+
+1. **Back up first** with the R1 binary still running: `precious backup` (see [Taking a backup](#taking-a-backup)).
+2. **Check the configuration** with the R2 binary. An R1 configuration stays valid: the new `[hashing]`, `[archives]`, and `[duplicates]` sections have defaults (see [Configuration reference](#configuration-reference)), and `[copies]` is still refused.
+3. **Replace and restart.** At startup `0002_content` applies to the R1 database in one transaction, and every online source gets a hashing job, which reads file content in the background (see [Hashing](#hashing)). The first run on a large archive can take hours; scans, pages, and decisions are not blocked while it runs.
+
+To roll back, stop Precious, reinstall the R1 binary or image, [restore](#restoring) the backup taken in step 1, and start it. The R1 binary refuses the migrated database (`database has version 2, binary supports up to 1`) and leaves it unmodified, so the backup is the only way back. Decisions and tags recorded after the upgrade are lost with it.
 
 ### Moving from curator to precious
 
@@ -516,12 +526,14 @@ One scan per source runs at a time: a second request while a scan is queued, run
 
 Every scan walks the whole source again. It compares each entry with the one stored at the same path and writes only what changed:
 
-- An entry is **unchanged** when it has the same kind and size and a modification time within the filesystem's tolerance (see [Filesystem capabilities](#filesystem-capabilities)): its time resolution, and on a FAT card also a daylight-saving shift of one hour. On filesystems with stable file identity it must also be the same file (device and inode). An unchanged entry is not written, so a rescan of an unchanged disk changes no entry; only the source's record of its last scan is updated.
-- A **changed** entry is updated in place and keeps its ID, decision, and tags.
+- An entry is **unchanged** when it has the same kind and size and a modification time within the filesystem's tolerance (see [Filesystem capabilities](#filesystem-capabilities)): its time resolution, and on a FAT card also a daylight-saving shift of one hour. Where the system reports a change time for both the stored and the observed entry, it must be within the same tolerance too, so a file whose modification time was set back after a change is still seen as changed. On filesystems with stable file identity it must also be the same file (device and inode). An unchanged entry is not written, so a rescan of an unchanged disk changes no entry; only the source's record of its last scan is updated.
+- A **changed** entry is updated in place and keeps its ID, decision, and tags. When its size, times, or identity changed, it also loses what hashing knew about its content and, for an archive, its list of members, in the same write; they are read again by the next hashing job. An entry rewritten only because the rules classify it differently keeps them.
 - A **new** entry is added. It has no decision of its own and takes its folder's effective decision, as read when its row is written: a file appearing inside a discarded folder reads discard.
 - An entry whose **kind changed** at the same path, such as a file replaced by a folder of the same name, is a different entry: the old one, with whatever was below it, is removed from the index together with its decisions and tags, and the new one is added.
 
 Changing the rules between releases does not need anything special: the next scan reclassifies every entry whose classification differs and writes only those.
+
+A scan that finishes successfully starts a hashing job for every online source (see [Hashing](#hashing)); a failed or cancelled scan does not.
 
 ### Missing entries
 
@@ -562,6 +574,16 @@ go run ./tools/walkbench -root /tank/archive [-state DIR] [-cpuprofile FILE] [-o
 It walks the tree once to warm the caches, then times a bare walk (the same batched listing and `lstat` calls the scan makes, without following links or crossing mount points) and a full first scan of the tree into a new database in DIR (by default a temporary directory, removed afterwards; a given DIR must not hold a database yet), run as a scan job. It prints the number of entries, both times, and their ratio; `-cpuprofile` writes a CPU profile of the scan for `go tool pprof`.
 
 Both measurements are warm. A warm walk is the fastest baseline, so the warm ratio is stricter than the cold one the target names: on a tree of many small files on a fast disk, where the warm walk takes a few microseconds per entry while the scan writes an entry row, its name-index row, and six index entries for each, the warm ratio is well above 1.5. For the cold measurement, empty the filesystem caches (on ZFS by exporting and importing the pool, elsewhere with `echo 3 > /proc/sys/vm/drop_caches` as root; walkbench does not do that, because it needs root) and run `-only walk`, then empty them again and run `-only scan` with a fresh `-state` directory. Each run times just that measurement, without warming the caches first; the cold ratio is the scan's time divided by the walk's.
+
+## Hashing
+
+<!-- owner: H -->
+This section will document how Precious reads file content to find copies: which files are read and in what order, samples of large files, reading safety, the hashing jobs and commands (`start-hash`, `check-now`), coverage, progress, cancelling, and the `[hashing]` settings.
+
+## Archives
+
+<!-- owner: A -->
+This section will document the archives Precious opens (zip, tar, tar.gz, tar.bz2, gzip, and bzip2), their budgets and outcomes, what stays unopened, and that nothing is ever unpacked to disk.
 
 ## Classification rules
 
@@ -651,6 +673,16 @@ The detail panel shows each rule behind an entry's classification with a one-sen
 
 The rules are versioned, and each scan records the version it used (`rules-v2+markers-v3` in this release).
 
+## Duplicates and Compare
+
+<!-- owner: R -->
+This section will document duplicate groups and redundant bytes, what a "no other copy" claim means and the coverage it carries, folder relations (same, inside, overlap), the duplication figures of folders, Compare and its buckets, the `relate` job, and the `[duplicates]` settings.
+
+## Opportunities and Gems
+
+<!-- owner: V -->
+This section will document the opportunity cards and how their bytes are counted, the review lists and their keyboard, selecting a whole list, and the three sections of Gems.
+
 ## Search, viewer, and read API
 
 The interface reads the index through a small JSON API under `/api`. The same endpoints serve scripts, for example to export a search. Every endpoint below needs a signed-in session, like the interface; without one it answers `401 unauthenticated`. None of them change anything, and none of them accept a path: an entry is named only by its ID, which comes from an earlier answer. Entry IDs are decimal strings, such as `"812"`, and tag IDs are numbers. Treat both as opaque.
@@ -730,6 +762,11 @@ Files on a source come from anywhere, so the viewer treats each one as untrusted
 - **Text** (`/text`) is the first 1 MiB of the file, decoded: a byte-order mark gives UTF-8 or UTF-16, then valid UTF-8 is read as UTF-8, and anything else as Windows-1252. The answer names the encoding, says whether the text was cut at 1 MiB, and gives a syntax hint from the extension and whether the file is Markdown. The interface cleans Markdown before showing it; see [The viewer](#the-viewer).
 - **Only the indexed file is read.** The viewer opens the file read-only, starting from the source's folder and going down one name at a time. It never follows a symbolic link and never crosses into another mounted filesystem. It reads only a regular file that still matches the index: the same size and modification time (within the filesystem's time resolution, or one hour off on FAT) and, where the filesystem has stable file numbers, the same inode. A file changed, replaced, or moved since the last scan is refused with `invalid_entry_state` until a rescan. Content answers range requests, so video and audio can seek.
 - **Offline sources** stay browsable, but their files cannot be viewed: content and text answer `source_offline` until the disk is connected again.
+
+### Content, duplicates, and archive endpoints
+
+<!-- owner: Q -->
+This section will document what R2 adds to the read API: the content fields of every entry row, member refs (`m45`), the detail's content, relations, archive, and coverage, the copies, opportunities, Gems, and Compare endpoints, Search's `dup` filter, and viewing archive members.
 
 ## Decisions and tags
 
@@ -890,6 +927,11 @@ Files from a disk are never run as part of Precious:
 - The type a file is shown as comes from its extension in Precious's own list, never from its content, so a `.jpg` that holds a web page is still only an image.
 - HTML and XML files are shown as text, never as pages, and an SVG is shown only as a picture, so any script inside it does not run. Executables are never run.
 - Markdown is cleaned before it is shown: scripts, event handlers, styles, forms, and embedded frames are removed, and images are replaced by their description ("[image not shown: …]"), so nothing is fetched from the internet. Links to web pages open in a new browser tab; other links do nothing.
+
+### Opportunities, Compare, and Gems
+
+<!-- owner: U -->
+This section will document the R2 screens and controls: hashing coverage on Home, the Opportunities screen and review lists, Compare, Gems, duplicate figures on the Map, the duplicate filter in Search, and archives opened as folders.
 
 ### Common tasks
 
