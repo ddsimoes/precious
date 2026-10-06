@@ -158,6 +158,57 @@ func TestScanMatchesSeedConventions(t *testing.T) {
 	compareWithSeed(t, e, "disk")
 }
 
+// A5: a modification time at or before the epoch is unknown. Such a file
+// has no newest or oldest time of its own, its folders' ranges leave it out,
+// and by_year counts it under the year 0, so the buckets still sum to the
+// totals; indextest.Seed agrees. A rescan of rows written before the rule
+// refreshes them.
+func TestScanUnknownTimes(t *testing.T) {
+	e := newEnv(t)
+	root := e.disk("disk", "/src/disk", posix)
+	velhas := root.Dir("Velhas")
+	velhas.File("a.txt", 30, mtime)
+	velhas.File("sem-data.txt", 70, time.Unix(0, 0))
+	velhas.Dir("antes").File("b.txt", 5, time.Unix(-3600, 0))
+	e.scan("disk")
+
+	check := func(when string) {
+		t.Helper()
+		rows := e.entries("disk")
+		for _, p := range []string{"Velhas/sem-data.txt", "Velhas/antes/b.txt", "Velhas/antes"} {
+			if r := get(t, rows, p); r.Newest.Valid || r.Oldest.Valid {
+				t.Errorf("%s: %s newest %v oldest %v; want NULL", when, p, r.Newest, r.Oldest)
+			}
+		}
+		if r := get(t, rows, "Velhas/antes"); !r.MainKind.Valid || r.ByYear.String != `{"0":{"files":1,"bytes":5}}` {
+			t.Errorf("%s: antes main kind %v, by_year %s", when, r.MainKind, r.ByYear.String)
+		}
+		for _, p := range []string{"Velhas", ""} {
+			r := get(t, rows, p)
+			if r.Newest.Int64 != mtime.UnixNano() || r.Oldest.Int64 != mtime.UnixNano() ||
+				r.ByYear.String != `{"0":{"files":2,"bytes":75},"2004":{"files":1,"bytes":30}}` {
+				t.Errorf("%s: %q newest %v oldest %v by_year %s", when, p, r.Newest, r.Oldest, r.ByYear.String)
+			}
+		}
+	}
+	check("scan")
+	compareWithSeed(t, e, "disk")
+
+	// Rows as a scan before the rule wrote them: a file's own time as its
+	// range, the folders' ranges and years over it.
+	for _, q := range []string{
+		`UPDATE entries SET newest_ns = mtime_ns, oldest_ns = mtime_ns WHERE source_id = 'disk' AND kind = 'file'`,
+		`UPDATE entries SET oldest_ns = -3600000000000 WHERE source_id = 'disk' AND kind = 'directory'`,
+		`UPDATE dir_stats SET by_year = '{"1969":{"files":1,"bytes":5}}'`,
+	} {
+		if _, err := e.st.Writer().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.scan("disk")
+	check("rescan")
+}
+
 // compareWithSeed seeds the scanned tree of src with indextest into a new
 // source and compares every column both write.
 func compareWithSeed(t *testing.T, e *env, src domain.SourceID) {

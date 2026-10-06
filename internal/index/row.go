@@ -294,7 +294,8 @@ func (c *codec) byKind(m map[domain.FileKind]rules.KindTotals) string {
 	return string(append(c.buf, '}'))
 }
 
-// byYear is {"<UTC year>":{"files":n,"bytes":n}}, keys sorted as strings.
+// byYear is {"<UTC year>":{"files":n,"bytes":n}}, keys sorted as strings;
+// the key "0" counts the files without a known time (unknownYear).
 func (c *codec) byYear(m map[int]counts) string {
 	c.years = c.years[:0]
 	for y := range m {

@@ -266,15 +266,15 @@ func years(r *search.Row) *[2]*int {
 	if r.Kind != domain.EntryDirectory {
 		from, to = r.MTime, r.MTime
 	}
-	if from.IsZero() && to.IsZero() {
+	if !search.KnownTime(from) && !search.KnownTime(to) {
 		return nil
 	}
 	var y [2]*int
-	if !from.IsZero() {
+	if search.KnownTime(from) {
 		v := from.Year()
 		y[0] = &v
 	}
-	if !to.IsZero() {
+	if search.KnownTime(to) {
 		v := to.Year()
 		y[1] = &v
 	}

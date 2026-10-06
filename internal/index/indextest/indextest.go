@@ -12,7 +12,9 @@
 //     the sums over the files of its subtree. Symlinks and special files count
 //     0 bytes and 0 files.
 //   - newest_ns and oldest_ns are a leaf's own mtime, and a folder's range over
-//     the mtimes of the files in its subtree (NULL when it holds none).
+//     the mtimes of the files in its subtree (NULL when it holds none). An
+//     mtime at or before the epoch is unknown: a leaf's own are then NULL,
+//     and a folder's range leaves it out.
 //   - A file's ext is the ASCII-lowercased text after the last '.' of its
 //     name, NULL when there is none or the only '.' is the first byte; its
 //     file_kind defaults to other. Other kinds have neither.
@@ -23,7 +25,8 @@
 //     the node names a category or triage; is_group is the node's Group.
 //   - Every folder has a dir_stats row: dirs, files, symlinks, specials,
 //     unreadable folders, and mount boundaries below it (itself excluded);
-//     by_kind and by_year ({"<kind or UTC year>":{"files":n,"bytes":n}}) over
+//     by_kind and by_year ({"<kind or UTC year>":{"files":n,"bytes":n}}, the
+//     year "0" for the files of an unknown mtime) over
 //     its subtree's files, with only non-empty keys; signals {} and
 //     indicators [] (no rules run).
 //   - by_family is the folder's composition with all four families (design
@@ -206,9 +209,10 @@ type node struct {
 	children []*node
 	id       domain.EntryID
 
-	totalBytes, totalFiles                              int64
+	totalBytes, totalFiles int64
+	// newest and oldest span the files with a known time (dated).
 	newest, oldest                                      int64
-	hasFiles                                            bool
+	dated                                               bool
 	dirs, files, symlinks, specials, unreadable, mounts int64
 	partial                                             bool
 	byKind                                              map[domain.FileKind]Counts
@@ -534,7 +538,7 @@ func aggregate(n *node) {
 			n.partial = n.partial || c.partial || c.Unreadable
 			n.totalBytes += c.totalBytes
 			n.totalFiles += c.totalFiles
-			if c.hasFiles {
+			if c.dated {
 				n.addRange(c.oldest, c.newest)
 			}
 			mergeInto(n.byKind, c.byKind)
@@ -546,10 +550,13 @@ func aggregate(n *node) {
 			n.files++
 			n.totalBytes += c.Size
 			n.totalFiles++
-			mt := c.MTime.UnixNano()
-			n.addRange(mt, mt)
+			if mt := c.MTime.UnixNano(); mt > 0 {
+				n.addRange(mt, mt)
+				addTo(n.byYear, strconv.Itoa(c.MTime.UTC().Year()), one)
+			} else {
+				addTo(n.byYear, "0", one) // an unknown time: at or before the epoch
+			}
 			addTo(n.byKind, c.fileKind(), one)
-			addTo(n.byYear, strconv.Itoa(c.MTime.UTC().Year()), one)
 			addTo(n.byFamily, fileFamily(c), one)
 		case c.Kind == domain.EntrySymlink:
 			n.symlinks++
@@ -561,8 +568,8 @@ func aggregate(n *node) {
 }
 
 func (n *node) addRange(oldest, newest int64) {
-	if !n.hasFiles {
-		n.oldest, n.newest, n.hasFiles = oldest, newest, true
+	if !n.dated {
+		n.oldest, n.newest, n.dated = oldest, newest, true
 		return
 	}
 	n.oldest = min(n.oldest, oldest)
@@ -635,15 +642,15 @@ func (w writer) write(n *node, path string, parent any) error {
 	case domain.EntryDirectory:
 		mainK = mainKind(n.byKind)
 		totalBytes, totalFiles = n.totalBytes, n.totalFiles
-		if n.hasFiles {
+		if n.dated {
 			newest, oldest = n.newest, n.oldest
 		}
 	case domain.EntryFile:
 		extV, fileKind = ext(n.name), string(n.fileKind())
 		totalBytes, totalFiles = n.Size, 1
-		newest, oldest = n.MTime.UnixNano(), n.MTime.UnixNano()
+		newest, oldest = ownTime(n.MTime), ownTime(n.MTime)
 	default:
-		newest, oldest = n.MTime.UnixNano(), n.MTime.UnixNano()
+		newest, oldest = ownTime(n.MTime), ownTime(n.MTime)
 	}
 	if n.Kind == domain.EntrySymlink {
 		linkText = blob(n.LinkText)
@@ -696,6 +703,15 @@ func (w writer) write(n *node, path string, parent any) error {
 		if err := w.write(c, c.Path, id); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ownTime is a file's or leaf's own newest (and oldest) time: its
+// modification time, or NULL when it is at or before the epoch (unknown).
+func ownTime(t time.Time) any {
+	if ns := t.UnixNano(); ns > 0 {
+		return ns
 	}
 	return nil
 }

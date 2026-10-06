@@ -82,7 +82,7 @@ func memberRows(ctx context.Context, tx *sql.Tx, pol *rules.Policy, where string
 		r.Path = append(append(archivePath[:len(archivePath):len(archivePath)], '!'), mpath...)
 		r.State, r.EffDecision = "present", domain.Decision(eff)
 		r.ContentState = domain.ContentState(state.String)
-		r.MTime = nsTime(mtime)
+		r.MTime = search.NsTime(mtime)
 		switch domain.MemberKind(kind) {
 		case domain.MemberDirectory:
 			r.Kind = domain.EntryDirectory
@@ -103,13 +103,6 @@ func memberRows(ctx context.Context, tx *sql.Tx, pol *rules.Policy, where string
 		return nil, fmt.Errorf("api: members: %w", err)
 	}
 	return out, nil
-}
-
-func nsTime(ns sql.NullInt64) time.Time {
-	if !ns.Valid {
-		return time.Time{}
-	}
-	return time.Unix(0, ns.Int64).UTC()
 }
 
 // memberAgg sums the members below a member folder or an archive.
@@ -144,11 +137,9 @@ func (a *memberAgg) add(pol *rules.Policy, kind string, name []byte, size int64,
 	f := a.b.families[fam]
 	f.add(one)
 	a.b.families[fam] = f
-	if mtime.Valid {
-		y := time.Unix(0, mtime.Int64).UTC().Year()
-		c := a.b.years[y]
-		c.add(one)
-		a.b.years[y] = c
+	y := unknownYear
+	if t := search.NsTime(mtime); search.KnownTime(t) {
+		y = t.Year()
 		if !a.dated || mtime.Int64 > a.newest {
 			a.newest = mtime.Int64
 		}
@@ -157,6 +148,9 @@ func (a *memberAgg) add(pol *rules.Policy, kind string, name []byte, size int64,
 		}
 		a.dated = true
 	}
+	c := a.b.years[y]
+	c.add(one)
+	a.b.years[y] = c
 	switch st := domain.ContentState(state.String); {
 	case !state.Valid, st == domain.ContentUniqueSize, st == domain.ContentUnreadable:
 	case st == domain.ContentHashed, st == domain.ContentSampled:

@@ -3,7 +3,9 @@ package api
 import (
 	"crypto/sha256"
 	"fmt"
+	"reflect"
 	"testing"
+	"time"
 
 	"precious/internal/domain"
 	"precious/internal/index/indextest"
@@ -84,6 +86,69 @@ func TestR2_9_4ZipMemberNamesDecodeFromCodePage850(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].Name != `Anota\x87\xE4es.txt` ||
 		page.Items[0].Path != `Docs/pacote.tar!Relat\xA2rios/Anota\x87\xE4es.txt` {
 		t.Errorf("tar member: %+v", page.Items)
+	}
+}
+
+// 9.5 (A5): a modification time at or before the epoch is unknown. A
+// folder holding an epoch file and 2004 files has 2004 as its oldest and
+// newest year, and its by_year lists 2004, then a null year for the epoch
+// file, summing to the totals; the epoch file's own times are null. The
+// same holds for a member folder (a member without a time included) and for
+// the home breakdown.
+func TestR2_9_5UnknownDatesAreNull(t *testing.T) {
+	e := newEnv(t)
+	epoch, y2004 := time.Unix(0, 0), time.Date(2004, 6, 1, 12, 0, 0, 0, time.UTC)
+	s := indextest.Seed(t, e.st, indextest.Tree{Source: "pen", CreateSource: true, MountPoint: "/media/pen",
+		Nodes: []indextest.Node{
+			{Path: "Pasta/velho.jpg", Size: 70, MTime: epoch},
+			{Path: "Pasta/novo.jpg", Size: 30, MTime: y2004},
+			{Path: "Pasta/pacote.zip", Size: 100, MTime: y2004},
+		}})
+	arc := s.SeedArchive(e.st, "Pasta/pacote.zip", indextest.Archive{Format: domain.ArchiveZip, Members: []indextest.Member{
+		{Path: "f/x.txt", Size: 9, MTime: epoch, Content: indextest.Content{State: domain.ContentPending}},
+		{Path: "f/y.txt", Size: 1, MTime: y2004, Content: indextest.Content{State: domain.ContentPending}},
+		{Path: "f/z.txt", Size: 2, Content: indextest.Content{State: domain.ContentPending}},
+	}})
+	type yearRes struct {
+		Year  *int  `json:"year"`
+		Files int64 `json:"files"`
+		Bytes int64 `json:"bytes"`
+	}
+	type detail struct {
+		Entry row `json:"entry"`
+		Stats *struct {
+			ByYear []yearRes `json:"by_year"`
+		} `json:"stats"`
+	}
+	y := 2004
+	when := y2004.Format(time.RFC3339)
+	for _, c := range []struct {
+		ref  string
+		want []yearRes
+	}{
+		{s.ID("Pasta").String(), []yearRes{{&y, 2, 130}, {nil, 1, 70}}},
+		{domain.Ref{Member: arc.Member("f")}.String(), []yearRes{{&y, 1, 1}, {nil, 2, 11}}},
+	} {
+		var d detail
+		e.get(t, "/api/entries/"+c.ref, 200, &d)
+		if d.Entry.Newest == nil || *d.Entry.Newest != when || d.Entry.Oldest == nil || *d.Entry.Oldest != when ||
+			d.Stats == nil || !reflect.DeepEqual(d.Stats.ByYear, c.want) {
+			t.Errorf("%s: newest %v oldest %v stats %+v", c.ref, d.Entry.Newest, d.Entry.Oldest, d.Stats)
+		}
+	}
+	for _, ref := range []string{s.ID("Pasta/velho.jpg").String(), domain.Ref{Member: arc.Member("f/x.txt")}.String()} {
+		var d detail
+		e.get(t, "/api/entries/"+ref, 200, &d)
+		if d.Entry.MTime != nil || d.Entry.Newest != nil || d.Entry.Oldest != nil {
+			t.Errorf("%s: mtime %v newest %v oldest %v; want null", ref, d.Entry.MTime, d.Entry.Newest, d.Entry.Oldest)
+		}
+	}
+	var home struct {
+		ByYear []yearRes `json:"by_year"`
+	}
+	e.get(t, "/api/home", 200, &home)
+	if want := []yearRes{{&y, 2, 130}, {nil, 1, 70}}; !reflect.DeepEqual(home.ByYear, want) {
+		t.Errorf("home by_year %+v", home.ByYear)
 	}
 }
 

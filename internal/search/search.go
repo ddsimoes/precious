@@ -138,7 +138,8 @@ type Row struct {
 	// TotalBytes and TotalFiles are a file's size and 1, a folder's subtree
 	// sums.
 	TotalBytes, TotalFiles int64
-	// MTime, Newest, and Oldest are zero when unknown.
+	// MTime, Newest, and Oldest are zero when NULL; one at or before the
+	// epoch is kept as stored but is not known either (KnownTime).
 	MTime, Newest, Oldest time.Time
 	State                 string // present, missing, unreadable
 	Partial               bool
@@ -413,7 +414,7 @@ func ScanRow(rows *sql.Rows, lead ...any) (Row, error) {
 	r.Family = domain.Family(family.String)
 	r.Triage = domain.Triage(triage.String)
 	r.Group, r.Veto, r.Partial, r.MountBoundary = group, veto, partial, boundary
-	r.MTime, r.Newest, r.Oldest = nsTime(mtime), nsTime(newest), nsTime(oldest)
+	r.MTime, r.Newest, r.Oldest = NsTime(mtime), NsTime(newest), NsTime(oldest)
 	r.State = state
 	r.Decision = domain.Decision(decide.String)
 	r.EffDecision = domain.Decision(eff)
@@ -471,12 +472,20 @@ func composition(raw []byte) ([]FamilyAmount, error) {
 	return out, nil
 }
 
-func nsTime(ns sql.NullInt64) time.Time {
+// NsTime is a stored time, the zero time when NULL. A time at or before
+// the epoch is kept as stored, since orders and cursors read the stored
+// column, but it is not known (KnownTime).
+func NsTime(ns sql.NullInt64) time.Time {
 	if !ns.Valid {
 		return time.Time{}
 	}
 	return time.Unix(0, ns.Int64).UTC()
 }
+
+// KnownTime reports whether t is a known modification time: neither zero
+// (NULL) nor at or before the epoch, which is a placeholder for a lost or
+// zeroed time, not a date.
+func KnownTime(t time.Time) bool { return t.After(time.Unix(0, 0)) }
 
 // LoadTags fills the own tag IDs of items, ascending, with one indexed
 // read.

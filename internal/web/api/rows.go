@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -84,7 +85,7 @@ func rowJSON(r *search.Row) entryRow {
 		Category: nonEmpty(&r.Category), Family: nonEmpty(&r.Family), Triage: nonEmpty(&r.Triage),
 		Group: r.Group, Veto: r.Veto,
 		Size: r.Size, TotalBytes: r.TotalBytes, TotalFiles: r.TotalFiles,
-		MTime: nonZero(&r.MTime), Newest: nonZero(&r.Newest), Oldest: nonZero(&r.Oldest),
+		MTime: known(&r.MTime), Newest: known(&r.Newest), Oldest: known(&r.Oldest),
 		State: r.State, Partial: r.Partial, MountBoundary: r.MountBoundary,
 		Decision: nonEmpty(&r.Decision), EffDecision: r.EffDecision,
 		TagIDs:       tags,
@@ -114,9 +115,10 @@ func nonEmpty[T ~string](p *T) *T {
 	return p
 }
 
-// nonZero is p, or nil for the zero time (unknown, null in JSON).
-func nonZero(p *time.Time) *time.Time {
-	if p.IsZero() {
+// known is p, or nil for a time that is not known (search.KnownTime): NULL,
+// or at or before the epoch (null in JSON).
+func known(p *time.Time) *time.Time {
+	if !search.KnownTime(*p) {
 		return nil
 	}
 	return p
@@ -147,11 +149,17 @@ type kindAmount struct {
 	Files int64           `json:"files"`
 }
 
+// yearAmount is one year of a by_year breakdown; Year is null for the
+// files without a known modification time.
 type yearAmount struct {
-	Year  int   `json:"year"`
+	Year  *int  `json:"year"`
 	Bytes int64 `json:"bytes"`
 	Files int64 `json:"files"`
 }
+
+// unknownYear is the by_year key of the files without a known time, as
+// dir_stats stores it.
+const unknownYear = 0
 
 // breakdowns sums dir_stats breakdowns: by_kind, by_year, and by_family.
 type breakdowns struct {
@@ -216,13 +224,19 @@ func (b *breakdowns) kindList() []kindAmount {
 	return out
 }
 
-// yearList lists the years ascending.
+// yearList lists the years ascending, then the unknown year.
 func (b *breakdowns) yearList() []yearAmount {
-	out := make([]yearAmount, 0, len(b.years))
-	for y, a := range b.years {
-		out = append(out, yearAmount{Year: y, Bytes: a.Bytes, Files: a.Files})
+	years := slices.Sorted(maps.Keys(b.years))
+	out := make([]yearAmount, 0, len(years))
+	for _, y := range years {
+		if y != unknownYear {
+			a := b.years[y]
+			out = append(out, yearAmount{Year: &y, Bytes: a.Bytes, Files: a.Files})
+		}
 	}
-	slices.SortFunc(out, func(x, y yearAmount) int { return cmp.Compare(x.Year, y.Year) })
+	if a, ok := b.years[unknownYear]; ok {
+		out = append(out, yearAmount{Bytes: a.Bytes, Files: a.Files})
+	}
 	return out
 }
 
