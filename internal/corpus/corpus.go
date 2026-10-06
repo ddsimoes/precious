@@ -9,10 +9,18 @@
 // unreadable folders. Where the corpus asserts it, an entry also carries the
 // category, triage, group, veto, and file kind the rules must give it (design
 // D9, §6.6); the assertions are the table in expect.go.
+//
+// The ground truth also holds what a complete hashing run must find (R2
+// design D19): each file's SHA-256, the members of each archive, the
+// duplicate groups, the folder and archive relations the corpus declares,
+// and the Gems sections. See truth.go. LargeFiles adds synthfs-only files
+// of at least 16 MiB for the hashing tests.
 package corpus
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -29,6 +37,10 @@ type Tree struct {
 	// rootMTime is the root folder's modification time.
 	rootMTime time.Time
 	expects   []expect
+	// relations are the declared relations, resolved by finish.
+	relations []relation
+	// gems are the Gems declarations (truth.go).
+	gems gemDecls
 }
 
 // item is one entry of a tree, in creation order: every folder comes before
@@ -36,8 +48,10 @@ type Tree struct {
 type item struct {
 	path       string
 	kind       domain.EntryKind
-	data       []byte // file content
-	target     string // symlink text
+	data       []byte   // file content
+	sum        [32]byte // file content's SHA-256
+	archive    *archive // a file the archive readers open, else nil
+	target     string   // symlink text
 	mtime      time.Time
 	unreadable bool
 }
@@ -101,9 +115,19 @@ func (t *Tree) Size() int64 {
 	return n
 }
 
-// GroundTruth is what a complete scan of the tree must find.
+// GroundTruth is what a complete scan of the tree must find, and what a
+// complete hashing run must find in it (truth.go).
 type GroundTruth struct {
 	Entries []Entry `json:"entries"`
+	// Duplicates are the duplicate groups: every non-empty content with at
+	// least two copies among the indexed files and archive members.
+	Duplicates []Duplicate `json:"duplicates"`
+	// Members lists each archive's members, by archive path.
+	Members []Archive `json:"members"`
+	// Relations are the declared relations (a lower bound: relate may find
+	// more).
+	Relations []Relation `json:"relations"`
+	Gems      Gems       `json:"gems"`
 }
 
 // Entry is one ground-truth entry. Size is set for files only. Category,
@@ -122,6 +146,8 @@ type Entry struct {
 	Group      *bool            `json:"group,omitempty"`
 	Veto       *bool            `json:"veto,omitempty"`
 	FileKind   string           `json:"file_kind,omitempty"`
+	// SHA256 is a file's content digest, in hex; empty for other kinds.
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // RawPath returns the entry's raw '/'-joined path bytes.
@@ -153,6 +179,7 @@ items:
 		if it.kind == domain.EntryFile {
 			size := int64(len(it.data))
 			e.Size = &size
+			e.SHA256 = hex.EncodeToString(it.sum[:])
 		}
 		if x, ok := asserted[it.path]; ok {
 			if x.category != "" {
@@ -166,7 +193,8 @@ items:
 		}
 		entries = append(entries, e)
 	}
-	return GroundTruth{Entries: entries}
+	return GroundTruth{Entries: entries, Duplicates: t.duplicates(), Members: t.members(),
+		Relations: t.relationTruth(), Gems: t.gemTruth()}
 }
 
 // WriteFile writes the ground truth as indented JSON.
@@ -201,6 +229,9 @@ func (d *def) add(it item) {
 	}
 	if dir := path.Dir(it.path); dir != "." {
 		d.mkdirs(dir)
+	}
+	if it.kind == domain.EntryFile {
+		it.sum = sha256.Sum256(it.data)
 	}
 	d.index[it.path] = len(d.items)
 	d.items = append(d.items, it)
@@ -281,8 +312,9 @@ func (d *def) data(p string) []byte {
 
 // finish gives every folder without its own modification time the newest
 // modification time among its contents, checks the assertions against the
-// entries, and returns the tree.
-func (d *def) finish(expects []expect) *Tree {
+// entries, resolves the declared relations, checks the Gems declarations,
+// and returns the tree.
+func (d *def) finish(expects []expect, rels []relationDecl, gems gemDecls) *Tree {
 	t := &Tree{items: d.items, expects: expects}
 	explicit := make([]bool, len(d.items))
 	for i, it := range d.items {
@@ -314,5 +346,7 @@ func (d *def) finish(expects []expect) *Tree {
 			panic(fmt.Sprintf("corpus: file kind asserted for %s, which is not a file", displayPath(x.path)))
 		}
 	}
+	t.relations = t.resolve(rels)
+	t.gems = t.checkGems(gems)
 	return t
 }
