@@ -578,12 +578,138 @@ Both measurements are warm. A warm walk is the fastest baseline, so the warm rat
 ## Hashing
 
 <!-- owner: H -->
-This section will document how Precious reads file content to find copies: which files are read and in what order, samples of large files, reading safety, the hashing jobs and commands (`start-hash`, `check-now`), coverage, progress, cancelling, and the `[hashing]` settings.
+Precious finds copies by reading file content and computing its SHA-256 digest. Hashing only reads; it never writes to a source, and it opens every file read-only, without updating its access time where the filesystem allows that.
+
+### When it runs
+
+- **After every successful scan**, a hashing job starts for every online source, not only the scanned one, because a new file can share its size with a file on another source.
+- **At server start**, every online source gets a hashing job.
+- **On request**, `start-hash` with `{"source_id":"…"}` starts the source's job (202, or the running job with `"coalesced":true`; 404 `unknown_source`; 409 `source_offline`).
+
+A source has at most one hashing job at a time. Hashing is background work: on each disk it gives way to scans and to work you are waiting for, after every commit and after every `hashing.yield_bytes` read, even in the middle of a file. A source whose volume is not mounted is not hashed, and its digests stay as they were; its files still count as copies of files elsewhere.
+
+### Which files are read
+
+Each job starts by grouping, without reading anything, every present non-empty file and every file inside a listed archive, on every source, by size. Hard links to one file count once.
+
+- A file whose size no other file shares has **no other copy** and is never read.
+- Zero-byte files are never read and are never duplicates.
+- A file whose size is shared is read, unless its digest is already known.
+
+A digest stays valid until a rescan finds that the file's size, modification time, change time, or identity changed; the rescan then discards it. A file that did not change is never read again, across jobs and restarts.
+
+### Reading order
+
+1. The source's zip archives that are not listed yet: only their central directories (see [Archives](#archives)).
+2. Files of at least 1 MiB, and every tar, tar.gz, tar.bz2, gzip, and bzip2 archive, largest first. A file of at least 16 MiB is first compared by the digest of three 64 KiB samples, at its start, middle, and end; it is read in full only when another file of its size has the same samples. Equal samples alone never make two files duplicates.
+3. Smaller files inside pairs of folders that look like copies of each other by their file sizes, such as `Fotos` and `Fotos - Copia`, folder by folder.
+4. Every other smaller file, folder by folder.
+
+### Reading safety
+
+Each file is reached from the source root one folder at a time, never through a symbolic link or across a mount, and opened only when its size, times, and identity still match its index row. Content is read in `hashing.read_chunk_bytes` chunks. A digest is kept only when every byte was read, the file ended at its indexed size, and the open file still showed the same size, times, and identity at the end. Otherwise:
+
+- a file that changed, or no longer matches its row, is **not checked**; a rescan updates it and the next job reads it again;
+- a file that cannot be opened or read (permissions, I/O errors) is **unreadable**.
+
+Results are written at most 64 files at a time. Each write checks again that the file's index row has the size, times, and identity the read saw; a rescan that updated the row in the meantime wins, and the result is dropped.
+
+### Coverage
+
+Coverage is published per source and for all sources together (Home, and the detail of every claim):
+
+| Figure | Files and bytes |
+|---|---|
+| could have a copy | every file whose size is shared, or that was read |
+| checked | files with a digest, and large files whose samples differ from every other file of their size |
+| not checked | files still to read, and files that changed while read |
+| unreadable | files that could not be read |
+
+A file inside a listed archive counts under the archive's source. A file with no other copy by size is not in these figures: its claim needs no read. Every "no other copy" claim states the checked share of all sources, because a copy can be anywhere. Archives Precious does not open (7z, rar, partly read or damaged ones) count as plain files, so a file inside them is never seen as a copy.
+
+### Check now
+
+`check-now` with `{"entry_ids":["12","m45"]}` (one or two folders, archive files, or folders inside archives) hashes what is not checked yet inside them before any other hashing on their disks, for example to compare two folders while the first hashing run has not reached their small files. It answers 202 with `{"jobs":[{"job_id","state","coalesced"}]}`, one job per source; a second request for the same source adds its folders to the job already waiting or running. A file is 400 `invalid_request`, an unknown ID 404, and a folder on an unmounted source 409 `source_offline`. The rest of the source continues with its regular hashing job afterwards.
+
+### Progress and cancelling
+
+Hashing jobs have kind `hash` (and `hash_now` for `check-now`). Their progress, through `GET /api/jobs/{id}` and `GET /api/events`:
+
+| Key | Meaning |
+|---|---|
+| `phase` | 1 listing zip archives, 2 large files and archives, 3 small files |
+| `candidate_files`, `candidate_bytes` | the source's files that could have a copy |
+| `checked_files`, `checked_bytes` | of those, the files checked so far |
+| `read_bytes` | bytes this job has read |
+| `archives_listed` | archives this job has listed |
+| `unreadable` | the source's files that could not be read |
+
+Cancelling a hashing job (`cancel-job`) abandons the file being read and keeps every result already written; the next job reads only what is not checked yet. While hashing runs, duplicate folders and the review lists are recomputed every `duplicates.refresh_interval`, and once more when the job ends.
+
+### Cost on large archives
+
+A zip costs a read of its central directory, plus a read of each member whose size another file shares. A tar, tar.gz, tar.bz2, gzip, or bzip2 archive is read once from start to end, whatever its size, because its members are only known by reading it; its own digest comes from that same read. On an archive of hundreds of gigabytes of tar.gz, the first hashing run therefore takes hours; it is done once, and an archive that does not change is never read again.
 
 ## Archives
 
 <!-- owner: A -->
-This section will document the archives Precious opens (zip, tar, tar.gz, tar.bz2, gzip, and bzip2), their budgets and outcomes, what stays unopened, and that nothing is ever unpacked to disk.
+Precious opens archives in memory to list their members, so that a photo inside a zip counts as a copy of the same photo elsewhere, and so that you can browse and view the members. Nothing is ever unpacked to disk, not even to a temporary file, and the archive file itself is only read.
+
+### Formats
+
+An archive is recognized by its name and confirmed by its first bytes:
+
+| Name | Format |
+|---|---|
+| `.zip` | zip, stored or deflate |
+| `.tar` | tar |
+| `.tar.gz`, `.tgz` | tar.gz |
+| `.tar.bz2`, `.tbz2`, `.tbz` | tar.bz2 |
+| `.gz` | a single gzip-compressed file, named without `.gz` |
+| `.bz2` | a single bzip2-compressed file, named without `.bz2` |
+
+One trailing `.old`, `.bak`, or `.orig` is ignored, so `fotos.zip.bak` is a zip. Letter case does not matter.
+
+**What stays unopened:** 7z, rar, and every other format; Office documents and `.jar` files, although they are zips inside; encrypted zips; and archives inside archives, which are members like any other file. An unopened archive is a plain file: it is hashed when its size is shared, and its contents are not seen.
+
+### How each format is read
+
+- **zip:** only the central directory is read to list the members. A member is read later, when another file shares its size.
+- **tar, tar.gz, tar.bz2, gzip, bzip2:** the archive is read once from start to end, and every member is listed and hashed in that pass.
+
+An archive is listed once. Its listing and its members' digests are kept until a rescan finds that the archive file changed; the next hashing job then lists it again.
+
+### Budgets
+
+Reading one archive stops at the first of these budgets, from `[archives]` (see [Configuration reference](#configuration-reference)):
+
+| Setting | Stops when |
+|---|---|
+| `archives.max_members` | the archive holds more members (folders included) |
+| `archives.max_unpacked_bytes` | its members unpack to more bytes |
+| `archives.max_ratio` | its members unpack to more than this many times the bytes read from the archive, plus 64 MiB, as a zip bomb does |
+| `archives.max_time` | reading it takes longer |
+
+An archive stopped by a budget is **partial**, names the budget it reached, and gets no members.
+
+### Outcomes
+
+| State | Meaning | Members |
+|---|---|---|
+| complete | every member listed | yes |
+| partial | a budget was reached | none |
+| rejected | a member path is absolute or leaves the archive (`..`), two members share a path, or a member is both a file and a folder; the member is named | none |
+| encrypted | a zip member is encrypted | none |
+| unsupported | not really an archive of its format, a compression method other than store or deflate, or a multi-disk zip | none |
+| corrupt | a checksum or size mismatch, data cut off, or another format error | none |
+| changed | the file changed while it was read | none |
+| unreadable | the file could not be read | none |
+
+Every state but complete leaves the archive a plain file. Member names are kept as their raw bytes, symbolic links inside archives keep their text and are never followed, and members have no decision or tags of their own: they follow their archive's.
+
+### Viewing members
+
+A member opens in the viewer under the same types and safety rules as a file, read from the archive in memory. A member stored without compression in a zip supports byte ranges, so a video can seek; a compressed zip member up to `archives.view_max_bytes` is unpacked into memory and supports ranges too; a larger one, and every member of a tar-family archive, is streamed from the start. When the archive file no longer matches the index, the viewer answers 409 `invalid_entry_state` until a rescan.
 
 ## Classification rules
 

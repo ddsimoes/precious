@@ -496,6 +496,14 @@ type Copy struct{ Ref domain.Ref; SourceID domain.SourceID; Path string; PathB64
 func Copies(ctx context.Context, q store.Queryer, ref domain.Ref, cursor string, limit int) ([]Copy, int, string, error)
 type Opened struct{ Size int64; ModTime time.Time; Content io.ReadCloser; Seeker io.ReadSeeker /* nil: no ranges */ }
 func (s *Service) OpenMember(ctx context.Context, q store.Queryer, ref domain.Ref) (Opened, error)   // 409 invalid_entry_state, source_offline
+// The identity-checked open shared with the viewer (D17); slice Q replaces viewer.openAt with OpenAt.
+type Row struct{ Path []byte; Size int64; MtimeNs, CtimeNs, Ino sql.NullInt64 }   // the entries row's facts
+func Matches(r Row, info fsaccess.EntryInfo, caps fsaccess.Capabilities) bool     // the scanner's unchanged test, ctime included
+func OpenAt(root fsaccess.Dir, r Row, caps fsaccess.Capabilities) (fsaccess.File, fsaccess.EntryInfo, error)  // 409 invalid_entry_state
+type Archive struct{ Entry domain.EntryID; Source domain.SourceID; Format domain.ArchiveFormat; Name []byte; Row Row
+    File fsaccess.File; Info fsaccess.EntryInfo }                                  // Close closes file and root
+func OpenArchive(ctx context.Context, q store.Queryer, src *sources.Service, id domain.EntryID) (*Archive, error)
+    // complete archive, entry row == listing identity == disk; 404, 409 invalid_entry_state, source_offline
 
 // internal/relations (slice R)
 const KindRelate jobs.Kind = "relate"
