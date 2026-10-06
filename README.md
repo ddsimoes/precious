@@ -64,7 +64,7 @@ Precious is in **early development**. Milestone R1 is complete: it was accepted 
 | Milestone | Scope | Status |
 |---|---|---|
 | **R1** Full index and explorer | Scanning and rescans, folder sizes and composition, classification rules, Home, Map, Search, detail panel, viewer, decisions and tags, sources with volume identity | ✅ Done |
-| **R2** Duplicates and gems | Content hashing, duplicate files and folders, a zip against its unpacked folder, folder comparison with the files unique to each side, choosing which copy to keep, opportunities, files with no other copy | Next |
+| **R2** Duplicates and gems | Content hashing, duplicate files and folders, a zip against its unpacked folder and browsing inside archives, folder comparison with the files unique to each side, opportunities, files with no other copy | Next |
 | **R3** Organizing | Moves and renames with undo, through one journaled, no-overwrite executor | Planned |
 | **R4** Cleanup | Cleanup plans, a reversible quarantine, a pre-delete check that every file has a verified copy, and purge | Planned |
 | **R5** Media dates | Photo and video dates from metadata, corrections, and organizing by date | Planned |

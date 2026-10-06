@@ -38,7 +38,7 @@ context: |
   - I3 No overwrite, through each platform's no-replace primitive (renameat2 RENAME_NOREPLACE,
     renamex_np RENAME_EXCL, MoveFileEx without replace); a filesystem without one is read-only;
     journal before each step; ambiguous outcomes stop for manual recovery.
-  - I4 Owner decisions, overrides, and keeper choices survive rescans and late results.
+  - I4 Owner decisions, tags, and overrides survive rescans and late results.
   - I5 Classification is not authorization. Keep is the protection: plans never remove a kept
     entry (even under a discarded ancestor), and bulk actions skip anything effectively kept.
   - I6 Lossless identity: names exactly as the platform gives them (bytes, or UTF-16 on Windows),

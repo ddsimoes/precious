@@ -60,7 +60,7 @@ These hold in every milestone. A design that needs to break one stops and record
 - **I1 Observation never mutates.** Scanning, hashing, archive listing, classification, and previews never write to a source.
 - **I2 Only explicit owner actions mutate.** The only code that renames, moves, or deletes in a source is one shared executor. It acts only for an approved cleanup plan (§10.1) or an organizing action the owner requested (§10.5), never on its own initiative.
 - **I3 No overwrite.** A move or restore never replaces an existing destination. It uses the platform's no-replace primitive: `renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL` on macOS, and `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows. A filesystem without one is read-only to Precious. Intent is journaled before each filesystem step. An ambiguous outcome stops for manual recovery and is never retried blindly.
-- **I4 Owner decisions survive.** Decisions, overrides, and keeper choices survive rescans, rule changes, and model results. No job writes an owner decision.
+- **I4 Owner decisions survive.** Decisions, tags, and overrides survive rescans, rule changes, and model results. No job writes an owner decision.
 - **I5 Classification is not authorization.** A suggestion never becomes a decision on its own. A kept entry is never removed by a plan, including when an ancestor is discarded, and no bulk action changes it.
 - **I6 Lossless identity.** Names are stored exactly as the platform gives them (bytes on Linux and macOS, UTF-16 on Windows, including sequences that are not valid text), with no case folding or Unicode normalization. They are displayed with invisible or invalid parts escaped. The browser addresses entries by ID, never by path.
 - **I7 Scope-honest claims.** "Duplicate" and "no other copy" are stated relative to the content that was actually hashed, and the interface shows how much was hashed. An unreadable folder is shown as unreadable, never as empty.
@@ -144,10 +144,10 @@ The owner's decision on an entry is one of: undecided (the default), keep, disca
 
 A *keep* is the owner's protection; there is no separate protection concept. Two rules make it safe:
 
-- **Bulk actions never change a keep.** A bulk action (from a review list, search results, a keeper rule, or a model threshold) skips every entry whose effective decision is keep, explicit or inherited, and reports what it skipped. Only an individual action on the entry itself changes a keep.
+- **Bulk actions never change a keep.** A bulk action (from a review list, search results, or a model threshold) skips every entry whose effective decision is keep, explicit or inherited, and reports what it skipped. Only an individual action on the entry itself changes a keep.
 - **Plans never remove a keep.** A plan never quarantines a kept entry, even when an ancestor is discarded (§10.1).
 
-In a duplicate group or a folder relation, the owner can choose a **keeper**. The other copies then get the suggestion discard, with evidence "copy of <keeper>". The tags of the other copies are added to the keeper.
+Duplicates and folder relations are information, not decisions. The owner decides each copy like any other entry, one by one or in bulk, whenever they choose. Deciding one copy never changes another copy's decision, suggestion, or tags, and Precious never picks a copy to keep.
 
 ### 6.8 Cleanup plans and organizing
 
@@ -247,11 +247,11 @@ Both local and cloud providers MUST work through the same contract. Configuratio
    - The rest of the plan proceeds. Nothing is ever quarantined "around" a kept entry.
 2. **Show before approval.** Before approval, the plan shows the operations, total bytes, file counts, and every warning. It also shows a light summary built only from data already computed, without reading any file: bytes with a known copy elsewhere, bytes with no known copy, and personal-material indicators.
 3. **Approval** freezes the plan. Changing it creates a new plan.
-4. **Duplicates are never removed together.** A plan never quarantines every copy of a duplicate group or both sides of a relation on the grounds that they are duplicates. Before quarantining a copy for that reason, the executor re-reads and verifies the keeper's content.
+4. **Duplicates are never removed together.** A plan never quarantines every copy of a duplicate group or both sides of a relation on the grounds that they are duplicates. Before quarantining a copy for that reason, the executor re-reads and verifies a copy that stays outside the plan.
 
 ### 10.2 Preflight and execution
 
-- **Preflight.** Writes are allowed only on sources with write permission. Before each operation, the executor re-checks the entry's identity (device, inode, size, modification time), that its subtree has gained no kept entry since approval (otherwise the item becomes blocked), and, for duplicates, the keeper. A changed entry is skipped and reported; the rest of the plan continues.
+- **Preflight.** Writes are allowed only on sources with write permission. Before each operation, the executor re-checks the entry's identity (device, inode, size, modification time), that its subtree has gained no kept entry since approval (otherwise the item becomes blocked), and, for a copy removed as a duplicate, that a copy outside the plan still holds the same content. A changed entry is skipped and reported; the rest of the plan continues.
 - **Mechanics.** Each operation is journaled first, then performed with a no-overwrite rename, then confirmed. After a crash, Precious reconciles the journal against both paths before doing anything else. An ambiguous item is marked for manual recovery.
 
 ### 10.3 Quarantine, restore, and purge
@@ -272,7 +272,7 @@ Organizing moves and renames entries to destinations chosen by the owner. It is 
 - **Expected use.** Interactive work: rescuing gems out of old folders, building a new structure, sending some entries in bulk and others one by one, renaming as they go.
 - **Destinations.** Folders inside a source on the same filesystem. Moves across filesystems are out of scope (§13).
 - **Safety.** Every move and rename obeys I3 (no overwrite, journal first, recovery) and I6. The owner can undo it. Collisions follow the destination filesystem's capabilities: on a case-insensitive or normalization-insensitive filesystem, `Foto.jpg` and `foto.jpg` are the same name.
-- **Folder copies.** Moving the files unique to a copy into its keeper is an organizing action (§11.6).
+- **Folder copies.** Moving the files unique to one copy of a folder into another copy is an organizing action (§11.6).
 - **Execution.** Moves and renames happen immediately, like in a file manager, and go into a history where each one can be undone. A bulk action first shows the list and any conflicts, then runs once confirmed.
 - **Later.** A staged mode, where the owner drafts a whole new structure and applies it at once, may come later if needed (§13).
 - **Milestone.** Organizing is delivered in R3, before cleanup (R4), which reuses its executor.
@@ -365,8 +365,8 @@ Ranked cards, each with bytes, count, and how sure the classification is. Each c
 ### 11.6 Compare: "Which copy do I keep?"
 
 - **Two folders side by side** (or a folder and an archive), in four groups: only on the left, only on the right, identical, and same name with different content.
-- **Actions:** choose the keeper, discard the other, and move the files unique to the other into the keeper (organizing, §10.5).
-- **Duplicate file groups:** choose a keeper per group or by a rule ("keep the copy under `/Fotos`", "keep the oldest path"). The rule is shown as the explicit list it resolves to.
+- **Actions:** decide either side or any file with the usual decision controls (§6.7), and move the files unique to one side into the other (organizing, §10.5).
+- **Duplicate file groups:** each group lists every copy with its path and decision. The owner decides the copies with the usual controls, one by one or in bulk.
 
 ### 11.7 Gems: "What is valuable?"
 
@@ -374,7 +374,7 @@ Ranked cards, each with bytes, count, and how sure the classification is. Each c
 - User material inside disposable groups (rescue candidates).
 - Files that exist only on one side of an `overlap` relation. Example: the one edited photo found only in `Fotos - Copia`.
 - Version families (R7).
-- Actions: keep, and move to a destination (organizing, §10.5).
+- Actions: the usual decision controls, and move to a destination (organizing, §10.5).
 
 ### 11.8 Detail panel
 
@@ -495,12 +495,12 @@ The new schema; full scan and rescan; folder aggregates; rules v2 (§8); the pla
 
 ### R2: Duplicates, opportunities, and gems
 
-Background hashing over the index (archives included); duplicate groups and folder relations; Opportunities; review lists; Compare; keeper choice; Gems without version families.
+Background hashing over the index (archives included); duplicate groups and folder relations; Opportunities; review lists; Compare; Gems without version families. Owner category overrides (§6.6), owner-marked groups (§6.5), and scheduled rescans (§7) follow in a short step after R2, before R3.
 
 - **R2.1** Hashing finds every duplicate group in the corpus and shows hashing coverage while it runs.
 - **R2.2** `Fotos - Copia` against `Fotos` shows the files unique to each side, including the edited photo found only in the copy.
 - **R2.3** A zip and its unpacked folder are shown as the same.
-- **R2.4** Choosing a keeper suggests discard for the other copies, never for the keeper, and adds the other copies' tags to the keeper.
+- **R2.4** Deciding a copy from a duplicate group, Compare, a review list, or Gems uses the same decision controls as the detail panel and changes nothing on the other copies: no decision, suggestion, or tag.
 - **R2.5** Each opportunity card's bytes equal the sum of its review list.
 - **R2.6** Gems lists the corpus's unique personal photos and documents, and the spreadsheet inside `Microsoft Office`.
 - **R2.7** "No other copy" claims state the hashed share of the content.
@@ -508,7 +508,7 @@ Background hashing over the index (archives included); duplicate groups and fold
 
 ### R3: Organizing
 
-Write permission per source; the shared executor (journal first, no-overwrite rename, crash recovery); immediate moves and renames with an undo history; bulk moves with a preview of the list and conflicts; rescuing kept entries out of folders; moving the files unique to a copy into its keeper (§10.5).
+Write permission per source; the shared executor (journal first, no-overwrite rename, crash recovery); immediate moves and renames with an undo history; bulk moves with a preview of the list and conflicts; rescuing kept entries out of folders; moving the files unique to one copy of a folder into another copy (§10.5).
 
 - **R3.1** A move or rename never overwrites; a destination that appears during execution stops that item.
 - **R3.2** A crash between journal and rename recovers without moving anything twice; an ambiguous item is marked for manual recovery.
