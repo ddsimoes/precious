@@ -16,7 +16,7 @@ Precious SHALL offer these opportunity cards, for one source or all sources (§1
 - caches, temporary data, and generated artifacts;
 - partial downloads, empty folders, and zero-byte files.
 
-Each card SHALL show its bytes, its row count, and its basis (rules or same content), ranked by bytes.
+Each card SHALL show its bytes, its row count, and its basis (rules or same content), ranked by bytes. A card whose open rows hold no bytes SHALL lead with its row count instead of its bytes.
 
 #### Scenario: Cards on the corpus
 - **WHEN** the corpus is scanned and hashed to completion and the owner opens Opportunities
@@ -25,6 +25,10 @@ Each card SHALL show its bytes, its row count, and its basis (rules or same cont
 #### Scenario: One source
 - **WHEN** the owner switches Opportunities to one source
 - **THEN** every card counts only that source's rows
+
+#### Scenario: A card of empty files and folders
+- **WHEN** every open row of the partial downloads, empty folders, and zero-byte files card holds no bytes
+- **THEN** the card leads with its count of items, not with "0 B"
 
 ### Requirement: A card's bytes equal its review list
 Each card SHALL open a review list whose rows are the card's open rows, and the card's bytes SHALL equal the sum of the bytes of those rows. No byte SHALL be counted twice in one card (§11.4).
@@ -38,7 +42,7 @@ Each card SHALL open a review list whose rows are the card's open rows, and the 
 - **THEN** the programs card has one row for `Backup_PC_2004/C/WINDOWS`, and `system32` adds no bytes of its own
 
 ### Requirement: Review list rows
-A row SHALL be the outermost entry that matches its card: a group, a folder, an archive, or a file. In the duplicates card, a row SHALL be a folder relation, or a duplicate group of files outside every listed relation, and its bytes are its redundant bytes. Each row SHALL show its size, dates, suggestion with its source, and a one-line summary of what it holds (§11.5).
+A row SHALL be the outermost entry that matches its card: a group, a folder, an archive, or a file. In the duplicates card, a row SHALL be a folder relation, or a duplicate group of files outside every listed relation, and its bytes are its redundant bytes. Each row SHALL show its size, dates, suggestion with its source, and a one-line summary of what it holds (§11.5). A row's file count SHALL count files as the Map does, without the members of archives. A row of the archives-already-unpacked card SHALL name the folder that holds the archive's content and open Compare on the two.
 
 #### Scenario: Evidence summary
 - **WHEN** the owner opens the programs card
@@ -47,6 +51,10 @@ A row SHALL be the outermost entry that matches its card: a group, a folder, an 
 #### Scenario: A duplicate group row
 - **WHEN** the owner opens the duplicates card
 - **THEN** one row lists `Downloads/Setup.exe` and `Downloads/Setup(1).exe` with each copy's path and decision, and its bytes are one copy's size
+
+#### Scenario: Where an archive was unpacked
+- **WHEN** the owner opens the archives-already-unpacked card
+- **THEN** the row for `Downloads/eMule0.47c-Installer.zip` names `Downloads/emule-0.47c`, and its Compare link opens Compare on the zip and that folder
 
 ### Requirement: Decided rows leave the list
 A row SHALL be open while its entry's effective decision is undecided. A duplicates row SHALL be open while at least two of its copies are undecided. The list SHALL let the owner also show the rows that are no longer open.
@@ -60,11 +68,15 @@ A row SHALL be open while its entry's effective decision is undecided. A duplica
 - **THEN** the discarded row is listed again with its decision
 
 ### Requirement: Review lists work from the keyboard
-A review list SHALL let the owner keep, discard, or set later the selected row, and move to the next or previous row, from the keyboard alone, and SHALL ignore those keys while typing in a field or inside a dialog (§11.5).
+A review list SHALL let the owner keep, discard, or set later the selected row, and move to the next or previous row, from the keyboard alone, and SHALL ignore those keys while typing in a field or inside a dialog (§11.5). When a decision makes the selected row leave the list, the row that takes its place SHALL be selected. Moving to the next row past the last loaded row SHALL load the next page and select its first row.
 
 #### Scenario: Deciding with the keyboard
-- **WHEN** the owner selects the first row of the system junk list and presses the discard key, then the next-row key
-- **THEN** the first row is discarded and the following row is selected
+- **WHEN** the owner selects the first row of the system junk list and presses the discard key twice
+- **THEN** the first two rows are discarded, and the row that followed them is selected
+
+#### Scenario: Moving past the loaded rows
+- **WHEN** the owner presses the next-row key on the last loaded row of a list that has more rows
+- **THEN** the next page is loaded and its first row is selected
 
 ### Requirement: Bulk decisions from a review list
 Every review list except duplicates SHALL let the owner select all of its open rows. The confirmation SHALL show the count, the bytes, and the kept entries, and the decision SHALL skip every kept entry and report it, like any bulk decision (§11.5, I5).

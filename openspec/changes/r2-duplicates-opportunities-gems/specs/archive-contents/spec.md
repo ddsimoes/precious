@@ -52,7 +52,7 @@ An archive SHALL get members only when it was read completely and correctly. An 
 - **THEN** the archive is shown as damaged, and it has no members
 
 ### Requirement: Members are read-only entries
-Each member of a completely read archive SHALL be an entry that the owner can open in the Map, the detail panel, and the viewer, with its name, path inside the archive, kind, size, modification time, and, for a member folder, its total bytes and files. A member SHALL carry no decision or tags of its own and is never written to. Symlink members SHALL keep their link text without being followed.
+Each member of a completely read archive SHALL be an entry that the owner can open in the Map, the detail panel, and the viewer, with its name, path inside the archive, kind, size, modification time, and, for a member folder, its total bytes and files. A member SHALL carry no decision or tags of its own and is never written to. Symlink members SHALL keep their link text without being followed. A zip member's name that is not valid UTF-8 SHALL be shown decoded from code page 850, which Windows zip tools in Portuguese write without the zip's UTF-8 flag. Its raw bytes SHALL still be what is stored and identified (I6).
 
 #### Scenario: Browsing inside a zip
 - **WHEN** the owner opens `Downloads/eMule0.47c-Installer.zip` in the Map
@@ -61,6 +61,10 @@ Each member of a completely read archive SHALL be an entry that the owner can op
 #### Scenario: A symlink member
 - **WHEN** a tar holds a symlink member pointing to `/etc`
 - **THEN** the member is shown as a link with the text `/etc`, and nothing outside the archive is read
+
+#### Scenario: A zip made on Portuguese Windows
+- **WHEN** a zip holds a member whose name is the code page 850 bytes of `Anotações.txt`, without the UTF-8 flag
+- **THEN** the Map and the detail panel show `Anotações.txt`, and the technical details show the member's raw name bytes
 
 ### Requirement: Archive listings are kept until the archive changes
 An archive's listing and its members' digests SHALL be kept until a rescan updates the archive's entry. An unchanged archive SHALL never be read again to list it.

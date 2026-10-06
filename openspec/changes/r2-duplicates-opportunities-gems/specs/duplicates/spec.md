@@ -58,11 +58,15 @@ Relations and folder duplication figures SHALL be recomputed from the index as h
 - **THEN** their relation appears within one interval, before the job ends
 
 ### Requirement: Folders show how much of them is duplicated
-Every folder SHALL carry its duplicated bytes, the bytes of the files in its subtree that have a copy anywhere, and the share of its candidate bytes that was checked. Its percent duplicated is duplicated bytes over total bytes (§6.3, §11.2).
+Every folder SHALL carry its duplicated bytes, the bytes of the files in its subtree that have a copy anywhere, and the share of its candidate bytes that was checked. Its percent duplicated is duplicated bytes over total bytes (§6.3, §11.2). A file that could not be read SHALL NOT count among a folder's candidate bytes: a folder whose only files not checked are unreadable counts as checked, while coverage still counts those files as unreadable (I7).
 
 #### Scenario: Percent duplicated of a copied folder
 - **WHEN** `Fotos - Copia` holds 597 KB, and all of its photos have a copy in `Fotos` except one photo of 20 KB
 - **THEN** `Fotos - Copia` shows about 97% duplicated, and all of its candidate bytes as checked
+
+#### Scenario: A folder whose only unchecked file is unreadable
+- **WHEN** every file of a folder is checked except one that could not be read
+- **THEN** the folder's percent duplicated is shown as final rather than "so far", and Home still counts that file as could not be read
 
 ### Requirement: Uniqueness claims state the checked share
 Every "no other copy" or "duplicate" claim SHALL be shown together with the share of the content that could have a copy that was checked, and a file not yet checked SHALL be shown as not checked, never as unique (I7, §11.7).
@@ -76,7 +80,7 @@ Every "no other copy" or "duplicate" claim SHALL be shown together with the shar
 - **THEN** it is shown as not checked yet, and Gems does not list it
 
 ### Requirement: Two folders can be compared
-Compare SHALL take two folders or archives, where neither contains the other, and list their files in five groups: only on the left, only on the right, identical, same relative path with different content, and not checked yet. A file whose size does not occur on the other side SHALL count as only on its side without being read (§11.6).
+Compare SHALL take two folders or archives, where neither contains the other, and list their files in five groups: only on the left, only on the right, identical, same relative path with different content, and not checked yet. A file whose size does not occur on the other side SHALL count as only on its side without being read (§11.6). Compare opened without a chosen group SHALL open the first group that holds files, in this order: only on the left, only on the right, different content, not checked yet, identical.
 
 #### Scenario: R2.2 Fotos - Copia against Fotos
 - **WHEN** the owner compares `Fotos` with `Fotos - Copia` after hashing
@@ -89,6 +93,10 @@ Compare SHALL take two folders or archives, where neither contains the other, an
 #### Scenario: Same name, different content
 - **WHEN** the owner compares `Projetos/site_antigo` with `Projetos/site_antigo_copia`
 - **THEN** `contato.php` is listed as same path with different content, and every other file as identical
+
+#### Scenario: Compare opens where the files are
+- **WHEN** the owner opens Compare from a relation where everything on the left is also on the right
+- **THEN** Compare opens on only on the right, or on identical when the right holds nothing more
 
 #### Scenario: A folder against its own subfolder
 - **WHEN** a Compare request names `Fotos` and `Fotos/2005`

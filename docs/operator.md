@@ -330,7 +330,7 @@ Migrations only move forward. An older binary refuses to start against a databas
 
 ### Upgrading from R1 to R2
 
-R2 adds hashing, archives, duplicates, Compare, opportunities, and Gems. Its migration, `0002_content`, only adds tables: every R1 entry, decision, tag, selection, job, and audit event stays as it was, and no rescan is needed.
+R2 adds hashing, archives, duplicates, Compare, opportunities, and Gems. Its migration, `0002_content`, only adds tables: every R1 entry, decision, tag, selection, job, and audit event stays as it was, and no rescan is needed for any of that. One figure does wait for a rescan: R2 treats a modification time at or before the epoch (1970-01-01) as unknown, and an R1 folder's newest and oldest dates and its by-year figures leave such files out after the folder's next scan.
 
 1. **Back up first** with the R1 binary still running: `precious backup` (see [Taking a backup](#taking-a-backup)).
 2. **Check the configuration** with the R2 binary. An R1 configuration stays valid: the new `[hashing]`, `[archives]`, and `[duplicates]` sections have defaults (see [Configuration reference](#configuration-reference)), and `[copies]` is still refused.
@@ -512,7 +512,7 @@ A scan reads a source's folders and records every file, folder, symbolic link, a
 
 A scan lists every folder in batches of `scan.list_batch` entries and reads each entry's metadata (`lstat`): kind, size, modification and change times, permissions, link count, and file identity. It reads no file content. It never writes to the source, never follows a symbolic link (the link is recorded with its target text), never opens a FIFO, socket, or device (recorded as a special file), and never enters a folder where another filesystem is mounted: that folder is recorded as a mount boundary, with no contents. Names are kept byte for byte, including names that are not valid UTF-8, which the interface shows with `\xNN` escapes.
 
-Each folder's totals are complete when its last entry is done, in the same pass: its total bytes and files, the newest and oldest file time, its main file kind, its counts of folders, files, links, special files, unreadable folders, and mount boundaries below it, its bytes by file kind, by year (of the files' modification times, UTC), and by family (its [composition](#what-a-folder-is-made-of)), and the [notable entries inside it](#what-a-folder-is-made-of). Links and special files count no bytes. The rules classify every file as it is listed and every folder once it is complete (see [Classification rules](#classification-rules)); a folder whose discard suggestion is vetoed keeps up to 20 examples of the user material below it.
+Each folder's totals are complete when its last entry is done, in the same pass: its total bytes and files, the newest and oldest file time, its main file kind, its counts of folders, files, links, special files, unreadable folders, and mount boundaries below it, its bytes by file kind, by year (of the files' modification times, UTC), and by family (its [composition](#what-a-folder-is-made-of)), and the [notable entries inside it](#what-a-folder-is-made-of). Links and special files count no bytes. A modification time at or before the epoch (1970-01-01) counts as unknown: it sets no folder date, and its file is counted under an unknown year, shown after the others. The rules classify every file as it is listed and every folder once it is complete (see [Classification rules](#classification-rules)); a folder whose discard suggestion is vetoed keeps up to 20 examples of the user material below it.
 
 Rows are written in batches of up to `scan.batch_size` changes per database transaction, on a separate writer, so reading the disk and writing the index overlap. When the database falls behind, the scan waits for it rather than holding more of the tree in memory. The index needs roughly 1 to 1.5 GB of space in the state directory for 2 million entries.
 
@@ -703,7 +703,7 @@ An archive stopped by a budget is **partial**, names the budget it reached, and 
 | changed | the file changed while it was read | none |
 | unreadable | the file could not be read | none |
 
-Every state but complete leaves the archive a plain file. Member names are kept as their raw bytes, symbolic links inside archives keep their text and are never followed, and members have no decision or tags of their own: they follow their archive's.
+Every state but complete leaves the archive a plain file. Member names are kept as their raw bytes, symbolic links inside archives keep their text and are never followed, and members have no decision or tags of their own: they follow their archive's. A zip member's name that is not valid UTF-8 is shown decoded from code page 850, as zip tools on Portuguese Windows write it, so `Anota\x87\xE4es.txt` reads `Anotações.txt`. The raw bytes are still what is stored, in `name_b64` and `path_b64`.
 
 ### Viewing members
 
@@ -830,10 +830,10 @@ Each copy is listed once, at its highest related folder: when `Fotos - Copia` ov
 Every folder carries:
 
 - its **duplicated bytes**: the bytes of the files in its subtree that have another copy anywhere;
-- its **candidate bytes**: the bytes of its files whose size another file shares, the only ones that can have a copy;
+- its **candidate bytes**: the bytes of its files whose size another file shares, the only ones that can have a copy, leaving out the files that could not be read;
 - its **checked bytes**: the part of the candidate bytes whose content is known.
 
-Its **percent duplicated** is its duplicated bytes over its total bytes; a file is 0% or 100%. The Map colors folders by it in five bands (0%, under 25%, under 50%, under 75%, and 75% or more), and as **not checked** while its checked bytes are below its candidate bytes, because the figure can still grow. An archive counts in its folder at its packed size, by its own file, never by its members.
+Its **percent duplicated** is its duplicated bytes over its total bytes; a file is 0% or 100%. The Map colors folders by it in five bands (0%, under 25%, under 50%, under 75%, and 75% or more), and as **not checked** while its checked bytes are below its candidate bytes, because the figure can still grow. A file that could not be read never gets checked, so it does not keep its folders "not checked"; Home still counts it under **Could not be read**. An archive counts in its folder at its packed size, by its own file, never by its members.
 
 ### Compare
 
@@ -847,6 +847,8 @@ Compare takes two folders, opened archives, or folders inside an archive, and li
 | Not checked yet | It cannot be said yet. |
 
 A size that the other side does not have at all proves "only here" without reading anything. **Not checked yet** appears for a file that hashing has not read (or could not read, or that changed while it was read) whose size exists on the other side, and for a checked file whose size exists on the other side only among such files: either could be the same content. Click **Check now** to have both sides hashed first; the group empties as hashing proceeds. Unreadable files stay in it.
+
+Compare opens on the first group that holds files, in this order: only on the left, only on the right, same path with different content, not checked yet, and identical. A folder inside another therefore opens on what only the larger one holds, and two copies that are the same open on identical.
 
 When one side holds nothing but a single folder, such as `emule-0.47c/` inside a zip, and dropping it lines up the paths with the other side, Compare drops it. The two sides cannot contain each other: comparing `Fotos` with `Fotos/2005`, or a file, is refused with `400 invalid_request`.
 
@@ -885,9 +887,9 @@ The rows are recomputed by the `relate` job (see Duplicates and Compare), after 
 
 ### Review lists
 
-Opening a card shows its review list, largest row first. Each row shows its size, dates, suggestion, and a one-line summary of what it holds: category, years, files, bytes, and up to two notable signals, such as a spreadsheet inside an installed program. Duplicates rows expand into their copies, each with its own decision controls.
+Opening a card shows its review list, largest row first. Each row shows its size, dates, suggestion, and a one-line summary of what it holds: category, years, files (counted as in the Map, without the members of archives), bytes, and up to two notable signals, such as a spreadsheet inside an installed program. Duplicates rows expand into their copies, each with its own decision controls; a row of copies of one file names how many copies it has instead of a file count. A row of **Archives already unpacked** names the folder that holds the archive's content and opens Compare on the two.
 
-The list works from the keyboard: `K` keep, `D` discard, `L` later, `J` or `↓` next row, `↑` previous row, and `Enter` opens the detail panel. In the duplicates list, the keys act on the focused copy. The keys are ignored while typing in a field and inside a dialog.
+The list works from the keyboard: `K` keep, `D` discard, `L` later, `J` or `↓` next row, `↑` previous row, and `Enter` opens the detail panel. In the duplicates list, the keys act on the focused copy. When a decision makes the row leave the list, the row that takes its place is selected, so pressing `D` again decides it. `J` on the last row loaded brings the next page. The keys are ignored while typing in a field and inside a dialog.
 
 A decided row leaves the list. Choose to show decided rows to list the rows that are no longer open, with their decisions.
 

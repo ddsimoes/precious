@@ -196,6 +196,10 @@ Selecting an entry SHALL open a detail panel with:
 - **WHEN** the owner selects a JPEG in the Map
 - **THEN** the panel shows the photo without the owner choosing Open, and Open still shows it full size
 
+#### Scenario: A file that could not be read
+- **WHEN** the owner selects a photo that hashing could not read
+- **THEN** the panel says the file could not be read, and does not ask for a rescan
+
 #### Scenario: What is inside a folder
 - **WHEN** the owner selects a folder that is mostly photos but holds a downloads folder and an installed program
 - **THEN** the panel shows its composition and lists the downloads folder and the program with their sizes, and choosing one opens it

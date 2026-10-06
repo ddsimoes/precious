@@ -192,10 +192,10 @@ See `proposal.md` for why. R1 left these facts that shape R2:
 
 - **`dir_dups(entry_id, candidate_bytes, checked_bytes, duplicated_bytes, duplicated_files)`.**
   - It is computed bottom-up by the `relate` job from the same snapshot.
-  - `duplicated_bytes` sums the files in the subtree that have another copy anywhere.
+  - `duplicated_bytes` sums the files in the subtree that have another copy anywhere. `candidate_bytes` leaves out unreadable files, so a folder whose only gaps are unreadable files reads as checked; coverage still counts them as unreadable (B17).
   - Children and the treemap `LEFT JOIN` it by primary key.
 - **A file's percent duplicated** is 0 or 100, from its row.
-- **Member folders** inside an archive compute theirs on read, because archives are small next to the index.
+- **Member folders** inside an archive compute theirs on read, because archives are small next to the index. They count `sampled` as checked, as entry folders do (B17).
 - **No sort by percent duplicated.** The spec asks for a column and a coloring. A sort needs a fifth child index.
 - **Treemap color bands:** 0%, < 25%, < 50%, < 75%, ≥ 75%, and not checked (`checked_bytes < candidate_bytes`).
 
@@ -213,6 +213,7 @@ See `proposal.md` for why. R1 left these facts that shape R2:
 - **Paging.** Items of the requested bucket sort by relative path; the cursor is an offset into that order, recomputed per request. `Compare` returns `CompareResult{Summary map[Bucket]Count; Items []CompareItem{Path, Left, Right *domain.Ref}; NextCursor}`; an empty bucket lists no items, an unknown bucket or a bad cursor is `400 invalid_request`, and an unknown side (or a member of an archive that is not complete) is `404 not_found`.
 - **Wrapper folders.** When exactly one side has a single top folder and its contents align better with the other side, that wrapper is dropped from the relative paths (m4b `lift`). For example, `emule-0.47c/` inside the zip lines up with the unpacked folder.
 - **"Check now"** calls `check-now` with both refs.
+- **Opening group.** Without a `bucket`, the page asks for the summary alone, then opens the first bucket that holds files, in the order only left, only right, different, unchecked, identical (B22).
 - **[target]** Two sides of 100,000 files each answer within 2 s on the development machine (slow test).
 
 ### D12. Opportunity cards (§11.4, R2.5)
@@ -546,7 +547,8 @@ No R2 command writes an audit event, because none changes an owner decision. `se
 
 - **EntryRow** gains these fields (null when they do not apply):
   `"content_state"` (files and file members), `"copies"`, `"candidate_bytes"`, `"checked_bytes"`, `"duplicated_bytes"` (folders, from `dir_dups`), `"archive_state"` (archive files, null when unlisted), and `"archive_id"` (members).
-  A member row has `"id":"m45"`, `"decision":null`, `"eff_decision"` (the archive's), and `"tag_ids":[]`.
+  A member row has `"id":"m45"`, `"decision":null`, `"eff_decision"` (the archive's), and `"tag_ids":[]`. A zip member whose name is not valid UTF-8 has `"name"` and `"path"` decoded from code page 850, and the raw bytes in `"name_b64"` and `"path_b64"` (B19).
+  `"mtime"`, `"newest"`, and `"oldest"` are null for a time at or before the epoch, and by-year items are `{"year":int|null,"bytes","files"}`, the unknown year (null) last (B20).
 - **`GET /api/entries/{ref}`** gains these fields:
   - `"content":{"state","sha256":hex|null,"checked_at","copies":[CopyJSON ≤ 20],"copies_count"}|null`;
   - `"relations":[RelationJSON ≤ 20]`;
@@ -554,7 +556,7 @@ No R2 command writes an audit event, because none changes an owner decision. `se
   - `"coverage":CoverageJSON` (global).
 
   The JSON shapes are:
-  - CopyJSON: `{"ref","source_id","path","path_b64","archive_id","hard_link","offline","eff_decision"}`;
+  - CopyJSON: `{"ref","source_id","path","path_b64","archive_id","hard_link","offline","decision","eff_decision"}`, where `decision` is the copy's own decision, or null when it follows its folder or is a member (B26);
   - RelationJSON: `{"id","kind","self":"a"|"b","other":EntryRow,"matched_bytes","redundant_bytes","only_here":{"files","bytes"},"only_there":{"files","bytes"}}`;
   - CoverageJSON: `{"candidate":{"files","bytes"},"checked":…,"unchecked":…,"unreadable":…}`.
 - **`GET /api/entries/{ref}/copies?cursor=&limit=`** → `{"items":[CopyJSON],"next_cursor","count"}`.
@@ -565,7 +567,7 @@ No R2 command writes an audit event, because none changes an owner decision. `se
   - `"hashing":[{"source_id","job_id","kind","state","progress"}]`.
 - **`GET /api/opportunities?source=`** → `{"cards":[CardJSON],"coverage","computed_at"}`, where CardJSON is `{"list","bytes","rows","basis"}`.
 - **`GET /api/opportunities/{list}?source=&decided=0|1&cursor=&limit=`** → `{"card":CardJSON,"items":[RowJSON],"next_cursor"}`.
-  - RowJSON is `{"id","bytes","files","entry":EntryRow|null,"relation":RelationJSON|null,"copies":[CopyJSON]|null,"summary":{"category","years":[from,to],"files","bytes","signals":[…]}}`.
+  - RowJSON is `{"id","bytes","files","entry":EntryRow|null,"relation":RelationJSON|null,"copies":[CopyJSON]|null,"summary":{"category","years":[from,to],"files","bytes","signals":[…]}}`. A relation row's `files` is side a's file count without archive members (B24). An `unpacked_archives` row has both `entry` (the archive) and `relation` (self `a`, other the folder holding its content; B23).
   - With `decided=1`, the list holds the rows that are no longer open.
   - An unknown list is 404 `not_found`.
 - **`GET /api/gems?section=unique|rescue|only_in_copy&source=&cursor=&limit=`** → `{"section","items":[{"entry":EntryRow,"group":EntryRow|null,"relation":RelationJSON|null}],"next_cursor","coverage"}`.
@@ -710,3 +712,20 @@ The B15 binary then restarted the server. Its startup job read the 352 candidate
 - **B13.** The viewer opens files through `content.OpenAt`, so the viewer and hashing share one identity-checked walk. `viewer.Register` takes the `*content.Service` for members.
 - **B14.** Hashing never blocks `remove-source` (found by the browser suite, task 8.3; coordinator's decision, 2026-10-06). Only an active scan of the source is `409 job_active`, as source-registry specifies. The source's other active jobs (`hash`, `hash_now`) are cancelled in the removal's transaction, a running attempt as soon as it commits, and their rows go away with the source; the attempt commits nothing more for the removed entries (I9). The same transaction calls `relations.RequestRefresh`, so the other sources' relations, `dir_dups`, and review rows drop the removed copies at the next `relate`.
 - **B15.** A hashing pass reads, before it ends, the candidates that its own tar-family listings create (found on the reference server, task 8.7). After the large queue lists streamed archives, the pass plans again. It then finds the zips with pending members again, and stops skipping the archive files it has just listed. A zip's pending members are read every time the zip comes up, and only listing is once per attempt. Before this fix, the first run on the owner's dataset ended `succeeded` with 352 candidates unchecked: 351 zip members whose sizes a later tar.gz listing shared, and one tar.gz whose own copy was a member of a larger tar.gz listed just before it. Coverage counted them as unchecked, so no claim was wrong (I7), but they waited for the next scan.
+
+**From the UI walkthrough on the owner's dataset (task 8.8, 2026-10-06).** Two agents walked every screen on the reference server, and the coordinator checked their claims against the code. The owner chose to fix, before R2 closes, the findings that make figures disagree or break the keyboard flow (tasks 9.1–9.12). Findings that change what a list means wait for the owner's decisions: Gems' sections, the installers card holding whole download folders, the Map's "duplicated" wording, and the relation counts versus Compare's. Search and Map improvements go to the short change after R2.
+
+- **B16.** An `overlap`'s detail text depends on the side (task 9.1). Side `a`, which has the larger matched share, at least half of it matched, reads "Most of it is also in B". Side `b` reads "Most of A is also in it". One text for both sides was false on the larger side: a 39 GiB camera folder "shared most of its content" with a folder holding 995 MiB of it.
+- **B17.** A folder's `candidate_bytes` leave out unreadable files (task 9.2). Unreadable files never become checked, so nine unreadable files kept the folders above them at "49% so far, not everything is checked" for good, while Home said everything was checked. Coverage (D8) still counts them as unreadable, and relations still treat them as gaps (D9, I7). Member folders computed on read also count `sampled` as checked, as entry folders do.
+- **B18.** The preview of an entry whose content state or state is `unreadable` says that Precious could not read it, not that it changed on disk (task 9.3). The server answers both with 409 `invalid_entry_state`, and the UI chooses the text from the entry's state.
+- **B19.** A zip member's name that is not valid UTF-8 is displayed decoded from code page 850, each `/`-separated component on its own (task 9.4). Zip tools on Portuguese Windows write names in the OEM code page without the UTF-8 flag. APPNOTE names CP437, which turns `õ`, `ã`, and `Õ` into symbols, so CP850 is the better reading for this owner. The stored bytes stay raw, and so do the `*_b64` fields and every identity check (I6), so no listing changes and no migration is needed. Tar names are not decoded, because tars from Linux use other encodings. Decoding at listing time was rejected: it would change stored names, against I6.
+- **B20.** A modification time at or before the epoch is unknown (task 9.5). The scanner leaves it out of folder `newest`/`oldest`, and by-year files it under year 0. The API shows that year as `null`, last, so the sums still equal the totals. The API also returns null for such times, while the stored `mtime_ns` stays as the platform gave it. Folders indexed before this change are brought up to date by their next scan. Only the epoch itself is treated this way: it was the one bad value on the owner's dataset, and a 1975 date is not proven wrong.
+- **B21.** In review lists, after a key decision removes the selected row, the row that takes its place is selected, so K, K, K decides consecutive rows (task 9.6). J on the last loaded row loads the next page and selects its first row (task 9.7). Before, focus dropped to the page and the next key did nothing until J.
+- **B22.** Compare without a `bucket` opens the first bucket that holds files, in this order: only left, only right, different, unchecked, identical (task 9.8). Every `inside` and `same` pair used to open on an empty "only on the left".
+- **B23.** An `unpacked_archives` row stores the folder holding the archive's content as `group_id` (task 9.9). The API returns that relation with the row, so the row names the folder and links Compare. `review_rows`' one-of check rules out storing `relation_id` beside `entry_id`.
+- **B24.** A duplicates relation row counts files as the Map does, without archive members (task 9.10). `fotos-b` showed 18,605 files in its row and 15,936 in the Map. A group row shows its copies and no file count.
+- **B25.** Wording (task 9.11):
+  - review summaries list their signals as lower-case nouns ("holds personal material and camera photos");
+  - a card whose open rows hold no bytes leads with its row count;
+  - Search's `dup=unchecked` choice reads "Not checked or unreadable", which is what it returns (D15).
+- **B26.** Copies carry their own decision, so a duplicate group's copies show the active decision button as relation sides do (task 9.12). `eff_decision` alone could not tell an own decision from one inherited from a folder.
