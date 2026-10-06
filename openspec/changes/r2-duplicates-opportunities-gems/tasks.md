@@ -53,7 +53,7 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
 
   Verify that every existing Go test and Vitest test passes, and that `dup=elsewhere` without `within` is 400.
 - [x] 1.6 Add `decisions.NewSelection` (Interfaces), which stores the given query JSON and explicit IDs with the R1 expiry and kept counts. Paths: `internal/decisions`. Verify with a test that a selection made from IDs has the same count, bytes, kept, and expiry behavior as `create-selection`.
-- [ ] 1.7 Extend the corpus (D19), paths `internal/corpus`, `tools/gencorpus`, `internal/index/indextest`:
+- [x] 1.7 Extend the corpus (D19), paths `internal/corpus`, `tools/gencorpus`, `internal/index/indextest`:
   - add the tar.gz, gzip, and bzip2 fixtures, the equal-size pair, and the zip with a stored video;
   - add `duplicates`, `relations`, `gems`, and `members` to the ground truth;
   - add synthfs-only large-file fixtures;
