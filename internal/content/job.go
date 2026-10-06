@@ -168,7 +168,7 @@ type run struct {
 	// skip holds the entries this attempt has dealt with in a pass that
 	// another pass must not read again.
 	skip map[int64]bool
-	// items holds the archive items this attempt has read.
+	// items holds the streamed archives this attempt has listed.
 	items map[int64]bool
 
 	readBytes, opened, listed int64
@@ -237,20 +237,12 @@ func (r *run) pass(spans []span, withCandidates bool) error {
 	}
 	r.phase = PhaseLarge
 	r.report()
-	if err := r.samplePass(spans, streamed); err != nil {
+	if err := r.samplePass(spans); err != nil {
 		return err
 	}
-	zips, err := r.zipItems(spans)
+	large, small, err := r.zipItems(spans)
 	if err != nil {
 		return err
-	}
-	var large, small []fileRow
-	for _, z := range zips {
-		if z.key >= LargeFileBytes {
-			large = append(large, z)
-		} else {
-			small = append(small, z)
-		}
 	}
 	if err := r.largePass(spans, append(streamed, large...)); err != nil {
 		return err
@@ -259,18 +251,25 @@ func (r *run) pass(spans []span, withCandidates bool) error {
 		return err
 	}
 	if r.added {
-		// Streamed archives added members: their sizes join the groups,
-		// so files of those sizes are read too.
+		// Streamed archives added members: their sizes join the groups, so
+		// the files, zip members, and archive files just listed of those
+		// sizes are read too.
 		r.added = false
 		changed, err := r.s.plan(r.ctx, r.rt, r.source)
 		if err != nil {
 			return err
 		}
 		r.changed = r.changed || changed
-		if err := r.samplePass(spans, streamed); err != nil {
+		for i := range streamed {
+			delete(r.skip, streamed[i].id)
+		}
+		if err := r.samplePass(spans); err != nil {
 			return err
 		}
-		if err := r.largePass(spans, nil); err != nil {
+		if large, small, err = r.zipItems(spans); err != nil {
+			return err
+		}
+		if err := r.largePass(spans, large); err != nil {
 			return err
 		}
 		if err := r.commit(); err != nil {
@@ -459,11 +458,11 @@ func (r *run) listZips(spans []span) (streamed []fileRow, members bool, err erro
 }
 
 // zipItems returns the complete zip archives in spans with members to
-// hash, keyed by their largest pending member.
-func (r *run) zipItems(spans []span) ([]fileRow, error) {
+// hash, keyed by their largest pending member: those of a large key, and
+// the others.
+func (r *run) zipItems(spans []span) (large, small []fileRow, err error) {
 	where, args := spanWhere(spans)
-	var out []fileRow
-	err := r.s.st.Read(r.ctx, func(tx *sql.Tx) error {
+	err = r.s.st.Read(r.ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(r.ctx, `SELECT `+fileCols+`, max(m.size) FROM archive_members m
 				JOIN archives a ON a.entry_id = m.archive_id JOIN entries e ON e.id = a.entry_id
 				LEFT JOIN file_content f ON f.entry_id = e.id
@@ -481,14 +480,18 @@ func (r *run) zipItems(spans []span) ([]fileRow, error) {
 				return err
 			}
 			f.format, f.key, f.arcState = domain.ArchiveZip, key, string(domain.ArchiveComplete)
-			out = append(out, f)
+			if key >= LargeFileBytes {
+				large = append(large, f)
+			} else {
+				small = append(small, f)
+			}
 		}
 		return rows.Err()
 	})
 	if err != nil {
-		return nil, fmt.Errorf("content: find the zip members to hash on %s: %w", r.source, err)
+		return nil, nil, fmt.Errorf("content: find the zip members to hash on %s: %w", r.source, err)
 	}
-	return out, nil
+	return large, small, nil
 }
 
 // samplePass reads the samples of the pending files of at least
@@ -496,7 +499,7 @@ func (r *run) zipItems(spans []span) ([]fileRow, error) {
 // first, and commits each size with its group decided again (design D3,
 // D4). A size with a member, or with a hashed copy whose sample is
 // unknown, is read in full instead.
-func (r *run) samplePass(spans []span, streamed []fileRow) error {
+func (r *run) samplePass(spans []span) error {
 	var sizes []int64
 	err := r.s.st.Read(r.ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(r.ctx, `SELECT DISTINCT size FROM file_content
@@ -690,19 +693,22 @@ func (r *run) smallPass(spans []span, items []fileRow, mark bool) error {
 	return nil
 }
 
-// item reads one archive item: a streamed archive to list, whose own
-// digest comes with its listing or, failing that, from a plain read; or a
-// zip whose pending members are hashed. An item is read once per attempt.
+// item reads one archive item: a zip whose pending members are hashed; or a
+// streamed archive to list, once per attempt, whose own digest comes with
+// its listing or, failing that, from a plain read.
 func (r *run) item(f *fileRow) error {
+	if f.arcState == string(domain.ArchiveComplete) {
+		if err := r.commit(); err != nil {
+			return err
+		}
+		return r.hashMembers(f)
+	}
 	if r.items[f.id] {
 		return nil
 	}
 	r.items[f.id] = true
 	if err := r.commit(); err != nil {
 		return err
-	}
-	if f.arcState == string(domain.ArchiveComplete) {
-		return r.hashMembers(f)
 	}
 	added, digested, err := r.listArchive(f)
 	r.added = r.added || added

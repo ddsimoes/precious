@@ -52,6 +52,29 @@ func randomBytes(seed uint64, n int) []byte {
 	return b
 }
 
+func makeTarGzip(t *testing.T, members ...zipEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, m := range members {
+		if err := tw.WriteHeader(&tar.Header{Name: m.name, Mode: 0o644, Size: int64(len(m.data)), ModTime: fileTime,
+			Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(m.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 // archiveRow is an archives row.
 type archiveRow struct {
 	state   domain.ArchiveState
@@ -234,4 +257,27 @@ func TestUniqueSizeZipMembersCostNoReads(t *testing.T) {
 	if n := e.readOf("dados.zip"); n == 0 || n >= int64(len(z))/2 {
 		t.Errorf("read %d of %d bytes; want only the central directory", n, len(z))
 	}
+}
+
+// Sizes that a tar-family listing adds make candidates of a zip member and
+// of a smaller archive file listed earlier in the same job: the job reads
+// them before it ends, rather than leaving them unchecked.
+func TestCandidatesFromAStreamedListingReadInTheSameJob(t *testing.T) {
+	e := newEnv(t)
+	root := e.disk("fotos", "/mnt/fotos", posix)
+	copied := randomBytes(1, 5000)
+	lib := makeTarGzip(t, zipEntry{name: "lib/a.c", data: randomBytes(2, 3000)})
+	root.File("fotos.zip", 0, fileTime).Content(makeZip(t, zipEntry{name: "a.txt", data: copied}))
+	root.File("lib.tar.gz", 0, fileTime).Content(lib)
+	root.File("bundle.tar.gz", 0, fileTime).Content(makeTarGzip(t, zipEntry{name: "copy.txt", data: copied},
+		zipEntry{name: "lib.tar.gz", data: lib}))
+	e.scan("fotos")
+	e.hash("fotos")
+	if c := e.coverage("fotos"); c.UncheckedFiles != 0 {
+		t.Errorf("coverage %+v; want every candidate checked", c)
+	}
+	diffGroups(t, e.groups(), [][]string{
+		{"fotos:bundle.tar.gz!copy.txt", "fotos:fotos.zip!a.txt"},
+		{"fotos:bundle.tar.gz!lib.tar.gz", "fotos:lib.tar.gz"},
+	})
 }
