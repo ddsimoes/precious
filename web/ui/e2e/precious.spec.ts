@@ -777,16 +777,19 @@ function filesBelow(path: string): TruthEntry[] {
   return truth.filter((e) => e.size !== undefined && e.path.startsWith(`${path}/`))
 }
 
-// openFolder opens the Map at the folder at path ("" is the source's top
-// folder), following the folder links from the top.
+// openFolder opens the Map at the folder at path ("" is the corpus source's
+// top folder), following the folder links from the top. It starts from the
+// top folder's address, rather than the Map link, so that it never acts on
+// the folder path of the page it leaves.
 async function openFolder(path: string) {
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Map' }).click()
+  const sources: { sources: { label: string; root_entry_id: string }[] } = await (
+    await page.request.get('/api/sources')
+  ).json()
+  const root = sources.sources.find((s) => s.label === sourceLabel)?.root_entry_id ?? ''
+  expect(root, sourceLabel).not.toBe('')
+  await page.goto(`/map/${root}`)
+  await expect(page.getByRole('navigation', { name: 'Folder path' }).getByRole('link')).toHaveCount(0)
   await expect(page.getByRole('table', { name: /^Contents of / })).toBeVisible()
-  const trail = page.getByRole('navigation', { name: 'Folder path' })
-  const top = trail.getByRole('link').first()
-  if ((await top.count()) > 0) {
-    await top.click()
-  }
   for (const name of path === '' ? [] : path.split('/')) {
     await page.getByRole('table', { name: /^Contents of / }).getByRole('link', { name, exact: true }).click()
     await expect(page.getByRole('table', { name: `Contents of ${name}` })).toBeVisible()
