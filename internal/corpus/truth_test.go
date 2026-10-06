@@ -62,9 +62,11 @@ func TestDigestsMatchWrittenFiles(t *testing.T) {
 
 // unpacked is one member as the standard library reads it back.
 type unpacked struct {
-	kind   string
-	data   []byte
-	stored bool
+	kind    string
+	data    []byte
+	stored  bool
+	locator int // a zip member's central-directory index, else -1
+	mtime   time.Time
 }
 
 // unpack reads an archive written to disk with the standard library: every
@@ -78,7 +80,7 @@ func unpack(t *testing.T, format, name string, b []byte) map[string]unpacked {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, f := range z.File {
+		for i, f := range z.File {
 			rc, err := f.Open()
 			if err != nil {
 				t.Fatal(err)
@@ -88,7 +90,7 @@ func unpack(t *testing.T, format, name string, b []byte) map[string]unpacked {
 			if err != nil {
 				t.Fatal(err)
 			}
-			out[f.Name] = unpacked{kind: memberFile, data: data, stored: f.Method == zip.Store}
+			out[f.Name] = unpacked{kind: memberFile, data: data, stored: f.Method == zip.Store, locator: i, mtime: f.Modified}
 		}
 	case formatTarGzip:
 		zr, err := gzip.NewReader(bytes.NewReader(b))
@@ -106,13 +108,13 @@ func unpack(t *testing.T, format, name string, b []byte) map[string]unpacked {
 			}
 			switch h.Typeflag {
 			case tar.TypeDir:
-				out[strings.TrimSuffix(h.Name, "/")] = unpacked{kind: memberDirectory}
+				out[strings.TrimSuffix(h.Name, "/")] = unpacked{kind: memberDirectory, locator: -1, mtime: h.ModTime}
 			case tar.TypeReg:
 				data, err := io.ReadAll(tr)
 				if err != nil {
 					t.Fatal(err)
 				}
-				out[h.Name] = unpacked{kind: memberFile, data: data}
+				out[h.Name] = unpacked{kind: memberFile, data: data, locator: -1, mtime: h.ModTime}
 			default:
 				t.Fatalf("%s: member %s of type %c", name, h.Name, h.Typeflag)
 			}
@@ -126,20 +128,20 @@ func unpack(t *testing.T, format, name string, b []byte) map[string]unpacked {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out[strings.TrimSuffix(path.Base(name), ".gz")] = unpacked{kind: memberFile, data: data}
+		out[strings.TrimSuffix(path.Base(name), ".gz")] = unpacked{kind: memberFile, data: data, locator: -1, mtime: zr.ModTime}
 	case formatBzip2:
 		data, err := io.ReadAll(bzip2.NewReader(bytes.NewReader(b)))
 		if err != nil {
 			t.Fatal(err)
 		}
-		out[strings.TrimSuffix(path.Base(name), ".bz2")] = unpacked{kind: memberFile, data: data}
+		out[strings.TrimSuffix(path.Base(name), ".bz2")] = unpacked{kind: memberFile, data: data, locator: -1}
 	default:
 		t.Fatalf("%s: format %q", name, format)
 	}
 	for p := range out {
 		for dir := path.Dir(p); dir != "."; dir = path.Dir(dir) {
 			if _, ok := out[dir]; !ok {
-				out[dir] = unpacked{kind: memberDirectory}
+				out[dir] = unpacked{kind: memberDirectory, locator: -1}
 			}
 		}
 	}
@@ -171,6 +173,10 @@ func TestMembersMatchUnpackedBytes(t *testing.T) {
 				t.Errorf("%s!%s: stored %v, unpacked %v", a.Path.Path, m.Path.Path, m.Stored, u.stored)
 			case m.Kind == memberDirectory && (m.Size != nil || m.SHA256 != ""):
 				t.Errorf("%s!%s: a folder with a size or digest", a.Path.Path, m.Path.Path)
+			case (m.Locator == nil) != (u.locator < 0) || m.Locator != nil && *m.Locator != u.locator:
+				t.Errorf("%s!%s: locator %v, unpacked %d", a.Path.Path, m.Path.Path, m.Locator, u.locator)
+			case (m.MTime == nil) != u.mtime.IsZero() || m.MTime != nil && !m.MTime.Equal(u.mtime):
+				t.Errorf("%s!%s: mtime %v, unpacked %v", a.Path.Path, m.Path.Path, m.MTime, u.mtime)
 			}
 		}
 		for p := range got {
