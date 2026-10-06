@@ -32,11 +32,13 @@ type archive struct {
 
 // member is one member of an archive.
 type member struct {
-	path   string   // cleaned, '/'-joined inside the archive
-	kind   string   // memberDirectory or memberFile
-	data   []byte   // a file's content
-	sum    [32]byte // a file's SHA-256
-	stored bool     // a zip member stored without compression
+	path    string    // cleaned, '/'-joined inside the archive
+	kind    string    // memberDirectory or memberFile
+	data    []byte    // a file's content
+	sum     [32]byte  // a file's SHA-256
+	stored  bool      // a zip member stored without compression
+	locator *int      // a zip member's central-directory index
+	mtime   time.Time // as the archive records it; zero when it records none
 }
 
 // newArchive adds the folders implied by deeper member paths, digests the
@@ -68,7 +70,7 @@ func newArchive(format string, members []member) *archive {
 func (d *def) zip(p string, mtime time.Time, members []zipMember) {
 	ms := make([]member, len(members))
 	for i, m := range members {
-		ms[i] = member{path: m.name, kind: memberFile, data: m.data, stored: !m.deflate}
+		ms[i] = member{path: m.name, kind: memberFile, data: m.data, stored: !m.deflate, locator: &i, mtime: m.mtime}
 	}
 	d.add(item{path: p, kind: domain.EntryFile, data: zipArchive(members), mtime: mtime, archive: newArchive(formatZip, ms)})
 }
@@ -87,10 +89,10 @@ func (d *def) tarGzipOf(p string, mtime time.Time, src string) {
 		switch it.kind {
 		case domain.EntryDirectory:
 			tms = append(tms, tarMember{name: rel, mtime: d.newest(it.path), dir: true})
-			ms = append(ms, member{path: rel, kind: memberDirectory})
+			ms = append(ms, member{path: rel, kind: memberDirectory, mtime: d.newest(it.path)})
 		case domain.EntryFile:
 			tms = append(tms, tarMember{name: rel, data: it.data, mtime: it.mtime})
-			ms = append(ms, member{path: rel, kind: memberFile, data: it.data})
+			ms = append(ms, member{path: rel, kind: memberFile, data: it.data, mtime: it.mtime})
 		default:
 			panic("corpus: tarGzipOf holds folders and files only: " + displayPath(it.path))
 		}
@@ -114,11 +116,11 @@ func (d *def) newest(dir string) time.Time {
 func (d *def) gzip(p string, mtime time.Time, data []byte) {
 	name := strings.TrimSuffix(path.Base(p), ".gz")
 	d.add(item{path: p, kind: domain.EntryFile, data: gzipFile(name, mtime, data), mtime: mtime,
-		archive: newArchive(formatGzip, []member{{path: name, kind: memberFile, data: data}})})
+		archive: newArchive(formatGzip, []member{{path: name, kind: memberFile, data: data, mtime: mtime}})})
 }
 
 // bzip2 adds a single-file bzip2 with the compressed content b. Its member is
-// named after the file without ".bz2".
+// named after the file without ".bz2"; bzip2 records no time.
 func (d *def) bzip2(p string, mtime time.Time, b []byte) {
 	name := strings.TrimSuffix(path.Base(p), ".bz2")
 	d.add(item{path: p, kind: domain.EntryFile, data: b, mtime: mtime,

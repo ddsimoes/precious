@@ -8,6 +8,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"precious/internal/domain"
 )
@@ -66,12 +67,17 @@ type Archive struct {
 // the copy is Archive.Path + "!" + Member.Path. Kind is directory or file;
 // directories include the folders implied by deeper paths. Size and SHA256
 // are set for files; Stored marks a zip member stored without compression.
+// Locator is a zip file member's central-directory index (0-based). MTime is
+// the time the archive records for the member: unset for implied folders and
+// for a bzip2 member (bzip2 records none); a gzip member has the header's.
 type Member struct {
 	Path
-	Kind   string `json:"kind"`
-	Size   *int64 `json:"size,omitempty"`
-	SHA256 string `json:"sha256,omitempty"`
-	Stored bool   `json:"stored,omitempty"`
+	Kind    string     `json:"kind"`
+	Size    *int64     `json:"size,omitempty"`
+	SHA256  string     `json:"sha256,omitempty"`
+	Stored  bool       `json:"stored,omitempty"`
+	Locator *int       `json:"locator,omitempty"`
+	MTime   *time.Time `json:"mtime,omitempty"`
 }
 
 // The relation kinds of design D9.
@@ -229,7 +235,11 @@ func (t *Tree) members() []Archive {
 	for _, it := range archives {
 		a := Archive{Path: pathOf(it.path), Format: it.archive.format}
 		for _, m := range it.archive.members {
-			x := Member{Path: pathOf(m.path), Kind: m.kind, Stored: m.stored}
+			x := Member{Path: pathOf(m.path), Kind: m.kind, Stored: m.stored, Locator: m.locator}
+			if !m.mtime.IsZero() {
+				mtime := m.mtime
+				x.MTime = &mtime
+			}
 			if m.kind == memberFile {
 				size := int64(len(m.data))
 				x.Size, x.SHA256 = &size, hex.EncodeToString(m.sum[:])
