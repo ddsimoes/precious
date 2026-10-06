@@ -652,6 +652,32 @@ Together with `review.Refresh` (41 s, task 5.6), one refresh of 2 million entrie
 
 There is no regression. A first scan writes no content rows, so the invalidation statements never run on it.
 
+### Reference server (task 8.7)
+
+The owner's reference server: a Linux container with 4 cores of a low-power 2.0 GHz x86 CPU and 4 GiB of memory, with the data on HDDs. It ran the R2 binary on the R1 database of the owner's dataset, upgraded in place after a backup, 2026-10-06. The index: one source with 158,203 files (837 GB) in 2,919 folders.
+
+**The first hashing run** (one `hash` job, started by the upgrade):
+
+| Measurement | Result |
+|---|---|
+| Duration | 10,747 s (2 h 59 min) |
+| Candidates (files of a shared size and archive members) | 1,287,928, 521.3 GB |
+| Checked at the end | 1,287,567 files and members, 521.3 GB; 9 unreadable (4.2 MB); 352 left unchecked (B15) |
+| Bytes read | 467.3 GB, 43.5 MB/s on average; 64 large files settled by samples (7.8 GB) |
+| Archives | 1,718 archive files: 1,679 complete with 1,218,841 members (1,190,283 files), 2 partial at a budget, 31 unreadable, 1 corrupt, 2 rejected, 3 unsupported |
+| CPU of the server process, `relate` included | 9,096 s, 0.85 of a core on average |
+| Peak resident memory of the server process, 16 `relate` passes included | 1.04 GiB (the container's peak, 1.79 GB, counts the page cache) |
+| Database | 98.8 MB before the upgrade, 459 MB after |
+
+The B15 binary then restarted the server. Its startup job read the 352 candidates left unchecked in 323 s (267 MB read, the members' zips included), and coverage ended with every candidate checked except the 9 unreadable files.
+
+**`relate`.** During the run, the hashing checkpoints started 16 passes, from 4.5 s (2,921 folders, before any archive was listed) to 63.4 s (33,156 folders, archive folders included). The pass after the startup job, with the disks idle, took 64.4 s; that server process peaked at 771 MiB resident, its hashing job included. Both are within the targets that D20 sets on the development machine (3 minutes and 1.5 GB).
+
+**What the owner sees:**
+- relations: 1,147 `same` (1.26 GB redundant), 280 `overlap` (18.1 GB), and 319 `inside` (232.7 GB);
+- cards: 8,563 duplicates rows (247.8 GB); 1,232 caches (5.3 GB); 7 installers (65.7 GB); 624 leftovers (4.4 GB); 5 programs (1.9 GB); 43 system junk; 19 unpacked archives;
+- Gems: 48,302 unique (296.8 GB), 68,470 only in a copy (360.8 GB), and 3 to rescue.
+
 ## Addendum: decisions made during implementation
 
 - **B1.** The scanner deletes a file's `file_content` and `archives` rows only when the file's own facts change: size, mtime, ctime, or identity. A classification-only update, such as a new rules version, keeps digests, and so does a missing file that returns with the same facts. ctime is compared with the same tolerance as mtime, because vfat's ctime moves with its mtime. (Task 1.4.)

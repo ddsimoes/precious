@@ -263,5 +263,5 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   7. take a backup and check its integrity.
 
   Verify that it reports success, then delete the script.
-- [ ] 8.7 On the reference server, redeploy the smoke instance with the R2 binary over its R1 database, let it hash the owner's dataset, and run one `relate`. Record in the design addendum the hashing time, bytes read, archives listed, `relate` time and memory, and the database size (D20).
+- [x] 8.7 On the reference server, redeploy the smoke instance with the R2 binary over its R1 database, let it hash the owner's dataset, and run one `relate`. Record in the design addendum the hashing time, bytes read, archives listed, `relate` time and memory, and the database size (D20).
 - [ ] 8.8 The owner smoke-tests R2 in a real browser on the regression corpus and the owner's dataset: Home coverage, Opportunities and review lists with the keyboard, Compare, Gems, the duplicates in the Map and Search, and a member photo. Verify with the owner's sign-off, with any findings recorded in the design addendum.
