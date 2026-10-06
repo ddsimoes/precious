@@ -207,9 +207,10 @@ See `proposal.md` for why. R1 left these facts that shape R2:
   - **identical:** the content occurs on both sides;
   - **different:** the same relative path with different content;
   - **only on one side:** the content does not occur on the other side and is not in different;
-  - **unchecked:** a `pending`, `changed`, or `unreadable` file whose size occurs on the other side.
+  - **unchecked:** a `pending`, `changed`, or `unreadable` file (or one hashing has not planned yet) whose size occurs on the other side, and a checked file whose size occurs on the other side only among such files (its absence there is not proven, I7; decided during implementation, 2026-10-06).
 
-  A size missing from the other side proves "only here" without hashing.
+  A size missing from the other side proves "only here" without hashing. Only non-empty regular files and file members take part, except that empty files on both sides are identical; a tar hard-link member has its target's content. Identical items pair a content's files on both sides in path order (an extra copy is an item with one file); the counted bytes of a paired item are its left file's size, or its right file's when it has no left.
+- **Paging.** Items of the requested bucket sort by relative path; the cursor is an offset into that order, recomputed per request. `Compare` returns `CompareResult{Summary map[Bucket]Count; Items []CompareItem{Path, Left, Right *domain.Ref}; NextCursor}`; an empty bucket lists no items, an unknown bucket or a bad cursor is `400 invalid_request`, and an unknown side (or a member of an archive that is not complete) is `404 not_found`.
 - **Wrapper folders.** When exactly one side has a single top folder and its contents align better with the other side, that wrapper is dropped from the relative paths (m4b `lift`). For example, `emule-0.47c/` inside the zip lines up with the unpacked folder.
 - **"Check now"** calls `check-now` with both refs.
 - **[target]** Two sides of 100,000 files each answer within 2 s on the development machine (slow test).
