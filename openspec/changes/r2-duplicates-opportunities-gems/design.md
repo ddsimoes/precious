@@ -468,7 +468,8 @@ func Stream(ctx context.Context, f domain.ArchiveFormat, name []byte, r io.Reade
 
 // internal/content (slice H)
 const KindHash, KindHashNow jobs.Kind = "hash", "hash_now"
-func NewService(st *store.Store, src *sources.Service, clk clock.Clock, h config.Hashing, a config.Archives) *Service
+func NewService(st *store.Store, src *sources.Service, clk clock.Clock, h config.Hashing, a config.Archives,
+    d config.Duplicates) *Service                               // d: refresh_interval of the hash checkpoints (D5)
 func (s *Service) Register(r *jobs.Runner)                     // hash (ClassBulk), hash_now (ClassInteractive)
 func (s *Service) AfterScan(ctx context.Context, src domain.SourceID)   // index hook
 func (s *Service) Startup(ctx context.Context) error
