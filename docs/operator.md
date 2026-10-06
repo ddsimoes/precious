@@ -676,7 +676,62 @@ The rules are versioned, and each scan records the version it used (`rules-v2+ma
 ## Duplicates and Compare
 
 <!-- owner: R -->
-This section will document duplicate groups and redundant bytes, what a "no other copy" claim means and the coverage it carries, folder relations (same, inside, overlap), the duplication figures of folders, Compare and its buckets, the `relate` job, and the `[duplicates]` settings.
+Precious finds copies by content, never by name: two files are copies when their SHA-256 digests are equal. Hashing (see [Hashing](#hashing)) fills in the digests in the background, and everything below follows it.
+
+### Duplicate groups
+
+A **duplicate group** is one content held by at least two copies among the present files of every source, offline sources included, and the members of opened archives (see [Archives](#archives)). Hard links to one file are one copy, and so are a tar hard link and the member it points to. A member is a copy; the archive holding it is not.
+
+A group's **redundant bytes** are its size times the number of copies minus one: what deleting every copy but one would give back. Precious never picks that one copy for you; each copy keeps its own decision.
+
+A file is said to have **no other copy** only when that is known: no other file anywhere has its size, its 64 KiB samples differ from every file of its size, or it was read in full and no other file has its digest. The claim always comes with the share of the content that could have a copy and was checked, across every source, because a copy could sit on any of them. Archives that are not opened (7z, rar, encrypted zips, archives inside archives, and archives that went over a budget) count as plain files: a copy inside one is not seen.
+
+### Folder relations
+
+Folders and opened archives are related by the digests of the files they hold, whatever the names and layout:
+
+| Relation | Meaning |
+|---|---|
+| `same` | Each side's content all exists on the other side. |
+| `inside` | Side A's content all exists on side B, which holds more. |
+| `overlap` | At least half of one side's bytes have their content on the other side. |
+
+Each relation shows its matched bytes, its redundant bytes, and the files and bytes found only on each side. Side A is the contained side of `inside`, the archive (or else the later path) of `same`, and the side with the larger matched share of `overlap`. An archive that is the `same` as a folder counts its packed size as redundant: it can go, and the folder keeps everything.
+
+A folder that holds a file not checked yet, a file that could not be read, an unreadable folder, or a mount point is never claimed `same` or `inside`: something in it might exist nowhere else. It can still `overlap`. Files that are empty count for nothing, and symbolic links match by their target text.
+
+Each copy is listed once, at its highest related folder: when `Fotos - Copia` overlaps `Fotos` and their `2004` folders are the same, the list holds those two relations, and none for the folders inside `2004`. Folders that hold nothing but one folder are named by it in a `same` relation, so a copied program folder pairs with the original even when it sits alone in its parent; a folder that holds nothing but an archive is named by the archive.
+
+### Percent duplicated
+
+Every folder carries:
+
+- its **duplicated bytes**: the bytes of the files in its subtree that have another copy anywhere;
+- its **candidate bytes**: the bytes of its files whose size another file shares, the only ones that can have a copy;
+- its **checked bytes**: the part of the candidate bytes whose content is known.
+
+Its **percent duplicated** is its duplicated bytes over its total bytes; a file is 0% or 100%. The Map colors folders by it in five bands (0%, under 25%, under 50%, under 75%, and 75% or more), and as **not checked** while its checked bytes are below its candidate bytes, because the figure can still grow. An archive counts in its folder at its packed size, by its own file, never by its members.
+
+### Compare
+
+Compare takes two folders, opened archives, or folders inside an archive, and lists their files in five groups:
+
+| Group | Meaning |
+|---|---|
+| Only on the left / only on the right | The file's content is proven absent from the other side. |
+| Identical | The content exists on both sides, whatever the names. |
+| Same path, different content | Both sides have a file at that relative path, and their contents are proven different. |
+| Not checked yet | It cannot be said yet. |
+
+A size that the other side does not have at all proves "only here" without reading anything. **Not checked yet** appears for a file that hashing has not read (or could not read, or that changed while it was read) whose size exists on the other side, and for a checked file whose size exists on the other side only among such files: either could be the same content. Click **Check now** to have both sides hashed first; the group empties as hashing proceeds. Unreadable files stay in it.
+
+When one side holds nothing but a single folder, such as `emule-0.47c/` inside a zip, and dropping it lines up the paths with the other side, Compare drops it. The two sides cannot contain each other: comparing `Fotos` with `Fotos/2005`, or a file, is refused with `400 invalid_request`.
+
+### When relations are recomputed
+
+The `relate` job recomputes every relation and every folder's figures from the index, for all sources at once. It runs in a pool of its own, one at a time, and never holds a disk: it only reads the database. It starts after each scan, every `duplicates.refresh_interval` while hashing runs and when hashing ends, and at server start when a run was requested but never done. A request while it runs makes it run again when it finishes. The relations shown switch to the new ones all at once, so a page never mixes two runs; the folder figures are updated in place and settle within the run. Its progress shows `phase` (1 loading the index, 2 relating, 3 writing, 4 review lists, 5 cleaning up) and `folders`.
+
+On a development machine, a run over 2 million entries takes seconds and well under 1.5 GB of memory; a Compare of two folders of 100,000 files each answers within 2 seconds.
 
 ## Opportunities and Gems
 
