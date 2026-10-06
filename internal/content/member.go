@@ -15,8 +15,9 @@ import (
 )
 
 // Opened is an archive member open for reading (design D17). Content
-// yields its bytes and closes the archive; Seeker, when not nil, reads the
-// same bytes with ranges.
+// yields its bytes, and closing it closes the archive; Seeker, when not
+// nil, is the same reader with ranges (as http.ServeContent takes it), so
+// reading one moves the other. The caller always closes Content.
 type Opened struct {
 	Size    int64
 	ModTime time.Time
