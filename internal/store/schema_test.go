@@ -253,8 +253,22 @@ func TestSourceDeleteCascades(t *testing.T) {
 // rows once per deleted entry.
 func TestForeignKeysIntoEntriesAreIndexed(t *testing.T) {
 	s, _ := openTemp(t, Options{})
+	assertForeignKeysIndexed(t, s, "entries", 4)
+}
+
+// Pruning an unreferenced contents row checks every table that references
+// contents, so those references are indexed too (R2 Interfaces).
+func TestForeignKeysIntoContentsAreIndexed(t *testing.T) {
+	s, _ := openTemp(t, Options{})
+	assertForeignKeysIndexed(t, s, "contents", 3)
+}
+
+// assertForeignKeysIndexed checks that every foreign key into parent (at
+// least min of them) is searched through an index.
+func assertForeignKeysIndexed(t *testing.T, s *Store, parent string, min int) {
+	t.Helper()
 	rows, err := s.Reader().Query(`SELECT m.name, f."from" FROM sqlite_schema m, pragma_foreign_key_list(m.name) f
-		WHERE m.type = 'table' AND f."table" = 'entries' ORDER BY m.name, f."from"`)
+		WHERE m.type = 'table' AND f."table" = ? ORDER BY m.name, f."from"`, parent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,19 +284,19 @@ func TestForeignKeysIntoEntriesAreIndexed(t *testing.T) {
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		t.Fatal(err)
 	}
-	if len(fks) < 4 {
-		t.Fatalf("foreign keys into entries: %v", fks)
+	if len(fks) < min {
+		t.Fatalf("foreign keys into %s: %v", parent, fks)
 	}
 	indexed := regexp.MustCompile(`SEARCH .* USING (COVERING INDEX|INDEX|INTEGER PRIMARY KEY|PRIMARY KEY)`)
 	for _, k := range fks {
-		var id, parent, notUsed int
+		var id, parentID, notUsed int
 		var detail string
 		q := `EXPLAIN QUERY PLAN SELECT 1 FROM "` + k.table + `" WHERE "` + k.column + `" = ?`
-		if err := s.Reader().QueryRow(q, 1).Scan(&id, &parent, &notUsed, &detail); err != nil {
+		if err := s.Reader().QueryRow(q, 1).Scan(&id, &parentID, &notUsed, &detail); err != nil {
 			t.Fatal(err)
 		}
 		if !indexed.MatchString(detail) {
-			t.Errorf("%s.%s references entries without an index: %s", k.table, k.column, detail)
+			t.Errorf("%s.%s references %s without an index: %s", k.table, k.column, parent, detail)
 		}
 	}
 }

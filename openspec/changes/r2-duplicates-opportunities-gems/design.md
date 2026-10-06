@@ -410,6 +410,7 @@ CREATE INDEX review_rows_source   ON review_rows(gen, list, source_id, sort_key,
 CREATE INDEX review_rows_entry    ON review_rows(entry_id) WHERE entry_id IS NOT NULL;
 CREATE INDEX review_rows_group    ON review_rows(group_id) WHERE group_id IS NOT NULL;
 CREATE INDEX review_rows_relation ON review_rows(relation_id) WHERE relation_id IS NOT NULL;
+CREATE INDEX review_rows_content  ON review_rows(content_id) WHERE content_id IS NOT NULL;
 CREATE TABLE review_row_sources (
   row_id INTEGER NOT NULL REFERENCES review_rows(id) ON DELETE CASCADE,
   source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -421,7 +422,7 @@ CREATE TABLE review_state (
 INSERT INTO review_state VALUES (1, 0, 1, NULL);
 ```
 
-Every foreign key into `entries` is indexed, as R1 A2 requires and `TestForeignKeysIntoEntriesAreIndexed` checks. Removing a source cascades through `entries` and `sources`. Unreferenced `contents` rows are pruned by `relate` in batches of 5,000.
+Every foreign key into `entries` is indexed, as R1 A2 requires and `TestForeignKeysIntoEntriesAreIndexed` checks. Every foreign key into `contents` is indexed too, so pruning a `contents` row checks its referencing rows by index. Removing a source cascades through `entries` and `sources`. Unreferenced `contents` rows are pruned by `relate` in batches of 5,000.
 
 ### Import direction
 
