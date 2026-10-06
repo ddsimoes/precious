@@ -3,8 +3,12 @@ import type { RouteObject } from 'react-router'
 import { AppLayout } from '@/app/AppLayout'
 import { LoginPage } from '@/app/LoginPage'
 import { NotFoundPage } from '@/app/NotFoundPage'
+import { ComparePage } from '@/compare/ComparePage'
+import { GemsPage } from '@/gems/GemsPage'
 import { HomePage } from '@/home/HomePage'
 import { MapPage } from '@/map/MapPage'
+import { OpportunitiesPage } from '@/opportunities/OpportunitiesPage'
+import { ReviewListPage } from '@/opportunities/ReviewListPage'
 import { SearchPage } from '@/search/SearchPage'
 import { SourcesPage } from '@/sources/SourcesPage'
 
@@ -19,6 +23,11 @@ export const routes: RouteObject[] = [
       // Without an entry id (the Map link in the header) the Map screen picks its start.
       { path: 'map/:entryId?', element: <MapPage /> },
       { path: 'search', element: <SearchPage /> },
+      { path: 'opportunities', element: <OpportunitiesPage /> },
+      { path: 'opportunities/:list', element: <ReviewListPage /> },
+      { path: 'gems', element: <GemsPage /> },
+      // Compare names its two sides in the address: ?left=&right=&bucket=.
+      { path: 'compare', element: <ComparePage /> },
       { path: 'sources', element: <SourcesPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],

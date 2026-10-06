@@ -1,9 +1,10 @@
-import type { QueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 
-import { entriesQueryRoot } from '@/api/entries'
-import { homeQueryRoot, type Decision } from '@/api/home'
-import { searchQueryRoot, type SelectionQuery } from '@/api/search'
+import { duplicatesQueryRoots } from '@/api/content'
+import type { Decision } from '@/api/home'
+import type { SelectionQuery } from '@/api/search'
 import { postCommand } from '@/app/api'
+import { useCsrfToken } from '@/app/session'
 
 // Owner decisions and selections (design D10; commands set-decision and
 // create-selection).
@@ -59,11 +60,22 @@ export function createSelection(query: SelectionQuery, csrfToken: string): Promi
 
 // refreshAfterDecision refetches what a decision makes stale: every entry
 // (effective decisions change across the subtree), search results (the
-// decision filter), and Home's decision totals.
+// decision filter), Home's decision totals and cards, and the opportunity
+// cards, review lists, Gems, and Compare, whose open rows and decision
+// controls follow the decisions live.
 export async function refreshAfterDecision(queryClient: QueryClient) {
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: entriesQueryRoot }),
-    queryClient.invalidateQueries({ queryKey: searchQueryRoot }),
-    queryClient.invalidateQueries({ queryKey: homeQueryRoot }),
-  ])
+  await Promise.all(duplicatesQueryRoots.map((queryKey) => queryClient.invalidateQueries({ queryKey })))
+}
+
+// useDecide sets one entry's own decision with an individual request, which
+// applies even to a kept entry, as the detail panel does, and refreshes
+// every screen the decision changes.
+export function useDecide() {
+  const queryClient = useQueryClient()
+  const csrfToken = useCsrfToken()
+  return useMutation({
+    mutationFn: ({ id, choice }: { id: string; choice: DecisionChoice }) =>
+      setDecision({ entry_id: id }, choice, csrfToken),
+    onSuccess: () => refreshAfterDecision(queryClient),
+  })
 }

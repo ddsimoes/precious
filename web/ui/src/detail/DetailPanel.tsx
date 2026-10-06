@@ -1,12 +1,21 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
-import { entryQueryKey, fetchEntry, type EntryDetail } from '@/api/entries'
+import {
+  duplicationOf,
+  entryQueryKey,
+  fetchEntry,
+  isDrillable,
+  isMember,
+  type EntryDetail,
+} from '@/api/entries'
 import { useSources } from '@/api/sources'
 import { ErrorBanner } from '@/app/ErrorBanner'
+import { CompareWith } from '@/compare/CompareWith'
 import { Button } from '@/components/ui/button'
+import { ArchiveSection, CopiesSection, RelationsSection } from '@/detail/ContentSections'
 import { DecisionControls } from '@/detail/DecisionControls'
 import { InsideList } from '@/detail/InsideList'
 import { Preview } from '@/detail/Preview'
@@ -108,8 +117,12 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
   const [viewing, setViewing] = useState(false)
   const { entry, ancestors, classification, intent, stats } = detail
   const folder = entry.kind === 'directory'
+  const drillable = isDrillable(entry)
+  const member = isMember(entry)
   const rootLabel = sources.data?.sources.find((s) => s.id === entry.source_id)?.label ?? t('entry.root')
   const parent = ancestors.at(-1)
+  const archiveName = ancestors.find((a) => a.id === entry.archive_id)?.name ?? entry.archive_id ?? ''
+  const duplication = folder ? duplicationOf(entry) : null
   const date = (time: string | null) => (time === null ? t('detail.unknownDate') : fmt.dateTime(time))
 
   const byKind = [...(stats?.by_kind ?? [])]
@@ -160,7 +173,7 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
         <Button asChild size="sm" variant="outline">
           <Link
             to={
-              folder || parent === undefined
+              drillable || parent === undefined
                 ? { pathname: `/map/${entry.id}`, search: `?entry=${entry.id}` }
                 : { pathname: `/map/${parent.id}`, search: `?entry=${entry.id}` }
             }
@@ -168,12 +181,27 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
             {t('detail.showInMap')}
           </Link>
         </Button>
-        {folder && (
+        {folder && !member && (
           <Button asChild size="sm" variant="outline">
             <Link to={{ pathname: '/search', search: `?within=${entry.id}` }}>{t('detail.searchHere')}</Link>
           </Button>
         )}
+        <CompareWith entry={entry} name={entry.path === '' ? rootLabel : entry.path} />
       </div>
+
+      {entry.archive_id !== null && (
+        <p className="text-sm">
+          <Trans
+            i18nKey="detail.member"
+            values={{ path: archiveName }}
+            components={{
+              archiveLink: (
+                <Link to={{ search: entryLink(entry.archive_id) }} className="break-all text-primary underline" />
+              ),
+            }}
+          />
+        </p>
+      )}
 
       {entry.kind === 'file' && <Preview entry={entry} onOpen={() => setViewing(true)} />}
 
@@ -198,7 +226,38 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
         {stats !== null && stats.mount_boundaries > 0 && (
           <Fact label={t('detail.mountBoundaries')}>{fmt.count(stats.mount_boundaries)}</Fact>
         )}
+        {duplication !== null && (
+          <Fact label={t('detail.duplicated')}>
+            {duplication.checked
+              ? t('detail.duplicatedValue', {
+                  percent: fmt.percent(duplication.fraction),
+                  bytes: fmt.bytes(entry.duplicated_bytes ?? 0),
+                })
+              : duplication.fraction === 0
+                ? t('detail.duplicatedUnchecked')
+                : t('detail.duplicatedPartial', {
+                    percent: fmt.percent(duplication.fraction),
+                    bytes: fmt.bytes(entry.duplicated_bytes ?? 0),
+                  })}
+          </Fact>
+        )}
       </dl>
+
+      {detail.content !== null && (
+        <Section title={t('detail.copies')}>
+          <CopiesSection entry={entry} content={detail.content} coverage={detail.coverage} />
+        </Section>
+      )}
+      {detail.archive !== null && (
+        <Section title={t('detail.archive')}>
+          <ArchiveSection entry={entry} archive={detail.archive} />
+        </Section>
+      )}
+      {drillable && (
+        <Section title={t('detail.relations')}>
+          <RelationsSection entry={entry} relations={detail.relations} coverage={detail.coverage} />
+        </Section>
+      )}
 
       {byFamily.length > 0 && (
         <Section title={t('detail.composition')}>
@@ -285,12 +344,23 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       </Section>
 
       <Section title={t('detail.decision')}>
-        <DecisionControls entry={entry} intent={intent} rootLabel={rootLabel} />
+        {member ? (
+          <div className="grid gap-1 text-sm">
+            <p className="font-medium">
+              {t('detail.memberDecision', { decision: t(`home.decision.${entry.eff_decision}`) })}
+            </p>
+            <p className="text-muted-foreground">{t('detail.memberHelp')}</p>
+          </div>
+        ) : (
+          <DecisionControls entry={entry} intent={intent} rootLabel={rootLabel} />
+        )}
       </Section>
 
-      <Section title={t('detail.tags')}>
-        <TagEditor entryId={entry.id} tags={intent.tags} rootLabel={rootLabel} />
-      </Section>
+      {!member && (
+        <Section title={t('detail.tags')}>
+          <TagEditor entryId={entry.id} tags={intent.tags} rootLabel={rootLabel} />
+        </Section>
+      )}
 
       <details className="text-sm">
         <summary className="cursor-pointer font-medium">{t('detail.technical')}</summary>
@@ -305,6 +375,14 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
           </Fact>
           <Fact label={t('detail.state')}>{entry.state}</Fact>
           <Fact label={t('detail.mountBoundary')}>{entry.mount_boundary ? t('detail.yes') : t('detail.no')}</Fact>
+          {detail.content !== null && (
+            <Fact label={t('detail.contentState')}>{t(`detail.contentStates.${detail.content.state}`)}</Fact>
+          )}
+          {detail.content !== null && detail.content.sha256 !== null && (
+            <Fact label={t('detail.sha256')}>
+              <span className="font-mono text-xs break-all">{detail.content.sha256}</span>
+            </Fact>
+          )}
           {classification.rules.length > 0 && (
             <Fact label={t('detail.ruleIds')}>
               <span className="font-mono text-xs">{classification.rules.map((rule) => rule.id).join(', ')}</span>
