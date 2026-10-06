@@ -163,22 +163,22 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
 
 ## 6. Search filter, read API, and viewer (slice Q)
 
-- [ ] 6.1 Implement the `dup` filter SQL (D15). Paths: `internal/search`. Verify with tests that:
+- [x] 6.1 Implement the `dup` filter SQL (D15). Paths: `internal/search`. Verify with tests that:
   - `copies`, `unique`, and `unchecked` match `SeedContent`'s states;
   - `elsewhere` within `Fotos - Copia` lists every photo but `DSC_editada.JPG`;
   - selections round-trip the filter.
-- [ ] 6.2 Fill the EntryRow fields, extend the detail with `content`, `relations`, `archive`, and `coverage`, and add `/copies`, plus children and treemap for archives and member folders (D16). Paths: `internal/web/api`. Verify with handler tests on the seeded corpus: copies of `curriculo.doc`, the relation of `emule-0.47c` with its zip, a member's row and detail, and paging inside an archive.
-- [ ] 6.3 Add `GET /api/home` coverage, cards, and hashing jobs, and add `GET /api/opportunities`, `/opportunities/{list}`, `/gems`, and `/compare`, with their errors. Paths: `internal/web/api`. Verify with handler tests of each shape, a 404 for an unknown list, and a 400 for a containment Compare.
-- [ ] 6.4 Write the test for **R2.4** at the API: discarding `Documentos/curriculo (1).doc` through `set-decision`, after reading its group, leaves every other copy's decision, triage, and tags unchanged. A `set-decision` naming a member is 400. Verify with `go test -race -run R2_4 ./internal/web/api/`.
-- [ ] 6.5 Write the test for **R2.7**: with coverage seeded at 80%, the detail of a photo with a unique size says it has no other copy, with that share, and a pending photo reads as not checked. Verify with `go test -race -run R2_7 ./internal/web/api/`.
-- [ ] 6.6 Serve members through `/content` and `/text` with `OpenMember` (D17). Paths: `internal/viewer`. Verify with tests for:
+- [x] 6.2 Fill the EntryRow fields, extend the detail with `content`, `relations`, `archive`, and `coverage`, and add `/copies`, plus children and treemap for archives and member folders (D16). Paths: `internal/web/api`. Verify with handler tests on the seeded corpus: copies of `curriculo.doc`, the relation of `emule-0.47c` with its zip, a member's row and detail, and paging inside an archive.
+- [x] 6.3 Add `GET /api/home` coverage, cards, and hashing jobs, and add `GET /api/opportunities`, `/opportunities/{list}`, `/gems`, and `/compare`, with their errors. Paths: `internal/web/api`. Verify with handler tests of each shape, a 404 for an unknown list, and a 400 for a containment Compare.
+- [x] 6.4 Write the test for **R2.4** at the API: discarding `Documentos/curriculo (1).doc` through `set-decision`, after reading its group, leaves every other copy's decision, triage, and tags unchanged. A `set-decision` naming a member is 400. Verify with `go test -race -run R2_4 ./internal/web/api/`.
+- [x] 6.5 Write the test for **R2.7**: with coverage seeded at 80%, the detail of a photo with a unique size says it has no other copy, with that share, and a pending photo reads as not checked. Verify with `go test -race -run R2_7 ./internal/web/api/`.
+- [x] 6.6 Serve members through `/content` and `/text` with `OpenMember` (D17). Paths: `internal/viewer`. Verify with tests for:
   - the type and the sandbox CSP of a member JPEG;
   - a 206 for a range of the stored video;
   - an `.html` member served as an attachment;
   - a changed archive returning 409.
-- [ ] 6.7 Write the test for **R2.8**: the viewer serves a photo inside `Downloads/fotos_2005_do_pendrive.zip`, and the state directory, `TMPDIR`, and the source list exactly the same files before and after. Verify with `go test -race -run R2_8 ./internal/viewer/`.
-- [ ] 6.8 Run the R1.10 slow test again with the `dir_dups` join and the new fields. Verify with `go test -tags slow -run R1_10 ./internal/web/api/`: children p95 < 300 ms and treemap p95 < 500 ms. Record the numbers in the design addendum.
-- [ ] 6.9 Write the read-API section of `docs/operator.md`: the new endpoints, `dup`, member refs, and the viewer's rules for members. Verify with the docs tests.
+- [x] 6.7 Write the test for **R2.8**: the viewer serves a photo inside `Downloads/fotos_2005_do_pendrive.zip`, and the state directory, `TMPDIR`, and the source list exactly the same files before and after. Verify with `go test -race -run R2_8 ./internal/viewer/`.
+- [x] 6.8 Run the R1.10 slow test again with the `dir_dups` join and the new fields. Verify with `go test -tags slow -run R1_10 ./internal/web/api/`: children p95 < 300 ms and treemap p95 < 500 ms. Record the numbers in the design addendum.
+- [x] 6.9 Write the read-API section of `docs/operator.md`: the new endpoints, `dup`, member refs, and the viewer's rules for members. Verify with the docs tests.
 
 ## 7. Interface (slice U)
 
@@ -213,7 +213,7 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
 
 ## 8. Integration (coordinator)
 
-- [ ] 8.1 Wire `serve`:
+- [x] 8.1 Wire `serve`:
   - `content.NewService`, its jobs, and its commands;
   - `index` `OnScanDone` → `content.AfterScan`;
   - the `relate` handler with `review.Refresh` as its after hook;
