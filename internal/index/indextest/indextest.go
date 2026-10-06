@@ -264,6 +264,49 @@ func Seed(t testing.TB, st *store.Store, tree Tree) *Seeded {
 	return s
 }
 
+// Attach returns the Seeded of a source that is already indexed, for
+// example by a real scan, so its paths can be looked up and its content
+// seeded (SeedContent, SetContent, SeedArchive). Every entry of the source,
+// present or not, is addressable by its raw '/'-joined path; the scan time
+// is the source's last_scan_at, or DefaultNow when it has none.
+func Attach(t testing.TB, st *store.Store, src domain.SourceID) *Seeded {
+	t.Helper()
+	s := &Seeded{Source: src, ids: map[string]domain.EntryID{}, t: t}
+	err := st.Read(context.Background(), func(tx *sql.Tx) error {
+		var last sql.NullInt64
+		if err := tx.QueryRow(`SELECT last_scan_at FROM sources WHERE id = ?`, string(src)).Scan(&last); err != nil {
+			return err
+		}
+		s.now = DefaultNow.UnixMilli()
+		if last.Valid {
+			s.now = last.Int64
+		}
+		rows, err := tx.Query(`SELECT id, path FROM entries WHERE source_id = ?`, string(src))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id domain.EntryID
+			var path []byte
+			if err := rows.Scan(&id, &path); err != nil {
+				return err
+			}
+			s.ids[string(path)] = id
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		t.Fatalf("indextest: attach %s: %v", src, err)
+	}
+	root, ok := s.ids[""]
+	if !ok {
+		t.Fatalf("indextest: attach %s: the source has no root entry", src)
+	}
+	s.Root = root
+	return s
+}
+
 func createSource(tx *sql.Tx, tree Tree) error {
 	state, mount := "offline", any(nil)
 	if tree.MountPoint != "" {

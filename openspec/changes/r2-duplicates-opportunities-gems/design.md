@@ -224,6 +224,9 @@ See `proposal.md` for why. R1 left these facts that shape R2:
 - **"Outermost"** means no ancestor is a row of the same card, so no byte counts twice in one card. Different cards may overlap.
 - **Open rows.** An entry row is open while its `eff_decision` is `undecided`. A duplicates row is open while at least two of its copies are undecided (D2).
 - **Storage.** `review_rows` stores rows per generation. For duplicates rows, `review_row_sources` maps a row to every source holding one of its copies.
+- **Duplicates group bytes** (agreed 2026-10-06). A group row's bytes are size × its physical copies outside every listed relation, less one when none of its copies is inside a listed relation. The relation row already counts the redundancy of the copies inside it and leaves one of them standing, so a three-copy group with two copies inside `A same B` adds one copy's size, and no byte counts twice.
+- **Outermost and existence.** Outermost is computed per card over the matching entries' raw paths, missing entries and source roots excluded. An empty folder is present, holds no file, has no unreadable folder or mount boundary below it, and is no mount boundary itself.
+- **Paging.** Card lists page by `sort_key` (= bytes) then `id`, both descending; Gems sections by `sort_key` then `id`, both ascending. A cursor is the last row's `sort_key` and `id`.
 - **A card** = `SUM(bytes)` over its open rows, the same SQL as the list's filter, so R2.5 holds by construction and is still tested end to end.
 - **Ranking** is by bytes.
 - **Rejected:** counting decided rows in cards. The cards answer "what is left to look at".
@@ -241,6 +244,11 @@ See `proposal.md` for why. R1 left these facts that shape R2:
 - **`gems_rescue`:** the `dir_stats.indicators` of groups of family programs or disposable, with their copy state.
 - **`gems_only_in_copy`:** the only-one-side files of `overlap` relations that have no other copy, grouped by relation.
 - **Coverage.** Each section states the global checked share. Not-checked files are counted, never listed.
+- **Row encoding** (agreed 2026-10-06):
+  - `gems_unique`: `entry_id` the file, `sort_key` its `mtime_ns`, rows inserted by `mtime_ns` then raw path;
+  - `gems_rescue`: `entry_id` the indicator, `group_id` its outermost programs or disposable group (indicators are taken from every such group's `dir_stats.indicators` and deduplicated), `sort_key` the group's rank (largest group first), indicators by raw path within a group;
+  - `gems_only_in_copy`: `entry_id` the file, `group_id` the overlap side folder holding it, `sort_key` the relation's ID (so `Rows` returns it), files by raw path within a relation, each file once. Review computes these with its own SQL (the unique files below an overlap side folder; a unique file is on no other side), not with Compare. Archive members cannot be `entry_id`, so archive sides add none.
+- **Decisions.** Gems rows are listed whatever their decision; a decided Gems page is empty.
 
 ### D15. Search's duplicate filter (§11.3)
 
@@ -400,9 +408,9 @@ CREATE TABLE review_rows (
   entry_id    INTEGER REFERENCES entries(id) ON DELETE CASCADE,
   relation_id INTEGER REFERENCES relations(id) ON DELETE CASCADE,
   content_id  INTEGER REFERENCES contents(id),
-  group_id    INTEGER REFERENCES entries(id) ON DELETE CASCADE,      -- gems_rescue: the group
+  group_id    INTEGER REFERENCES entries(id) ON DELETE CASCADE,      -- gems_rescue: the group; gems_only_in_copy: the overlap side
   bytes INTEGER NOT NULL, files INTEGER NOT NULL,
-  sort_key INTEGER NOT NULL,                       -- bytes (cards) or mtime_ns (gems_unique)
+  sort_key INTEGER NOT NULL,                       -- bytes (cards), mtime_ns (gems_unique), group rank (gems_rescue), relation id (gems_only_in_copy)
   CHECK ((entry_id IS NOT NULL) + (relation_id IS NOT NULL) + (content_id IS NOT NULL) = 1)
 );
 CREATE INDEX review_rows_list     ON review_rows(gen, list, sort_key, id);
@@ -468,7 +476,8 @@ func Stream(ctx context.Context, f domain.ArchiveFormat, name []byte, r io.Reade
 
 // internal/content (slice H)
 const KindHash, KindHashNow jobs.Kind = "hash", "hash_now"
-func NewService(st *store.Store, src *sources.Service, clk clock.Clock, h config.Hashing, a config.Archives) *Service
+func NewService(st *store.Store, src *sources.Service, clk clock.Clock, h config.Hashing, a config.Archives,
+    d config.Duplicates) *Service                               // d: refresh_interval of the hash checkpoints (D5)
 func (s *Service) Register(r *jobs.Runner)                     // hash (ClassBulk), hash_now (ClassInteractive)
 func (s *Service) AfterScan(ctx context.Context, src domain.SourceID)   // index hook
 func (s *Service) Startup(ctx context.Context) error
@@ -499,6 +508,9 @@ func Compare(ctx context.Context, q store.Queryer, left, right domain.Ref, bucke
 type List string                                               // the review_rows.list values
 func Refresh(ctx context.Context, st *store.Store, gen int64) error   // relations' after hook
 type Card struct{ List List; Bytes, Rows int64; Basis string }  // basis: rules | content
+type Row struct{ ID int64; List List; Source domain.SourceID; Entry domain.EntryID; Relation, Content int64
+    Copy domain.Ref /* a content row's lowest present copy */; Group domain.EntryID; Bytes, Files, SortKey int64 }
+type Page struct{ Items []Row; NextCursor string }
 func Cards(ctx context.Context, q store.Queryer, src domain.SourceID) ([]Card, error)
 func Rows(ctx context.Context, q store.Queryer, list List, src domain.SourceID, decided bool, cursor string, limit int) (Page, error)
 func Resolve(ctx context.Context, q store.Queryer, list List, src domain.SourceID, max int) ([]domain.EntryID, error)
@@ -579,3 +591,17 @@ No R2 command writes an audit event, because none changes an owner decision. `se
 
 1. Take a backup with `precious backup`, then install the R2 binary. At startup, `0002_content.sql` applies to the R1 database, and every online source gets a hashing job.
 2. **Rollback.** The R1 binary refuses a newer schema (`ErrSchemaTooNew`), so restore the backup taken in step 1. The operator docs say this.
+
+## Addendum: measurements
+
+### Review lists and Gems at 2 million entries (task 5.6)
+
+`go test -tags slow -run Review -v ./internal/review/` on the development machine (Intel Core i9-13980HX), 2026-10-06. The generated index has 2,000,001 entries in one source; review rows: 270,100 duplicates (100 same relations, 270,000 duplicate groups), 720,000 `gems_unique`, 60,000 `gems_only_in_copy`, 600 `gems_rescue`, and 200 rows in each rule card.
+
+| Measurement | Result | Target |
+|---|---|---|
+| Seven cards, all sources and one source (20 runs) | p95 690 ms, max 708 ms | p95 < 1 s |
+| Review-list and Gems pages of 50 rows, open and decided, all sources and one source (136 pages) | p95 0.6 ms, max 699 ms | p95 < 300 ms |
+| `review.Refresh` of one generation | 41 s | within `relate`'s 3 minutes |
+
+The slowest page is the decided duplicates page when no duplicates row is decided: it evaluates every row's open state (about 2 µs per duplicate group) before finding that none is closed. The cards cost the same evaluation once per row.

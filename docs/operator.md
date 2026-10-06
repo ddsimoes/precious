@@ -807,7 +807,54 @@ This section will document duplicate groups and redundant bytes, what a "no othe
 ## Opportunities and Gems
 
 <!-- owner: V -->
-This section will document the opportunity cards and how their bytes are counted, the review lists and their keyboard, selecting a whole list, and the three sections of Gems.
+Opportunities answers "what should I look at first?" with seven cards, and Gems answers "what is valuable and has no other copy?". Both are built from the index, the rules' classification, and the duplicates; neither decides anything for you.
+
+### The cards
+
+| Card | Rows | Bytes | Basis |
+|---|---|---|---|
+| Exact duplicates (`duplicates`) | Folder and archive relations of kind same or inside, and duplicate files outside every listed relation | Redundant bytes | Same content |
+| Archives already unpacked (`unpacked_archives`) | Archives whose whole content is the same as, or inside, a folder | The archive file's size | Same content |
+| System junk (`system_junk`) | Entries of category `system_junk` | Total bytes | Rules |
+| Installers and downloads (`installers`) | Entries of category `installer_download` or `download_collection` | Total bytes | Rules |
+| Programs and system copies (`programs`) | Entries of category `application_installation` or `os_installation` | Total bytes | Rules |
+| Caches and generated files (`caches`) | Entries of category `cache`, `temporary_data`, or `generated_artifacts`, except unfinished downloads | Total bytes | Rules |
+| Leftovers (`leftovers`) | Unfinished downloads (`*.part`, `*.partial`, `*.crdownload`), empty folders, and zero-byte files | Total bytes | Rules |
+
+Cards are ranked by bytes, largest first, and can show all sources or one. With one source, a card counts only the rows that touch it: its entries, and the duplicates rows with a copy on it.
+
+How the bytes are counted:
+
+- **A row is the outermost match.** A row is a group, folder, archive, or file that matches its card while no folder above it does. `Backup_PC_2004/C/WINDOWS` is one row of the programs card; `system32` inside it adds no bytes of its own. So no byte counts twice in one card. Different cards can overlap: a zero-byte `desktop.ini` is both system junk and a leftover.
+- **An empty folder** holds no file at any depth, is readable, and is not where another filesystem is mounted. Folders below an unreadable folder or a mount boundary are never called empty.
+- **A duplicates row** is a relation (its bytes are one side's worth of redundant bytes), or a group of identical files with at least one copy outside every listed relation. A group's bytes are its size times its copies outside the listed relations, less one when none of its copies is inside a relation: the relation already counts the copies inside it. Hard links to one file are one copy. Files inside archives count as copies; the archive itself does not.
+- **Only open rows count.** A row is open while its entry's effective decision is undecided. A duplicates row is open while at least two of its copies are undecided (for a relation, both sides). Deciding an entry, or the folder above it, closes its row at once and shrinks the card by the row's bytes. A card's bytes are always the sum of its list's open rows, read through every page.
+
+The rows are recomputed by the `relate` job (see Duplicates and Compare), after each scan and as hashing advances, so the classification and duplicates they show are as current as that job's last run. Decisions are never stored in them: they are read live.
+
+### Review lists
+
+Opening a card shows its review list, largest row first. Each row shows its size, dates, suggestion, and a one-line summary of what it holds: category, years, files, bytes, and up to two notable signals, such as a spreadsheet inside an installed program. Duplicates rows expand into their copies, each with its own decision controls.
+
+The list works from the keyboard: `K` keep, `D` discard, `L` later, `J` or `↓` next row, `↑` previous row, and `Enter` opens the detail panel. In the duplicates list, the keys act on the focused copy. The keys are ignored while typing in a field and inside a dialog.
+
+A decided row leaves the list. Choose to show decided rows to list the rows that are no longer open, with their decisions.
+
+### Selecting a whole list
+
+Every list except duplicates can select all of its open rows (the `select-list` command, `{"list":"system_junk","source_id":"…"}`; `source_id` is optional). This makes an ordinary selection of the rows' entries, exactly like a search's select-all: the confirmation shows the count, the bytes, and the kept entries, and the bulk decision skips every kept entry and reports it. The selection holds the entries open when it was made; a later refresh of the lists does not change it, and an entry kept in the meantime is skipped.
+
+The duplicates list has no select-all (`400 invalid_request`): Precious never chooses which copy stays. Decide copies one by one, or use Search's duplicate filter ("copies outside this folder") and select its results.
+
+### Gems
+
+Gems has three sections, for all sources or one:
+
+- **Unique personal files:** photos, videos, music, and documents of the personal family with no other copy anywhere, outside every installed program, system copy, or disposable group, oldest first.
+- **To rescue:** the user material the rules found inside programs and disposable groups (the indicators that trigger the veto, such as `OFFICE11/Meu orcamento casamento.xls` inside Microsoft Office), each under its outermost group, with its copy state.
+- **Only in one copy:** files with no other copy that sit on one side of an overlap relation, such as a photo edited in a copied folder, grouped by relation. Files inside archives are not listed here.
+
+"No other copy" means the file is unique by size, its sample is distinct among files of its size, or it was hashed and found once (hard links count once). A file not checked yet, or one that could not be read, is never listed as having no other copy; it waits until hashing checks it. Archives Precious does not open (7z, rar, and archives over budget) count as plain files, so a copy inside one is not seen. Each section states the share of the content that could have a copy that was checked, over every source, because a copy can be anywhere. Gems lists files whatever their decision.
 
 ## Search, viewer, and read API
 

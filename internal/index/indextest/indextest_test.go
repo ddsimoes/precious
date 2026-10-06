@@ -287,6 +287,31 @@ func TestSeedExistingSource(t *testing.T) {
 	}
 }
 
+// Attach addresses an already indexed source by path with the same IDs, and
+// its content can then be seeded.
+func TestAttach(t *testing.T) {
+	st := storetest.Open(t)
+	seed := indextest.Seed(t, st, indextest.Tree{Source: "disk", CreateSource: true, Nodes: threeLevels()})
+	got := indextest.Attach(t, st, "disk")
+	if got.Source != seed.Source || got.Root != seed.Root {
+		t.Fatalf("attached source %q root %d, want %q root %d", got.Source, got.Root, seed.Source, seed.Root)
+	}
+	for _, n := range threeLevels() {
+		if got.ID(n.Path) != seed.ID(n.Path) {
+			t.Errorf("%s: attached ID %d, seeded %d", n.Path, got.ID(n.Path), seed.ID(n.Path))
+		}
+	}
+	file := "Fotos/2006/c.jpg"
+	got.SetContent(st, file, indextest.Content{State: domain.ContentUniqueSize})
+	var state string
+	if err := st.Reader().QueryRow(`SELECT state FROM file_content WHERE entry_id = ?`, int64(seed.ID(file))).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(domain.ContentUniqueSize) {
+		t.Fatalf("state %q after SetContent through Attach", state)
+	}
+}
+
 // A node's Lstat gives its row the platform facts with the scanner's
 // encodings; other rows keep them NULL.
 func TestSeedLstatFacts(t *testing.T) {
