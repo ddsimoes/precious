@@ -142,24 +142,24 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
 
 ## 5. Review lists and Gems (slice V)
 
-- [ ] 5.1 Implement `Refresh` (D12, D14): rows of the seven cards and the three Gems sections per generation, outermost rows, and `review_row_sources`. Paths: `internal/review`. Verify with tests on the seeded corpus that:
+- [x] 5.1 Implement `Refresh` (D12, D14): rows of the seven cards and the three Gems sections per generation, outermost rows, and `review_row_sources`. Paths: `internal/review`. Verify with tests on the seeded corpus that:
   - `Backup_PC_2004/C/WINDOWS` is one row of `programs`;
   - no entry counts twice in a card;
   - empty folders and zero-byte files are in `leftovers`;
   - duplicates rows exclude the files of listed relations.
-- [ ] 5.2 Implement `Cards`, `Rows`, and `Resolve`, with open rows joined live and the per-source filter. Paths: `internal/review`. Verify with tests that:
+- [x] 5.2 Implement `Cards`, `Rows`, and `Resolve`, with open rows joined live and the per-source filter. Paths: `internal/review`. Verify with tests that:
   - deciding a row removes it and shrinks its card;
   - `decided` lists it;
   - a duplicates row stays open while two copies are undecided;
   - a source filter counts only rows that touch that source.
-- [ ] 5.3 Register `select-list`. Paths: `internal/review`. Verify with tests that:
+- [x] 5.3 Register `select-list`. Paths: `internal/review`. Verify with tests that:
   - it gives an R1 selection of the open rows' entries;
   - a bulk discard on it skips kept entries and reports them;
   - `duplicates` and unknown lists are 400.
-- [ ] 5.4 Write the test for **R2.5**: on the seeded corpus, every card's bytes equal the sum of its rows' bytes read through all pages, for all sources and for one source. Verify with `go test -race -run R2_5 ./internal/review/`.
-- [ ] 5.5 Write the test for **R2.6**: Gems on the seeded corpus lists the ground truth's unique personal photos and documents oldest first, `Meu orcamento casamento.xls` in the rescue section, and `DSC_editada.JPG` in the only-in-copy section, and never a not-checked file. Verify with `go test -race -run R2_6 ./internal/review/`.
-- [ ] 5.6 Write a slow test (tag `slow`): at 2,000,000 entries, a review-list page and a Gems page answer in p95 < 300 ms, and all seven cards in p95 < 1 s (D20). Verify with `go test -tags slow -run Review ./internal/review/`, and record the numbers in the design addendum.
-- [ ] 5.7 Write the opportunities and Gems section of `docs/operator.md`: each card's definition and basis, open rows, select-all, and Gems' sections and coverage. Verify with the docs tests.
+- [x] 5.4 Write the test for **R2.5**: on the seeded corpus, every card's bytes equal the sum of its rows' bytes read through all pages, for all sources and for one source. Verify with `go test -race -run R2_5 ./internal/review/`.
+- [x] 5.5 Write the test for **R2.6**: Gems on the seeded corpus lists the ground truth's unique personal photos and documents oldest first, `Meu orcamento casamento.xls` in the rescue section, and `DSC_editada.JPG` in the only-in-copy section, and never a not-checked file. Verify with `go test -race -run R2_6 ./internal/review/`.
+- [x] 5.6 Write a slow test (tag `slow`): at 2,000,000 entries, a review-list page and a Gems page answer in p95 < 300 ms, and all seven cards in p95 < 1 s (D20). Verify with `go test -tags slow -run Review ./internal/review/`, and record the numbers in the design addendum.
+- [x] 5.7 Write the opportunities and Gems section of `docs/operator.md`: each card's definition and basis, open rows, select-all, and Gems' sections and coverage. Verify with the docs tests.
 
 ## 6. Search filter, read API, and viewer (slice Q)
 
