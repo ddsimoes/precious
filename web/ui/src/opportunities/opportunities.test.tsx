@@ -268,6 +268,32 @@ describe('Review list', () => {
     expect(screen.queryAllByRole('listitem').filter((item) => item.getAttribute('aria-current') === 'true')).toEqual([])
   })
 
+  it('loads the next page when the next key passes the last loaded row', async () => {
+    const pages: Record<string, EntryRow[]> = { '': [thumbs, recycler], p2: [temp] }
+    const requests = stubApi({
+      ...base,
+      'GET /api/opportunities/system_junk': (request) => {
+        const after = new URL(request.url).searchParams.get('cursor') ?? ''
+        return jsonResponse(200, {
+          card: card('system_junk', 66 * MiB, 3),
+          items: (pages[after] ?? []).map((row) => reviewRow(`r${row.id}`, row)),
+          next_cursor: after === '' ? 'p2' : null,
+        })
+      },
+    })
+    renderApp('/opportunities/system_junk')
+    const user = userEvent.setup()
+    await screen.findByRole('link', { name: recycler.path })
+    expect(screen.queryByRole('link', { name: temp.path })).not.toBeInTheDocument()
+
+    await user.keyboard('jj')
+    expect(current()[0]).toHaveTextContent(recycler.path)
+    await user.keyboard('j')
+    await waitFor(() => expect(current()[0]).toHaveTextContent(temp.path))
+    expect(current()[0]).toHaveFocus()
+    expect(listRequests(requests, 'system_junk')).toEqual(['?decided=0', '?decided=0&cursor=p2'])
+  })
+
   it('shows decided rows on request', async () => {
     const list = junkList([thumbs, recycler])
     list.decided.set('21', 'discard')

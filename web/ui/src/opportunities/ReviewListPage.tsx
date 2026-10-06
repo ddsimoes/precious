@@ -134,6 +134,9 @@ function ReviewList({ list }: { list: ReviewListName }) {
   // place is selected, and a hidden copy hands the selection to its row.
   // focus is set when the keyboard selected it.
   const [cursor, setCursor] = useState<{ key: string; row: string; index: number; focus: boolean } | null>(null)
+  // awaiting is the last loaded row of a section that J moved past while the
+  // section's next page loads; the page's first row is selected when it comes.
+  const [awaiting, setAwaiting] = useState<{ key: string; section: Section; count: number } | null>(null)
   const decide = useDecide()
   const duplicates = list === 'duplicates'
 
@@ -218,9 +221,36 @@ function ReviewList({ list }: { list: ReviewListName }) {
     setCursor(keyboardCursor(row >= 0 ? row : Math.min(cursor.index, targets.length - 1)))
   }
 
+  // The page J waits on came: its first row is selected, unless the
+  // selection moved meanwhile.
+  if (awaiting !== null) {
+    const row = sections[awaiting.section].rows[awaiting.count]
+    if (cursor?.key !== awaiting.key) {
+      setAwaiting(null)
+    } else if (row !== undefined) {
+      const key = rowKey(awaiting.section, row)
+      setAwaiting(null)
+      setCursor(keyboardCursor(targets.findIndex((target) => target.key === key)))
+    }
+  }
+
   const move = (delta: 1 | -1) => {
     if (targets.length === 0) {
       return
+    }
+    setAwaiting(null)
+    if (cursorAt >= 0 && delta === 1) {
+      // Past the last loaded row of a section, J loads the section's next
+      // page.
+      const here = targets[cursorAt]!
+      const { rows: sectionRows, pages } = sections[here.section]
+      if (pages.hasNextPage && targets[cursorAt + 1]?.section !== here.section) {
+        setAwaiting({ key: here.key, section: here.section, count: sectionRows.length })
+        if (!pages.isFetchingNextPage) {
+          void pages.fetchNextPage()
+        }
+        return
+      }
     }
     const index = cursorAt < 0 ? (delta === 1 ? 0 : targets.length - 1) : cursorAt + delta
     setCursor(keyboardCursor(Math.max(0, Math.min(targets.length - 1, index))))
