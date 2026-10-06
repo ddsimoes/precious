@@ -221,7 +221,7 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - `Startup` after `runner.Start`.
 
   Paths: `cmd/precious`. Verify with a serve test over the corpus: log in, add the source, scan, wait for hashing and `relate`, and check that `/api/opportunities` and `/api/gems` are non-empty and that a hashing job started without a request.
-- [ ] 8.2 Write the upgrade test: start the R2 server on a database made by the R1 baseline with a scanned source, decisions, and tags. Verify that the migration is recorded, IDs, decisions, and tags are kept, and hashing starts (state-store).
+- [x] 8.2 Write the upgrade test: start the R2 server on a database made by the R1 baseline with a scanned source, decisions, and tags. Verify that the migration is recorded, IDs, decisions, and tags are kept, and hashing starts (state-store).
 - [ ] 8.3 Extend the Playwright suite in `web/ui/e2e` over the built binary and the generated corpus, with one test each:
   - **R2.1:** coverage shown during hashing, then duplicate groups found;
   - **R2.2:** Compare of `Fotos` with `Fotos - Copia`;
