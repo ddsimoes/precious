@@ -245,6 +245,10 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 			if self, _ = rows.get(rel.A); self == nil {
 				continue
 			}
+			// Side a's files as the Map counts them: its own, members of
+			// the archives below it not included (the stored a_files counts
+			// them).
+			j.Files, j.Summary.Files = self.TotalFiles, self.TotalFiles
 			if j.Relation, err = relJSON(rel); err != nil {
 				return nil, err
 			}

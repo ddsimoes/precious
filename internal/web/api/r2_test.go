@@ -304,6 +304,7 @@ func TestR2ReadAPI(t *testing.T) {
 			Items []struct {
 				ID       string       `json:"id"`
 				Bytes    int64        `json:"bytes"`
+				Files    int64        `json:"files"`
 				Entry    *contentRow  `json:"entry"`
 				Relation *relationRes `json:"relation"`
 				Copies   []copyRes    `json:"copies"`
@@ -326,7 +327,10 @@ func TestR2ReadAPI(t *testing.T) {
 			switch {
 			case it.Relation != nil:
 				relRows++
-				if it.Entry == nil || it.Relation.Self != "a" || it.Copies != nil || it.Relation.Other.ID == it.Entry.ID {
+				// Side a's files count as the Map counts them: its own,
+				// without the members of archives below it.
+				if it.Entry == nil || it.Relation.Self != "a" || it.Copies != nil || it.Relation.Other.ID == it.Entry.ID ||
+					it.Files != it.Entry.TotalFiles || it.Summary.Files != it.Entry.TotalFiles {
 					t.Errorf("relation row %+v", it)
 				}
 			default:
