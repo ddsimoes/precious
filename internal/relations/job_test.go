@@ -22,9 +22,9 @@ import (
 
 type fakeRT struct{ yields atomic.Int64 }
 
-func (*fakeRT) Progress(map[string]int64)                         {}
-func (*fakeRT) FSCall(string) func()                              { return func() {} }
-func (f *fakeRT) Yield(ctx context.Context) error                 { f.yields.Add(1); return ctx.Err() }
+func (*fakeRT) Progress(map[string]int64)                        {}
+func (*fakeRT) FSCall(string) func()                             { return func() {} }
+func (f *fakeRT) Yield(ctx context.Context) error                { f.yields.Add(1); return ctx.Err() }
 func (*fakeRT) UseSource(context.Context, domain.SourceID) error { return nil }
 
 func configDuplicates() config.Duplicates { return config.Defaults().Duplicates }
