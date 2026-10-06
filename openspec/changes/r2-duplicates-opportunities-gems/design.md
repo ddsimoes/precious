@@ -171,9 +171,14 @@ See `proposal.md` for why. R1 left these facts that shape R2:
   - `pending`, `changed`, `unreadable`, an unreadable folder, and a mount boundary are gaps;
   - symlinks match by link text;
   - empty files are ignored.
-- **The algorithm** is m4b's, unchanged: `partner`, `Relate`, `maximal`, `lift`, and freeable bytes (renamed redundant bytes).
+- **The algorithm** is m4b's: `partner`, `Relate`, `maximal`, `lift`, and freeable bytes (renamed redundant bytes), with these changes (agreed during implementation, 2026-10-06):
   - `overlap` needs at least 50% of one side's bytes ("a large share", §6.4). m4b used 10% for searches the owner started.
   - There is no reporting floor: ranking by bytes keeps small relations at the bottom.
+  - There are no file results: duplicate groups cover single files (D12).
+  - **Naming `same` sides.** m4b's `lift` names a side by its highest equivalent folder (the folders of a chain where each holds nothing but the next). For `same`, both sides are named by their deepest equivalent folder instead, stopping at an archive (a folder holding only an archive still names the archive). Otherwise the Winamp copy, alone in `HD antigo/backup pc velho/Arquivos de programas`, would relate as that parent, against the spec scenario and the ground truth. `inside` and `overlap` keep `lift`.
+  - **Ancestors are no partners.** m4b proposed an ancestor of folder A as A's partner when one of A's keys occurred among that ancestor's own files, so a copy kept beside its folder gave "`ISOs/copia` inside `ISOs`". Such occurrences are skipped (regression test `TestAncestorIsNoPartner`).
+  - **Overlap orientation.** An overlap found from either side is one pair, oriented by the larger matched share, so an overlap whose larger-share side is already `inside` the other is that same pair and is not listed twice.
+  - **Only-one-side counts** are the side's non-empty files and file members whose key does not occur on the other side; gaps are not counted (Compare, D11, proves gaps by size on request).
 - **What is stored.** Each relation stores its sides, kind, bytes, and only-one-side counts. Compare (D11) computes the file lists on request.
 - **Sides of a relation:**
   - `inside`: `a` is the contained side;
@@ -202,9 +207,10 @@ See `proposal.md` for why. R1 left these facts that shape R2:
   - **identical:** the content occurs on both sides;
   - **different:** the same relative path with different content;
   - **only on one side:** the content does not occur on the other side and is not in different;
-  - **unchecked:** a `pending`, `changed`, or `unreadable` file whose size occurs on the other side.
+  - **unchecked:** a `pending`, `changed`, or `unreadable` file (or one hashing has not planned yet) whose size occurs on the other side, and a checked file whose size occurs on the other side only among such files (its absence there is not proven, I7; decided during implementation, 2026-10-06).
 
-  A size missing from the other side proves "only here" without hashing.
+  A size missing from the other side proves "only here" without hashing. Regular files and file members take part (symlinks and special files do not), and empty files match each other; a tar hard-link member has its target's content. Identical items pair a content's files on both sides in path order (an extra copy is an item with one file); the counted bytes of a paired item are its left file's size, or its right file's when it has no left.
+- **Paging.** Items of the requested bucket sort by relative path; the cursor is an offset into that order, recomputed per request. `Compare` returns `CompareResult{Summary map[Bucket]Count; Items []CompareItem{Path, Left, Right *domain.Ref}; NextCursor}`; an empty bucket lists no items, an unknown bucket or a bad cursor is `400 invalid_request`, and an unknown side (or a member of an archive that is not complete) is `404 not_found`.
 - **Wrapper folders.** When exactly one side has a single top folder and its contents align better with the other side, that wrapper is dropped from the relative paths (m4b `lift`). For example, `emule-0.47c/` inside the zip lines up with the unpacked folder.
 - **"Check now"** calls `check-now` with both refs.
 - **[target]** Two sides of 100,000 files each answer within 2 s on the development machine (slow test).
