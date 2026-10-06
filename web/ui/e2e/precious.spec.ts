@@ -419,7 +419,8 @@ test('R2.2: Compare of Fotos with Fotos - Copia, chosen from the detail panel', 
     .getByRole('complementary', { name: 'Fotos - Copia' })
     .getByRole('link', { name: 'Compare with Fotos', exact: true })
     .click()
-  await expect(page).toHaveURL(/\/compare\?left=\d+&right=\d+$/)
+  // Fotos holds files Fotos - Copia lacks, so Compare opens on them.
+  await expect(page).toHaveURL(/\/compare\?left=\d+&right=\d+&bucket=only_left$/)
 
   // Reloading shows the same comparison: its sides are in the address.
   for (const reload of [false, true]) {

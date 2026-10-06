@@ -18,6 +18,14 @@ export function isBucket(value: string | null): value is Bucket {
   return buckets.some((b) => b === value)
 }
 
+// firstBucket is the group a comparison opens on: the first that holds
+// files, in the order only_left, only_right, different, unchecked,
+// identical, so a pair with nothing apart opens on its identical files.
+export function firstBucket(summary: Record<Bucket, Amount>): Bucket {
+  const order: Bucket[] = ['only_left', 'only_right', 'different', 'unchecked', 'identical']
+  return order.find((b) => summary[b].files > 0) ?? 'only_left'
+}
+
 // CompareItem is one file of a group: its path relative to the sides, and
 // its row on each side that holds it.
 export interface CompareItem {
@@ -35,18 +43,22 @@ export interface ComparePage {
   next_cursor: string | null
 }
 
-export function compareQueryKey(left: string, right: string, bucket: Bucket) {
+// A null bucket asks for the summary alone, with no items.
+export function compareQueryKey(left: string, right: string, bucket: Bucket | null) {
   return [...compareQueryRoot, left, right, bucket] as const
 }
 
 export function fetchCompare(
   left: string,
   right: string,
-  bucket: Bucket,
+  bucket: Bucket | null,
   cursor: string | null,
   signal?: AbortSignal,
 ): Promise<ComparePage> {
-  const params = new URLSearchParams({ left, right, bucket })
+  const params = new URLSearchParams({ left, right })
+  if (bucket !== null) {
+    params.set('bucket', bucket)
+  }
   if (cursor !== null) {
     params.set('cursor', cursor)
   }

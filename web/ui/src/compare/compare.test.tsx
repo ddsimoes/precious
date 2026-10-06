@@ -44,7 +44,7 @@ const base = {
   'GET /api/tags': () => jsonResponse(200, { tags: [] }),
 }
 
-function compareRoute(decided: Map<string, string> = new Map()) {
+function compareRoute(decided: Map<string, string> = new Map(), sums: typeof summary = summary) {
   return (request: Request) => {
     const params = new URL(request.url).searchParams
     const items = (groups[params.get('bucket') as Bucket] ?? []).map((i) => ({
@@ -52,7 +52,7 @@ function compareRoute(decided: Map<string, string> = new Map()) {
       left: i.left,
       right: i.right === null ? null : { ...i.right, eff_decision: decided.get(i.right.id) ?? 'undecided' },
     }))
-    return jsonResponse(200, { left: fotos, right: copia, summary, items, next_cursor: null })
+    return jsonResponse(200, { left: fotos, right: copia, summary: sums, items, next_cursor: null })
   }
 }
 
@@ -71,12 +71,21 @@ function commandBodies(requests: Request[], name: string) {
 }
 
 describe('Compare', () => {
-  it('reads its sides and group from the address, and keeps them there', async () => {
+  it('opens on the first group with files, and keeps its sides and group in the address', async () => {
     const requests = stubApi({ ...base, 'GET /api/compare': compareRoute() })
     const { router } = renderApp('/compare?left=2&right=5')
     const user = userEvent.setup()
 
-    const sides = within(await screen.findByRole('region', { name: 'Folders compared' }))
+    // Nothing is only on the left of this pair: it opens on the right.
+    const files = within(await screen.findByRole('list', { name: 'Files: Only on the right' }))
+    expect(files.getByRole('link', { name: '2006/Praia/DSC_editada.JPG' })).toBeInTheDocument()
+    expect(router.state.location.search).toBe('?left=2&right=5&bucket=only_right')
+    expect(router.state.historyAction).toBe('REPLACE')
+    expect(compareRequests(requests)).toEqual([
+      { left: '2', right: '5' },
+      { left: '2', right: '5', bucket: 'only_right' },
+    ])
+    const sides = within(screen.getByRole('region', { name: 'Folders compared' }))
     expect(sides.getByText('Fotos')).toBeInTheDocument()
     expect(sides.getByText('Fotos - Copia')).toBeInTheDocument()
     const nav = within(screen.getByRole('navigation', { name: 'Groups' }))
@@ -87,17 +96,21 @@ describe('Compare', () => {
       'Same name, different content0 files · 0 B',
       'Not checked yet4 files · 12 MiB',
     ])
-    expect(nav.getByRole('link', { name: /Only on the left/ })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByText('No files in this group.')).toBeInTheDocument()
+    expect(nav.getByRole('link', { name: /Only on the right/ })).toHaveAttribute('aria-current', 'page')
 
-    await user.click(nav.getByRole('link', { name: /Only on the right/ }))
-    const files = within(await screen.findByRole('list', { name: 'Files: Only on the right' }))
-    expect(files.getByRole('link', { name: '2006/Praia/DSC_editada.JPG' })).toBeInTheDocument()
-    expect(router.state.location.search).toBe('?left=2&right=5&bucket=only_right')
-    expect(compareRequests(requests)).toEqual([
-      { left: '2', right: '5', bucket: 'only_left' },
-      { left: '2', right: '5', bucket: 'only_right' },
-    ])
+    await user.click(nav.getByRole('link', { name: /Only on the left/ }))
+    expect(await screen.findByText('No files in this group.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Only on the left/ })).toHaveAttribute('aria-current', 'page')
+    expect(router.state.location.search).toBe('?left=2&right=5&bucket=only_left')
+  })
+
+  it('opens a pair with the same content on its identical files', async () => {
+    const same = { ...summary, only_right: { files: 0, bytes: 0 }, unchecked: { files: 0, bytes: 0 } }
+    stubApi({ ...base, 'GET /api/compare': compareRoute(new Map(), same) })
+    const { router } = renderApp('/compare?left=2&right=5')
+
+    expect(await screen.findByRole('list', { name: 'Files: Identical' })).toBeInTheDocument()
+    expect(router.state.location.search).toBe('?left=2&right=5&bucket=identical')
   })
 
   it('shows the same comparison when the page is loaded again', async () => {
@@ -184,7 +197,7 @@ describe('Compare', () => {
 
     expect(await screen.findByRole('region', { name: 'Folders compared' })).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/compare')
-    expect(router.state.location.search).toBe('?left=2&right=5')
+    await waitFor(() => expect(router.state.location.search).toBe('?left=2&right=5&bucket=only_right'))
   })
 
   it('offers no Compare with… for a file', async () => {
