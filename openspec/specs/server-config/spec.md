@@ -17,34 +17,31 @@ The server SHALL load its configuration from a single operator-supplied file and
 - **WHEN** `curator check-config` runs against a valid configuration
 - **THEN** it exits zero and prints the effective settings, with secret values redacted
 
-### Requirement: Unsafe source layouts rejected
-The server SHALL refuse to start when any two configured source roots are equal or nested (compared after resolving the operator-supplied paths), when two sources share an ID, when a root is not an absolute directory path, or when the state directory is inside a source root or contains one.
-
-#### Scenario: Nested roots rejected
-- **WHEN** one source root is `/data` and another is `/data/photos`
-- **THEN** startup fails with an error naming both sources
-
-#### Scenario: State directory inside a source rejected
-- **WHEN** the state directory is `/data/.curator` and `/data` is a source root
-- **THEN** startup fails, and no database file is created
-
 ### Requirement: Write mode unavailable in this release
-The server SHALL accept only read-only source mode. Any configuration that requests write, quarantine, or purge capability SHALL be rejected at startup until a later milestone delivers those capabilities.
+No configuration key, command, or endpoint SHALL enable writes to a source in this release; writes arrive in a later milestone (R3). A v0.2 write setting such as `mode` SHALL be refused as an unknown key.
 
 #### Scenario: Write mode requested
-- **WHEN** a source is configured with `mode = "read_write"`
-- **THEN** startup fails with an error stating that write mode is not supported by this release
+- **WHEN** the configuration's `[sources]` section contains `mode = "read_write"`
+- **THEN** startup fails with an error naming `sources.mode` as an unknown key
+
+#### Scenario: No write toggle offered
+- **WHEN** the owner reads `GET /api/sources`
+- **THEN** no source reports a write permission, and no command exists to turn one on
 
 ### Requirement: Loopback-by-default listener
-The listener SHALL default to `127.0.0.1:8080`. A non-loopback listen address SHALL require an explicit opt-in setting. An external origin SHALL always be configured. A plain-HTTP origin SHALL be accepted only when its host is loopback and an explicit insecure-local-mode setting is enabled.
+The listener SHALL default to `127.0.0.1:8080`. A non-loopback listen address SHALL require `allow_non_loopback_listen = true`. An external origin SHALL always be configured. An `https://` origin SHALL be accepted on any host. An `http://` origin, on any host, SHALL be accepted only when `allow_insecure_http = true`, so Precious can run over plain HTTP on a local network (§3).
 
 #### Scenario: Non-loopback bind without opt-in
 - **WHEN** the listen address is `0.0.0.0:8080` and the non-loopback opt-in is not set
 - **THEN** startup fails with an error explaining the opt-in
 
 #### Scenario: Remote plain HTTP rejected
-- **WHEN** the external origin is `http://curator.example.net`
-- **THEN** startup fails because plain HTTP is only allowed for a loopback origin in explicit local mode
+- **WHEN** the external origin is `http://precious.lan:8080` and `allow_insecure_http` is not set
+- **THEN** startup fails with an error explaining that plain HTTP needs `allow_insecure_http`
+
+#### Scenario: Plain HTTP on a local network
+- **WHEN** the listen address is `0.0.0.0:8080` with `allow_non_loopback_listen = true`, and the external origin is `http://192.168.1.10:8080` with `allow_insecure_http = true`
+- **THEN** the server starts and serves the interface at that origin
 
 ### Requirement: Forwarded headers trusted only from allowlisted proxies
 The server SHALL honor `Forwarded`, `X-Forwarded-For`, and `X-Forwarded-Proto` only when the immediate peer address is in the configured trusted-proxy list. Otherwise it SHALL ignore those headers when deriving the client address and scheme. The configured external origin, not request headers, SHALL determine the expected origin and cookie security.
@@ -58,71 +55,61 @@ The server SHALL honor `Forwarded`, `X-Forwarded-For`, and `X-Forwarded-Proto` o
 - **THEN** throttling and audit records attribute the request to `203.0.113.7`
 
 ### Requirement: Private state directory
-The server SHALL create a missing state directory with owner-only permissions and SHALL create the database and other state files readable and writable only by the service account. It SHALL refuse to start when an existing state directory is accessible to group or other users.
+On Linux and macOS, the server SHALL create a missing state directory with owner-only permissions and SHALL create the database and other state files readable and writable only by the service account. It SHALL refuse to start there when an existing state directory is accessible to group or other users. On Windows, this release SHALL NOT check or set these permissions (R8).
 
 #### Scenario: Fresh state directory
-- **WHEN** the server starts with a state directory that does not exist
+- **WHEN** the server starts on Linux with a configured `state_dir` that does not exist
 - **THEN** the directory is created with mode `0700`, and the database file has mode `0600`
 
 #### Scenario: Over-permissive state directory
-- **WHEN** an existing state directory has mode `0755`
+- **WHEN** an existing state directory has mode `0755` on Linux or macOS
 - **THEN** startup fails with an error naming the directory and the required mode
 
-### Requirement: Secrets are references
-A secret SHALL be configured only as the name of an environment variable (`*_env`) or the path of a protected file (`*_file`), never inline. `check-config` SHALL show each reference and whether it resolves, never its value. The server SHALL refuse to start when an enabled profile's secret reference does not resolve, or when a secret file is readable by other users.
+#### Scenario: Windows skips the mode check
+- **WHEN** the server starts on Windows with an existing state directory
+- **THEN** startup does not fail because of the directory's permissions
 
-#### Scenario: Secret reference redacted
-- **WHEN** `check-config` runs with a profile whose `api_key_env` names a variable that is set
-- **THEN** the output shows the variable's name and that it is set, and the secret value appears nowhere in the output or the logs
+### Requirement: Allowed roots are validated
+Each entry of `[sources] allowed_roots` SHALL be an absolute path to an existing directory. Otherwise the server and `check-config` SHALL fail, naming `sources.allowed_roots` and the offending entry. An absent or empty list SHALL select the platform default roots.
 
-#### Scenario: Missing secret
-- **WHEN** an enabled profile's `api_key_env` names a variable that is not set
-- **THEN** startup fails with an error naming the profile and the variable
+#### Scenario: Relative root rejected
+- **WHEN** `allowed_roots` contains `mnt/disks`
+- **THEN** startup fails with an error naming `sources.allowed_roots` and `mnt/disks`
 
-### Requirement: Classifier configuration is validated
-The server SHALL refuse to start when:
-- a profile names an unknown adapter, or an endpoint that is not an absolute `http` or `https` URL;
-- a `cloud` profile uses plain `http`;
-- a policy names an unknown profile, a profile that does not support its task, or more than two fallbacks;
-- a priced profile is configured while the daily or per-job cap is zero.
+#### Scenario: Missing root rejected
+- **WHEN** `allowed_roots` contains `/tank` and `/tank` does not exist
+- **THEN** startup and `check-config` fail with an error naming `sources.allowed_roots` and `/tank`
 
-Each error SHALL name the offending key.
+#### Scenario: Root that is a file rejected
+- **WHEN** `allowed_roots` contains the path of a regular file
+- **THEN** startup fails with an error naming `sources.allowed_roots` and that path
 
-#### Scenario: Metered profile without caps
-- **WHEN** a profile has an input price and `classifier.daily_cap` is zero
-- **THEN** startup fails with an error naming the profile and `classifier.daily_cap`
+#### Scenario: Defaults when absent
+- **WHEN** the configuration has no `[sources]` section
+- **THEN** startup succeeds, and the picker offers the platform default roots
 
-#### Scenario: Plain HTTP to a cloud endpoint
-- **WHEN** a profile with locality `cloud` has endpoint `http://api.example.com/v1`
-- **THEN** startup fails with an error naming the profile's `endpoint`
+### Requirement: Scan settings are validated
+`[scan] batch_size` SHALL lie between 1 and 10,000, defaulting to 1,000, and `[scan] list_batch` SHALL lie between 1 and 4,096, defaulting to 256. A value out of range SHALL fail startup and `check-config`, naming its key.
 
-### Requirement: Inbox and notification settings are validated
-The server SHALL refuse to start, naming the offending key, when any of these is out of range:
-- an inbox interval, or a quiet interval below 5 s;
-- a temporary-name pattern that is not a valid name pattern;
-- a notification backend other than `auto` or `off`;
-- a coalescing window longer than the maximum delay;
-- a negative watch budget.
+#### Scenario: Batch size out of range
+- **WHEN** `scan.batch_size` is `0`
+- **THEN** startup and `check-config` fail with an error naming `scan.batch_size`
 
-#### Scenario: Quiet interval too short
-- **WHEN** `inbox.quiet_interval` is `2s`
-- **THEN** startup fails with an error naming `inbox.quiet_interval`
+#### Scenario: List batch out of range
+- **WHEN** `scan.list_batch` is `5000`
+- **THEN** startup fails with an error naming `scan.list_batch`
 
-#### Scenario: Invalid temporary-name pattern
-- **WHEN** `inbox.temporary_patterns` contains `[.part`
-- **THEN** startup fails with an error naming `inbox.temporary_patterns`
+#### Scenario: Scan defaults
+- **WHEN** the configuration has no `[scan]` section
+- **THEN** `check-config` prints `batch_size` 1000 and `list_batch` 256
 
-### Requirement: Copy-search settings are validated
-The `[copies]` settings SHALL be validated at startup and by `check-config`: the large-file threshold, sample threshold, read chunk size, bytes between yields, entry budget, reporting minimum, and the archive budgets for entries, unpacked bytes, expansion ratio, and time each lie within their documented range, and the sample threshold is at least the large-file threshold. A violation SHALL name its key and stop startup.
+### Requirement: Removed settings fail loudly
+A configuration that still contains a section removed in this release (`[[sources]]`, `[inbox]`, `[watch]`, `[reconciliation]`, `[discovery]`, `[inspection]`, `[copies]`, `[classifier]`, `[[classifier_profiles]]`, or `[[classifier_policies]]`) SHALL be refused as containing unknown keys, naming each of them. Removed settings SHALL never be silently ignored.
 
-#### Scenario: Sample threshold below the large-file threshold
-- **WHEN** `copies.sample_from_bytes` is smaller than `copies.large_file_bytes`
-- **THEN** `check-config` and startup fail with an error naming `copies.sample_from_bytes`
+#### Scenario: v0.2 configuration refused
+- **WHEN** `precious check-config` runs against a v0.2 configuration with `[[sources]]`, `[inbox]`, and `[copies]`
+- **THEN** it exits non-zero with an error naming `sources`, `inbox`, and `copies`
 
-#### Scenario: Archive ratio budget out of range
-- **WHEN** `copies.archive_max_ratio` is 1
-- **THEN** `check-config` and startup fail with an error naming `copies.archive_max_ratio`
-
-#### Scenario: Defaults load
-- **WHEN** the configuration has no `[copies]` section
-- **THEN** startup uses the documented defaults, including the archive budgets, and `check-config` prints them
+#### Scenario: Classifier settings refused
+- **WHEN** the configuration contains `[classifier]` and `[[classifier_profiles]]`
+- **THEN** startup fails with an error naming `classifier` and `classifier_profiles`
