@@ -53,6 +53,17 @@ export function formatDateTime(time: string, locale: string): string {
   )
 }
 
+// formatDateSpan formats the dates from oldest to newest: one date when both
+// fall on the same day or only one is known, and null when neither is.
+export function formatDateSpan(oldest: string | null, newest: string | null, locale: string): string | null {
+  const from = oldest === null ? null : formatDate(oldest, locale)
+  const to = newest === null ? null : formatDate(newest, locale)
+  if (from !== null && to !== null && from !== to) {
+    return `${from} – ${to}`
+  }
+  return to ?? from
+}
+
 const precisionUnits = [
   { unit: 'second', ns: 1e9 },
   { unit: 'millisecond', ns: 1e6 },
@@ -75,6 +86,7 @@ export interface Formatters {
   list: (items: string[]) => string
   date: (time: string) => string
   dateTime: (time: string) => string
+  dateSpan: (oldest: string | null, newest: string | null) => string | null
   timePrecision: (ns: number) => string
 }
 
@@ -90,6 +102,7 @@ export function useFormat(): Formatters {
       list: (items) => formatList(items, locale),
       date: (time) => formatDate(time, locale),
       dateTime: (time) => formatDateTime(time, locale),
+      dateSpan: (oldest, newest) => formatDateSpan(oldest, newest, locale),
       timePrecision: (ns) => formatTimePrecision(ns, locale),
     }),
     [locale],

@@ -5,11 +5,11 @@ import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, type To } from 'react-router'
 
 import {
+  changeDates,
   displayKind,
   duplicationOf,
   isDrillable,
   isMember,
-  lastChange,
   type ChildSort,
   type EntryRow,
   type SortOrder,
@@ -188,15 +188,9 @@ function KindCell({ row }: CellProps) {
 }
 
 function DatesCell({ row }: CellProps) {
+  const { t } = useTranslation()
   const fmt = useFormat()
-  const entry = row.original
-  if (entry.kind !== 'directory' || entry.oldest === null || entry.newest === null) {
-    const time = lastChange(entry)
-    return time === null ? '' : fmt.date(time)
-  }
-  const oldest = fmt.date(entry.oldest)
-  const newest = fmt.date(entry.newest)
-  return oldest === newest ? newest : `${oldest} – ${newest}`
+  return fmt.dateSpan(...changeDates(row.original)) ?? t('entry.unknownDate')
 }
 
 function TriageCell({ row }: CellProps) {

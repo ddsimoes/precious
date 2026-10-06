@@ -96,8 +96,9 @@ export function homeResponse(overrides: Partial<Home> = {}): Home {
       { kind: 'other', bytes: 20 * GiB, files: 208_000 },
     ],
     by_year: [
+      { year: null, bytes: 5 * GiB, files: 1_000 },
       { year: 2024, bytes: 70 * GiB, files: 300_000 },
-      { year: 2004, bytes: 50 * GiB, files: 110_000 },
+      { year: 2004, bytes: 45 * GiB, files: 109_000 },
     ],
     decisions: {
       undecided: { bytes: 50 * GiB, files: 300_000 },

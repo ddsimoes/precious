@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import type { Copy } from '@/api/content'
 import { useDecide } from '@/api/decisions'
-import { isMember, lastChange, type EntryRow } from '@/api/entries'
+import { changeDates, isMember, type EntryRow } from '@/api/entries'
 import type { Decision } from '@/api/home'
 import {
   fetchReviewPage,
@@ -23,7 +23,7 @@ import { SourceFilter } from '@/components/SourceFilter'
 import { Button } from '@/components/ui/button'
 import { DetailPanel } from '@/detail/DetailPanel'
 import { useEntryLink } from '@/detail/useEntryLink'
-import { useFormat, type Formatters } from '@/lib/format'
+import { useFormat } from '@/lib/format'
 import { useSourceLabel, useSourceParam } from '@/lib/sourceParams'
 import { cn } from '@/lib/utils'
 import { ListSelectAll } from '@/opportunities/ListSelectAll'
@@ -417,17 +417,6 @@ type RowProps = Omit<RowListProps, 'label' | 'rows' | 'emptyText' | 'hasMore' | 
 
 const targetClass = 'rounded-lg border bg-card p-3 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
-// dateRange is a row's oldest to newest change, or a file's last change.
-function dateRange(entry: EntryRow, fmt: Formatters): string | null {
-  if (entry.kind === 'directory' && entry.oldest !== null && entry.newest !== null) {
-    const oldest = fmt.date(entry.oldest)
-    const newest = fmt.date(entry.newest)
-    return oldest === newest ? newest : `${oldest} – ${newest}`
-  }
-  const time = lastChange(entry)
-  return time === null ? null : fmt.date(time)
-}
-
 // EntryReviewRow is a row of every list but duplicates: an outermost entry
 // that matches the card, with its size, dates, suggestion, summary, and
 // decision controls.
@@ -441,7 +430,7 @@ function EntryReviewRow({ row, cursorKey, onSelect }: RowProps) {
   if (entry === null) {
     return null
   }
-  const dates = dateRange(entry, fmt)
+  const dates = fmt.dateSpan(...changeDates(entry)) ?? t('entry.unknownDate')
   return (
     <li
       data-review-key={key}
@@ -461,7 +450,7 @@ function EntryReviewRow({ row, cursorKey, onSelect }: RowProps) {
       <p className="text-xs text-muted-foreground">
         {[
           sourceLabel(entry.source_id),
-          ...(dates === null ? [] : [dates]),
+          dates,
           ...(entry.triage === null ? [] : [t('review.suggestion', { triage: t(`entry.triage.${entry.triage}`) })]),
         ].join(' · ')}
       </p>

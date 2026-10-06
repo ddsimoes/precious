@@ -297,6 +297,7 @@ export const en = {
     },
     inherited: '{{decision}} (inherited)',
     withArchive: '{{decision}} (with its archive)',
+    unknownDate: 'Unknown date',
   },
   detail: {
     label: 'Details',

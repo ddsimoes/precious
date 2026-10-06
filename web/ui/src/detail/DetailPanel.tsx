@@ -22,6 +22,7 @@ import { Preview } from '@/detail/Preview'
 import { TagEditor } from '@/detail/TagEditor'
 import { useEntryLink } from '@/detail/useEntryLink'
 import { BarList } from '@/home/BarList'
+import { yearBars } from '@/home/yearBars'
 import { en } from '@/i18n/en'
 import { compositionParts, dominantFamily, shareLabel, withShare } from '@/lib/composition'
 import { useFormat } from '@/lib/format'
@@ -128,9 +129,7 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
   const byKind = [...(stats?.by_kind ?? [])]
     .sort((a, b) => b.bytes - a.bytes)
     .map((a) => ({ key: a.kind, label: t(`home.kind.${a.kind}`), bytes: a.bytes, files: a.files }))
-  const byYear = [...(stats?.by_year ?? [])]
-    .sort((a, b) => a.year - b.year)
-    .map((a) => ({ key: String(a.year), label: String(a.year), bytes: a.bytes, files: a.files }))
+  const byYear = yearBars(stats?.by_year ?? [], t)
   const parts = folder ? compositionParts(entry.composition) : []
   const compositionTotal = parts.reduce((sum, a) => sum + a.bytes, 0)
   const byFamily = parts.map((a) => ({
