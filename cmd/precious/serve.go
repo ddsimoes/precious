@@ -16,11 +16,14 @@ import (
 	"precious/internal/clock"
 	commandapi "precious/internal/commands"
 	"precious/internal/config"
+	"precious/internal/content"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
 	"precious/internal/index"
 	"precious/internal/jobs"
+	"precious/internal/relations"
+	"precious/internal/review"
 	"precious/internal/rules"
 	"precious/internal/sources"
 	"precious/internal/store"
@@ -106,7 +109,23 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 	// One policy value classifies at scan time and answers the read API, so
 	// both always agree (design D9).
 	pol := rules.Default()
-	index.NewHandler(st, srcs, pol, d.Clock, cfg.Scan).Register(runner)
+	scanner := index.NewHandler(st, srcs, pol, d.Clock, cfg.Scan)
+	hashing := content.NewService(st, srcs, d.Clock, cfg.Hashing, cfg.Archives, cfg.Duplicates)
+	hashing.Register(runner)
+	relate := relations.NewHandler(st, d.Clock, cfg.Duplicates, func(ctx context.Context, gen int64) error {
+		return review.Refresh(ctx, st, gen)
+	})
+	relate.Register(runner)
+	// After each scan: hashing for every online source (sizes are shared
+	// across sources), and a relate pass, because classification feeds the
+	// review lists even when no content changed (design D5).
+	scanner.OnScanDone(func(ctx context.Context, src domain.SourceID) {
+		hashing.AfterScan(ctx, src)
+		if err := runner.Write(ctx, relations.RequestRefresh); err != nil && ctx.Err() == nil {
+			log.Error("relate refresh after a scan", "source", src, "err", err)
+		}
+	})
+	scanner.Register(runner)
 	authSvc := auth.New(st, d.Clock, cfg.Auth, auth.Options{})
 	shell, err := spa.New(d.UI)
 	if err != nil {
@@ -123,6 +142,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		sources:   srcs,
 		policy:    pol,
 		decisions: decisions.New(d.Clock),
+		hashing:   hashing,
 		spa:       shell,
 	})
 
@@ -148,6 +168,12 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 	if err := runner.Start(ctx); err != nil {
 		ln.Close()
 		return err
+	}
+	if err := hashing.Startup(ctx); err != nil {
+		log.Error("enqueue hashing at start", "err", err)
+	}
+	if err := relate.Startup(ctx, runner); err != nil {
+		log.Error("enqueue relate at start", "err", err)
 	}
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	defer stopRefresh()
@@ -207,6 +233,7 @@ type handlerDeps struct {
 	sources   *sources.Service
 	policy    *rules.Policy
 	decisions *decisions.Service
+	hashing   *content.Service
 	spa       http.Handler
 }
 
@@ -228,6 +255,8 @@ func newHandler(d handlerDeps) http.Handler {
 	sources.RegisterCommands(cmds, d.sources)
 	index.RegisterCommands(cmds)
 	decisions.RegisterCommands(cmds, d.decisions)
+	content.RegisterCommands(cmds, d.hashing)
+	review.RegisterCommands(cmds, d.decisions)
 	mux.Handle("POST /api/commands/{name}", cmds)
 	mux.Handle("GET /api/jobs/{id}", jobs.NewStatusHandler(d.runner))
 	mux.Handle("GET /api/events", jobs.NewEventsHandler(d.runner))
