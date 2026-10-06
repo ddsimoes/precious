@@ -641,6 +641,17 @@ Together with `review.Refresh` (41 s, task 5.6), one refresh of 2 million entrie
 | Children pages of 200 rows, sorted by bytes | p50 7.5 ms, p95 10.8 ms, max 14.2 ms | p95 < 300 ms |
 | Treemap levels | p50 1.75 ms, p95 9.5 ms, max 32.5 ms | p95 < 500 ms |
 
+### Scanner regression check (task 8.5)
+
+`walkbench`, warm, on the development machine, 2026-10-06, after the scanner gained ctime comparison and digest invalidation (B1):
+
+| Tree | Entries | Walk | Scan | Ratio | R1 (A13) |
+|---|---|---|---|---|---|
+| `/usr/share` | 178,818 | 0.72 s | 9.09 s | 12.69 | ratio 12.6 |
+| `/usr` | ≈391,600 | 1.73 s | 20.2 s | 11.73 | walk 1.86 s, scan 23.9 s, ratio 12.8 |
+
+There is no regression. A first scan writes no content rows, so the invalidation statements never run on it.
+
 ## Addendum: decisions made during implementation
 
 - **B1.** The scanner deletes a file's `file_content` and `archives` rows only when the file's own facts change: size, mtime, ctime, or identity. A classification-only update, such as a new rules version, keeps digests, and so does a missing file that returns with the same facts. ctime is compared with the same tolerance as mtime, because vfat's ctime moves with its mtime. (Task 1.4.)
