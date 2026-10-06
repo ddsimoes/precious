@@ -70,7 +70,7 @@ A digest SHALL be set only after every byte of the file was read and its size, m
 - **THEN** every entry's modification and access times, and the mount's contents, are unchanged afterward
 
 ### Requirement: Digests are kept until the file changes
-A digest SHALL stay valid until a rescan updates the file's entry, and a rescan that updates a file's entry SHALL discard its digest. A file whose entry is unchanged SHALL never be read again, across hashing runs and server restarts (§7).
+A digest SHALL stay valid until a rescan finds that the file's size, times, or identity changed, and such a rescan SHALL discard its digest. A rescan that only rewrites the file's classification, or brings a missing file back with the same size, times, and identity, SHALL keep it. A file whose size, times, and identity are unchanged SHALL never be read again, across hashing runs and server restarts (§7).
 
 #### Scenario: A second run reads nothing
 - **WHEN** the corpus is hashed to completion and a second hashing job runs with no change on disk
@@ -122,7 +122,7 @@ While a hashing job runs, its progress SHALL report the files and bytes it has t
 ## MODIFIED Requirements
 
 ### Requirement: Rescans write only what changed
-A rescan SHALL match stored entries to the walk by path within the source. An entry whose kind and size are equal, whose modification time is unchanged within the filesystem's resolution, and, where the platform reports one, whose change time is equal SHALL not be written. A changed entry SHALL be updated in place, keeping its ID, decision, and tags, and losing its digest and its archive listing. A new entry SHALL be inserted. A different kind at the same path SHALL replace the old entry and its subtree with a new entry.
+A rescan SHALL match stored entries to the walk by path within the source. An entry whose kind and size are equal, whose modification time is unchanged within the filesystem's tolerance, where the platform reports one, whose change time is unchanged within the same tolerance, and, where identity is stable, whose identity is equal, SHALL not be written. A changed entry SHALL be updated in place, keeping its ID, decision, and tags. An entry whose size, times, or identity changed SHALL also lose its digest and its archive listing. A new entry SHALL be inserted. A different kind at the same path SHALL replace the old entry and its subtree with a new entry.
 
 #### Scenario: R1.6 A rescan updates sizes and keeps decisions and tags
 - **WHEN** the regression corpus is scanned, the owner sets decisions and tags on files and folders, then files are added, one file's size changes, and some decided or tagged files are deleted, and the source is rescanned

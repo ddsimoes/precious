@@ -475,10 +475,15 @@ func (s *walk) entry(f *frame, name []byte, info *fsaccess.EntryInfo) error {
 
 // unchanged reports whether a stored entry's own facts match an Lstat under
 // the source's capabilities (design D8): same size, a modification time
-// within the tolerance, and, where identity is stable, the same object.
+// within the tolerance, a change time within the same tolerance when both
+// are known (R2 design D4: a restored modification time does not hide a
+// change), and, where identity is stable, the same object.
 func (s *walk) unchanged(old *stored, info *fsaccess.EntryInfo) bool {
 	r := &old.row
 	if r.size != info.Size || r.boundary != info.MountBoundary || !sameTime(&s.caps, r.mtime, info.ModTime) {
+		return false
+	}
+	if r.ctime.ok && r.ctime.v != 0 && !info.Ctime.IsZero() && !sameTime(&s.caps, r.ctime, info.Ctime) {
 		return false
 	}
 	return !s.caps.StableIdentity ||
@@ -500,7 +505,7 @@ func (s *walk) facts(r *row, c *child) bool {
 // file processes a regular file of kind.
 func (s *walk) file(f *frame, c *child, kind domain.FileKind) error {
 	r := row{kind: string(domain.EntryFile), state: "present"}
-	s.facts(&r, c)
+	same := s.facts(&r, c)
 	res := s.pol.ClassifyFile(rules.FileFacts{Name: c.name, Kind: kind, Size: r.size, SiblingStems: f.stems})
 	r.classify(&res, s.codec)
 	r.fileKind = text(kind)
@@ -512,7 +517,7 @@ func (s *walk) file(f *frame, c *child, kind domain.FileKind) error {
 	s.notableFile(f, c, &r, family)
 	s.files++
 	s.bytes += r.size
-	return s.write(f, c, &r, nil, false)
+	return s.write(f, c, &r, nil, false, !same)
 }
 
 // notableFile offers the file c of f, with row r, to the inside lists of the
@@ -566,11 +571,13 @@ func (s *walk) leaf(f *frame, c *child) error {
 	} else {
 		f.specials++
 	}
-	return s.write(f, c, &r, link, hasLink)
+	return s.write(f, c, &r, link, hasLink, false)
 }
 
 // write inserts a new leaf, or rewrites a stored one whose row differs.
-func (s *walk) write(f *frame, c *child, r *row, link []byte, hasLink bool) error {
+// refacts reports that a stored file's own facts changed: the update then
+// drops the file's content rows (R2 design D4).
+func (s *walk) write(f *frame, c *child, r *row, link []byte, hasLink, refacts bool) error {
 	if c.old != nil && c.old.row == *r && (!hasLink || string(c.old.link) == string(link)) {
 		return nil
 	}
@@ -581,6 +588,7 @@ func (s *walk) write(f *frame, c *child, r *row, link []byte, hasLink bool) erro
 	}
 	if c.old != nil {
 		o.id = c.old.id
+		o.dropContent = refacts
 	} else {
 		o.kind, o.id, o.token = opInsert, f.id, c.token
 		o.path, o.name = b.join(f.path, c.name), b.add(c.name)

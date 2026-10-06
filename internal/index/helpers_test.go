@@ -44,6 +44,10 @@ type env struct {
 	sfs *synthfs.FS
 	src *sources.Service
 	cfg config.Scan
+	// pol replaces the default policy when set; onDone is the handler's
+	// after-scan hook when set.
+	pol    *rules.Policy
+	onDone func(ctx context.Context, src domain.SourceID)
 }
 
 func newEnv(t *testing.T) *env {
@@ -65,7 +69,15 @@ func (e *env) services() {
 }
 
 func (e *env) handler() *Handler {
-	return NewHandler(e.st, e.src, rules.Default(), fixedClock{testNow}, e.cfg)
+	pol := e.pol
+	if pol == nil {
+		pol = rules.Default()
+	}
+	h := NewHandler(e.st, e.src, pol, fixedClock{testNow}, e.cfg)
+	if e.onDone != nil {
+		h.OnScanDone(e.onDone)
+	}
+	return h
 }
 
 // disk creates the synthfs root at path on its own device with caps and

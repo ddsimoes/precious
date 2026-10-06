@@ -104,7 +104,7 @@ See `proposal.md` for why. R1 left these facts that shape R2:
 - **Commits** hold at most 64 files and re-check each `entries` row (I9, Transaction boundaries).
 - **`rt.Yield`** runs after each commit and every `yield_bytes` read, even inside a file.
 - **Cancel:** the current file is abandoned, and committed work is kept.
-- **The scanner** compares `ctime_ns` when both values are non-zero. An updated row deletes its `file_content` and `archives` rows in the same batch (one prepared statement each, only on updates), so a cached digest is valid exactly while its row exists.
+- **The scanner** compares `ctime_ns` when both values are non-zero, with the same tolerance as `mtime_ns` (R1 D8: resolution, and on local-time filesystems a one-hour shift, which moves both times). An update of an entry whose size, times, or identity changed deletes its `file_content` and `archives` rows in the same batch (one prepared statement each, only on such updates), so a cached digest is valid exactly while the identity it was read under is the row's. An update that only rewrites the classification (a rules change) or brings a missing entry back with the same facts keeps them.
 - **Rejected:**
   - Hashing every candidate strictly by size. Folder relations would wait for all of the 1.15 M small files.
   - Keeping digests across changes by comparing keys at read time. The scanner ignored ctime, so a restored mtime would hide a change (m4b `TestRestoredModificationTimeDoesNotHideAChange`).
