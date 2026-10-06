@@ -19,7 +19,7 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
 
 ## 1. Foundation (coordinator)
 
-- [ ] 1.1 Add the R2 domain vocabulary of the Interfaces section:
+- [x] 1.1 Add the R2 domain vocabulary of the Interfaces section:
   - `MemberID` and `Ref`, with `ParseRef` and `String`;
   - the restored `ArchiveFormat`, `ArchiveState`, and `MemberKind`;
   - `ContentState` and `DupFilter`.
@@ -27,17 +27,17 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   Paths: `internal/domain`. Verify with tests that:
   - `ParseRef` accepts `123` and `m45`, and refuses `m`, `m0`, `-1`, `12x`, and `M45`;
   - every value round-trips through its string.
-- [ ] 1.2 Write `migrations/0002_content.sql` exactly as in the Interfaces section. Paths: `migrations/`, `internal/store`. Verify with store tests that:
+- [x] 1.2 Write `migrations/0002_content.sql` exactly as in the Interfaces section. Paths: `migrations/`, `internal/store`. Verify with store tests that:
   - an R1 database (baseline only, with seeded entries, decisions, and tags) migrates to 0002 and keeps every row;
   - every new `CHECK` rejects a bad value;
   - `TestForeignKeysIntoEntriesAreIndexed` passes with the new tables;
   - removing a source deletes its `file_content`, `archives`, members, `relations`, `dir_dups`, review rows, and coverage, and keeps the other source's.
-- [ ] 1.3 Add `[hashing]`, `[archives]`, and `[duplicates]` to `internal/config`, with the ranges and defaults of server-config, to `check-config`, and to `deploy/examples/precious.toml`. Paths: `internal/config`, `cmd/precious`, `deploy/examples`. Verify with config tests:
+- [x] 1.3 Add `[hashing]`, `[archives]`, and `[duplicates]` to `internal/config`, with the ranges and defaults of server-config, to `check-config`, and to `deploy/examples/precious.toml`. Paths: `internal/config`, `cmd/precious`, `deploy/examples`. Verify with config tests:
   - each bound and default;
   - `archives.max_ratio = 1` fails naming the key;
   - `[copies]` is still refused;
   - the docs test finds every new key in the configuration reference.
-- [ ] 1.4 Change the scanner (D4, D5), paths `internal/index`:
+- [x] 1.4 Change the scanner (D4, D5), paths `internal/index`:
   - compare `ctime_ns` when both values are non-zero;
   - delete the `file_content` and `archives` rows of every updated entry in the same batch;
   - add `(*Handler).OnScanDone`, called after a successful finish.
@@ -47,12 +47,12 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - an unchanged rescan writes nothing;
   - the hook runs once per successful scan and never for a failed or cancelled one;
   - R1.6 and R1.17 still pass.
-- [ ] 1.5 Pin the read shapes (D16), paths `internal/search`, `internal/web/api`, `web/ui/src/api`, `web/ui/src/test/fixtures.ts`:
+- [x] 1.5 Pin the read shapes (D16), paths `internal/search`, `internal/web/api`, `web/ui/src/api`, `web/ui/src/test/fixtures.ts`:
   - add the new EntryRow fields to `search.Row`, `search.Columns`, `ScanRow`, `entryRow`, the UI types, and the fixtures, with null values;
   - add `Query.Dup` with parsing and validation (`elsewhere` needs `within`), but no filter SQL.
 
   Verify that every existing Go test and Vitest test passes, and that `dup=elsewhere` without `within` is 400.
-- [ ] 1.6 Add `decisions.NewSelection` (Interfaces), which stores the given query JSON and explicit IDs with the R1 expiry and kept counts. Paths: `internal/decisions`. Verify with a test that a selection made from IDs has the same count, bytes, kept, and expiry behavior as `create-selection`.
+- [x] 1.6 Add `decisions.NewSelection` (Interfaces), which stores the given query JSON and explicit IDs with the R1 expiry and kept counts. Paths: `internal/decisions`. Verify with a test that a selection made from IDs has the same count, bytes, kept, and expiry behavior as `create-selection`.
 - [ ] 1.7 Extend the corpus (D19), paths `internal/corpus`, `tools/gencorpus`, `internal/index/indextest`:
   - add the tar.gz, gzip, and bzip2 fixtures, the equal-size pair, and the zip with a stored video;
   - add `duplicates`, `relations`, `gems`, and `members` to the ground truth;
@@ -64,7 +64,7 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - every declared relation pair exists in the tree;
   - the corpus stays within its size test;
   - `SeedContent` on the seeded corpus gives the ground truth's duplicate groups by SQL.
-- [ ] 1.8 Add the R2 skeleton of `docs/operator.md`:
+- [x] 1.8 Add the R2 skeleton of `docs/operator.md`:
   - sections for hashing (H), archives (A), duplicates and Compare (R), opportunities and Gems (V), the read API (Q), and the interface (U), each with its owner marker;
   - an upgrade note: back up first, the migration, rollback by restoring the backup.
 
@@ -72,10 +72,10 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
 
 ## 2. Archives (slice A)
 
-- [ ] 2.1 Restore `curator-m4b:internal/compare/unpack` as `internal/archive`, with its tests and `testdata`. Paths: `internal/archive`. Verify:
+- [x] 2.1 Restore `curator-m4b:internal/compare/unpack` as `internal/archive`, with its tests and `testdata`. Paths: `internal/archive`. Verify:
   - `go test -race ./internal/archive/` passes in under 60 s, including the zip and bzip2 bomb tests, the path rules, and the cut-off tar.gz;
   - the coordinator's personal-information scan of the restored files finds nothing.
-- [ ] 2.2 Extend `Member` with `Stored` and `LinkTo`, and add `Zip.Section` for stored members (D17). Paths: `internal/archive`. Verify with tests that:
+- [x] 2.2 Extend `Member` with `Stored` and `LinkTo`, and add `Zip.Section` for stored members (D17). Paths: `internal/archive`. Verify with tests that:
   - a stored member's section reads its exact bytes at any offset;
   - a deflate member has no section;
   - a tar hard link names its earlier target.
