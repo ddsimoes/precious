@@ -242,7 +242,7 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - update the README's feature list and status for R2.
 
   Verify that `grep -n 'owner:' docs/operator.md` returns nothing and that the docs tests pass.
-- [ ] 8.5 Run the final verification:
+- [x] 8.5 Run the final verification:
   - `gofmt -l .` is empty;
   - `go vet ./...` and `go vet -tags e2e,slow ./...` are clean;
   - `go test -race ./...` passes, with every package under 60 s;
