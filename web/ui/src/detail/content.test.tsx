@@ -92,6 +92,19 @@ describe('Detail panel duplicates', () => {
     expect(within(item).getByRole('link', { name: 'Compare' })).toHaveAttribute('href', '/compare?left=60&right=61')
     expect(screen.getByText('100% (10 GiB)')).toBeInTheDocument()
   })
+
+  it.each([
+    ['a', 'Most of it is also in Fotos'],
+    ['b', 'Most of Fotos is also in it'],
+  ] as const)('words an overlap from side %s', async (self, text) => {
+    const copia = folderRow('70', 'Fotos - Copia')
+    const fotos = folderRow('71', 'Fotos')
+    stubApi(routes(entryDetail(copia, { relations: [relationTo(fotos, { kind: 'overlap', self })] })))
+    renderApp('/search?entry=70')
+
+    const relations = within(await screen.findByRole('region', { name: 'Related folders' }))
+    expect(relations.getAllByRole('listitem')[0]).toHaveTextContent(text)
+  })
 })
 
 describe('Search duplicate filter', () => {

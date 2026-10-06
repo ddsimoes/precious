@@ -154,11 +154,9 @@ export function RelationsSection({
             <span>
               <Trans
                 i18nKey={
-                  relation.kind === 'inside'
-                    ? relation.self === 'a'
-                      ? 'detail.relation.insideSelf'
-                      : 'detail.relation.insideOther'
-                    : `detail.relation.${relation.kind}`
+                  relation.kind === 'same'
+                    ? 'detail.relation.same'
+                    : `detail.relation.${relation.kind}${relation.self === 'a' ? 'Self' : 'Other'}`
                 }
                 values={{ path: relation.other.path }}
                 components={{
