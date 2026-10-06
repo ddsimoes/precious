@@ -62,7 +62,9 @@ func newOp[T any](body []byte, req *T, check func() error, apply func(ctx contex
 
 // entryIDs parses the opaque IDs of a request. A malformed ID is not_found,
 // reported after the request's shape is checked, so a malformed request is
-// invalid_request whatever its IDs.
+// invalid_request whatever its IDs. An archive member's ref ("m45") is
+// invalid_request: a member has no decision or tags of its own, it reads
+// its archive's (R2 design D7).
 type entryIDs struct{ err error }
 
 func (p *entryIDs) one(s string) domain.EntryID {
@@ -71,6 +73,10 @@ func (p *entryIDs) one(s string) domain.EntryID {
 	}
 	id, err := domain.ParseEntryID(s)
 	if err != nil {
+		if ref, rerr := domain.ParseRef(s); rerr == nil && ref.IsMember() {
+			err = domain.Errorf(domain.CodeInvalidRequest,
+				"%s is a member of an archive, which is decided and tagged with its archive", s)
+		}
 		if p.err == nil {
 			p.err = err
 		}

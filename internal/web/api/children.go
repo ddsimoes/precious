@@ -67,20 +67,23 @@ func (o childOrder) order() string {
 }
 
 // childCursor is the continuation token of a children page: base64url of
-// this JSON, holding the order and the last row's sort key and ID. N is
-// the key of a numeric sort, nil for a folder with no newest time (NULL);
-// B is the name.
+// this JSON, holding the order and the last row's sort key and ID (an
+// entry ID, or a member ID inside an archive). N is the key of a numeric
+// sort, nil for a folder with no newest time (NULL); B is the name.
 type childCursor struct {
-	Sort  string         `json:"s"`
-	Order string         `json:"o"`
-	N     *int64         `json:"n,omitempty"`
-	B     []byte         `json:"b,omitempty"`
-	ID    domain.EntryID `json:"i"`
+	Sort  string `json:"s"`
+	Order string `json:"o"`
+	N     *int64 `json:"n,omitempty"`
+	B     []byte `json:"b,omitempty"`
+	ID    int64  `json:"i"`
 }
 
 // cursorAfter is the cursor continuing after r.
 func (o childOrder) cursorAfter(r *search.Row) string {
-	c := childCursor{Sort: o.sort, Order: o.order(), ID: r.ID}
+	c := childCursor{Sort: o.sort, Order: o.order(), ID: int64(r.ID)}
+	if r.Member != 0 {
+		c.ID = int64(r.Member)
+	}
 	switch o.sort {
 	case search.SortBytes:
 		c.N = &r.TotalBytes
@@ -139,7 +142,7 @@ func (o childOrder) segments(c *childCursor) []segment {
 	if c == nil {
 		return []segment{{}}
 	}
-	id := int64(c.ID)
+	id := c.ID
 	cmp := ">"
 	if o.desc {
 		cmp = "<"
@@ -198,20 +201,22 @@ type childrenBody struct {
 	NextCursor *string    `json:"next_cursor"`
 }
 
-// children serves GET /api/entries/{id}/children: one page of the entry's
+// children serves GET /api/entries/{ref}/children: one page of the entry's
 // children in every state, sorted and continued by keyset cursor. A file
-// has no children.
+// has no children, except a complete archive, whose top members are its
+// children; a member folder's children are its members (R2 design D16),
+// sorted in memory, which one archive bounds.
 func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var (
-		parent domain.EntryID
+		parent domain.Ref
 		o      childOrder
 		after  *childCursor
 		limit  int
 	)
 	err := checkParams(q, "sort", "order", "cursor", "limit")
 	if err == nil {
-		parent, err = pathID(r)
+		parent, err = pathRef(r)
 	}
 	if err == nil {
 		o, err = parseChildOrder(q.Get("sort"), q.Get("order"))
@@ -231,10 +236,19 @@ func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 	}
 	limit = min(limit, childrenMaxLimit)
 	h.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		if err := entryExists(ctx, tx, parent); err != nil {
+		l, err := resolveLevel(ctx, tx, h.pol, parent)
+		if err != nil {
 			return nil, err
 		}
-		items, next, err := childPage(ctx, tx, parent, o, after, limit)
+		var (
+			items []search.Row
+			next  string
+		)
+		if l.entry != 0 {
+			items, next, err = childPage(ctx, tx, l.entry, o, after, limit)
+		} else {
+			items, next, err = h.memberPage(ctx, tx, l, o, after, limit)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -244,6 +258,32 @@ func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 		}
 		return body, nil
 	})
+}
+
+// memberPage reads up to limit members of an archive level after the
+// cursor, and the cursor of the next page ("" on the last).
+func (h *handler) memberPage(ctx context.Context, tx *sql.Tx, l level, o childOrder, after *childCursor, limit int) ([]search.Row, string, error) {
+	ms, err := l.members(ctx, tx, h.pol)
+	if err != nil {
+		return nil, "", err
+	}
+	o.sortMembers(ms)
+	items := make([]search.Row, 0, min(limit+1, len(ms)))
+	for i := range ms {
+		if after != nil && !o.afterCursor(&ms[i].row, after) {
+			continue
+		}
+		items = append(items, ms[i].row)
+		if len(items) > limit {
+			break
+		}
+	}
+	var next string
+	if len(items) > limit {
+		items = items[:limit]
+		next = o.cursorAfter(&items[limit-1])
+	}
+	return items, next, nil
 }
 
 // childPage reads up to limit children of parent after the cursor, with
@@ -307,19 +347,20 @@ type otherArea struct {
 
 // treemapSQL lists the largest children taking space: missing entries no
 // longer count in their folder's total, so they get no area.
-const treemapSQL = `SELECT ` + search.Columns + ` FROM ` + search.From + `
+var treemapSQL = `SELECT ` + search.Columns + ` FROM ` + search.From + `
 	WHERE e.parent_id = ? AND e.state <> 'missing' ORDER BY e.total_bytes DESC, e.id DESC LIMIT ?`
 
 // treemapRestSQL counts and sums every child taking space.
 const treemapRestSQL = `SELECT count(*), ifnull(sum(e.total_bytes), 0) FROM entries e
 	WHERE e.parent_id = ? AND e.state <> 'missing'`
 
-// treemap serves GET /api/entries/{id}/treemap: the entry's EntryRow, its
+// treemap serves GET /api/entries/{ref}/treemap: the entry's EntryRow, its
 // 300 largest children by total bytes (ties by descending ID, as the bytes
 // sort of children), and the count and bytes of the others. Missing
-// children are left out of both.
+// children are left out of both. A complete archive and a member folder
+// lay out their members (R2 design D16).
 func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
+	ref, err := pathRef(r)
 	if err == nil {
 		err = checkParams(r.URL.Query())
 	}
@@ -328,6 +369,14 @@ func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		l, err := resolveLevel(ctx, tx, h.pol, ref)
+		if err != nil {
+			return nil, err
+		}
+		if l.entry == 0 {
+			return h.memberTreemap(ctx, tx, l)
+		}
+		id := l.entry
 		entry, err := appendRows(ctx, tx, make([]search.Row, 0, 1),
 			`SELECT `+search.Columns+` FROM `+search.From+` WHERE e.id = ?`, []any{int64(id)})
 		if err != nil {
@@ -356,4 +405,44 @@ func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
 		}
 		return treemapBody{Entry: rowJSON(&entry[0]), Items: rowsJSON(items), Other: other}, nil
 	})
+}
+
+// memberTreemap is the treemap of an archive level: the archive's or the
+// member folder's row, its largest members, and the others.
+func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treemapBody, error) {
+	var self search.Row
+	switch {
+	case l.leaf != nil:
+		self = l.leaf.row
+	case l.folder != nil:
+		if _, err := fillFolder(ctx, tx, h.pol, l.folder); err != nil {
+			return treemapBody{}, err
+		}
+		self = l.folder.row
+	default:
+		rows, err := appendRows(ctx, tx, make([]search.Row, 0, 1),
+			`SELECT `+search.Columns+` FROM `+search.From+` WHERE e.id = ?`, []any{int64(l.archive)})
+		if err != nil {
+			return treemapBody{}, fmt.Errorf("api: treemap of %s: %w", l.archive, err)
+		}
+		if err := search.LoadTags(ctx, tx, rows); err != nil {
+			return treemapBody{}, err
+		}
+		self = rows[0]
+	}
+	ms, err := l.members(ctx, tx, h.pol)
+	if err != nil {
+		return treemapBody{}, err
+	}
+	childOrder{sort: search.SortBytes, desc: true}.sortMembers(ms)
+	body := treemapBody{Entry: rowJSON(&self), Items: make([]entryRow, 0, min(len(ms), treemapItems))}
+	for i := range ms {
+		if i < treemapItems {
+			body.Items = append(body.Items, rowJSON(&ms[i].row))
+			continue
+		}
+		body.Other.Count++
+		body.Other.Bytes += ms[i].row.TotalBytes
+	}
+	return body, nil
 }

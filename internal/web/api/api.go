@@ -1,17 +1,20 @@
 // Package api serves the index read endpoints of the single-page app
-// (§11, design D11 and the Interfaces section): Home, an entry with its
-// detail, a folder's children and treemap, search, and the tag list.
+// (§11, design D11 and the Interfaces section; R2 design D16 and its
+// Interfaces): Home, an entry with its detail and copies, a folder's or an
+// archive's children and treemap, search, the tag list, the opportunity
+// cards and their review lists, Gems, and Compare.
 //
 // Each request reads one snapshot: its statements run in one read
 // transaction, so a page and its count, or an entry and its ancestors,
-// always agree. Entry IDs are decimal strings; tag IDs are numbers. Names
-// and paths are sent twice, as the escaped display form
-// (domain.DisplayName) and as base64 (standard encoding) of the raw bytes.
-// Times are RFC 3339 in UTC, or null.
+// always agree. Entry IDs are decimal strings, and a member of a listed
+// archive is "m<id>" (domain.Ref); tag IDs are numbers. Names and paths are
+// sent twice, as the escaped display form (domain.DisplayName) and as
+// base64 (standard encoding) of the raw bytes. Times are RFC 3339 in UTC,
+// or null.
 //
-// Errors use the apierr envelope: an unknown or malformed ID is 404
-// not_found; an unknown, repeated, or bad query parameter, or a cursor the
-// server did not give for that order, is 400 invalid_request.
+// Errors use the apierr envelope: an unknown or malformed ID in the path is
+// 404 not_found; an unknown, repeated, or bad query parameter, or a cursor
+// the server did not give for that order, is 400 invalid_request.
 package api
 
 import (
@@ -32,15 +35,21 @@ import (
 )
 
 // Register serves the read endpoints on mux; authentication is the
-// caller's middleware. pol explains the rule IDs stored on entries; it is
-// the policy the scanner classifies with.
+// caller's middleware. pol explains the rule IDs stored on entries and
+// gives archive members their file kind; it is the policy the scanner
+// classifies with.
 //
 //   - GET /api/home[?source=ID]
-//   - GET /api/entries/{id}
-//   - GET /api/entries/{id}/children?sort=&order=&cursor=&limit=
-//   - GET /api/entries/{id}/treemap
+//   - GET /api/entries/{ref}
+//   - GET /api/entries/{ref}/copies?cursor=&limit=
+//   - GET /api/entries/{ref}/children?sort=&order=&cursor=&limit=
+//   - GET /api/entries/{ref}/treemap
 //   - GET /api/search?…
 //   - GET /api/tags
+//   - GET /api/opportunities[?source=ID]
+//   - GET /api/opportunities/{list}?source=&decided=&cursor=&limit=
+//   - GET /api/gems?section=&source=&cursor=&limit=
+//   - GET /api/compare?left=&right=&bucket=&cursor=&limit=
 func Register(mux *http.ServeMux, st *store.Store, pol *rules.Policy, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
@@ -48,10 +57,15 @@ func Register(mux *http.ServeMux, st *store.Store, pol *rules.Policy, log *slog.
 	h := &handler{st: st, pol: pol, log: log}
 	mux.HandleFunc("GET /api/home", h.home)
 	mux.HandleFunc("GET /api/entries/{id}", h.entry)
+	mux.HandleFunc("GET /api/entries/{id}/copies", h.copies)
 	mux.HandleFunc("GET /api/entries/{id}/children", h.children)
 	mux.HandleFunc("GET /api/entries/{id}/treemap", h.treemap)
 	mux.HandleFunc("GET /api/search", h.search)
 	mux.HandleFunc("GET /api/tags", h.tags)
+	mux.HandleFunc("GET /api/opportunities", h.opportunities)
+	mux.HandleFunc("GET /api/opportunities/{list}", h.reviewList)
+	mux.HandleFunc("GET /api/gems", h.gems)
+	mux.HandleFunc("GET /api/compare", h.compare)
 }
 
 type handler struct {
@@ -113,7 +127,12 @@ func parseLimit(s string) (int, error) {
 	return n, nil
 }
 
-// pathID is the entry ID of the request path; a malformed one is not_found.
-func pathID(r *http.Request) (domain.EntryID, error) {
-	return domain.ParseEntryID(r.PathValue("id"))
+// pathRef is the entry or member ref of the request path (domain.ParseRef);
+// a malformed one names nothing, so it is not_found.
+func pathRef(r *http.Request) (domain.Ref, error) {
+	ref, err := domain.ParseRef(r.PathValue("id"))
+	if err != nil {
+		return domain.Ref{}, domain.Errorf(domain.CodeNotFound, "invalid entry id %q", r.PathValue("id"))
+	}
+	return ref, nil
 }
