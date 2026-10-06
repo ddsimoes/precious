@@ -540,7 +540,7 @@ func TestParse(t *testing.T) {
 		"source": {"disco"}, "name": {"natal"}, "ext": {"jpg", "", "PNG"}, "file_kind": {"image"},
 		"min_size": {"10"}, "max_size": {"20"}, "year_from": {"2004"}, "year_to": {"2006"},
 		"category": {"personal_media", "documents"}, "triage": {"review", "discard"}, "tag": {"3", "4"}, "decision": {"keep"},
-		"dup": {"copies", "", "elsewhere"},
+		"dup":    {"copies", "", "elsewhere"},
 		"within": {"12"}, "sort": {"name"}, "order": {"asc"}, "cursor": {"x"}, "limit": {"5"},
 	}
 	got, err = Parse(v)
@@ -552,7 +552,7 @@ func TestParse(t *testing.T) {
 		MinSize: ptr[int64](10), MaxSize: ptr[int64](20), YearFrom: ptr(2004), YearTo: ptr(2006),
 		Categories: []domain.Category{domain.CategoryPersonalMedia, domain.CategoryDocuments},
 		Triages:    []domain.Triage{domain.TriageReview, domain.TriageDiscard},
-		Tags: []int64{3, 4}, Decisions: []domain.Decision{domain.DecisionKeep}, Within: ptr(domain.EntryID(12)),
+		Tags:       []int64{3, 4}, Decisions: []domain.Decision{domain.DecisionKeep}, Within: ptr(domain.EntryID(12)),
 		Dup:  []domain.DupFilter{domain.DupCopies, domain.DupElsewhere},
 		Sort: SortName, Order: OrderAsc,
 	}
