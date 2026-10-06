@@ -4,25 +4,14 @@ import type { RowSummary } from '@/api/opportunities'
 import { en } from '@/i18n/en'
 import type { Formatters } from '@/lib/format'
 
-type KnownTrait = keyof typeof en.entry.trait
-type KnownSignal = keyof typeof en.entry.signal
-
-// signalLabel names a notable signal of a row: a trait (contains_vcs) or an
-// indicator signal (database_present).
-function signalLabel(signal: string, t: TFunction): string {
-  if (Object.hasOwn(en.entry.trait, signal)) {
-    return t(`entry.trait.${signal as KnownTrait}`)
-  }
-  if (Object.hasOwn(en.entry.signal, signal)) {
-    return t(`entry.signal.${signal as KnownSignal}`)
-  }
-  return t('entry.signal.other')
-}
+type ReviewSignal = keyof typeof en.review.signal
 
 // summaryLine is the one-line summary of a review row (R2 design D13), built
 // from its structured fields: its category, its oldest and newest year, its
-// files, its bytes, and up to two notable signals, such as "Installed
-// application · 2003–2004 · 120 files · 400 MiB · holds Office document".
+// files, its bytes, and up to two notable signals, a trait (contains_vcs) or
+// an indicator signal (database_present), each named as what the row holds,
+// such as "Installed application · 2003–2004 · 120 files · 400 MiB · holds
+// office documents and version history".
 // files: false leaves the file count out, for a group of copies of one file
 // whose title counts them.
 export function summaryLine(
@@ -45,9 +34,14 @@ export function summaryLine(
     parts.push(t('units.files', { count: summary.files, formatted: fmt.count(summary.files) }))
   }
   parts.push(fmt.bytes(summary.bytes))
-  const signals = summary.signals.slice(0, 2).map((signal) => signalLabel(signal, t))
+  const signals = summary.signals
+    .slice(0, 2)
+    .map((signal) =>
+      Object.hasOwn(en.review.signal, signal) ? t(`review.signal.${signal as ReviewSignal}`) : t('review.signal.other'),
+    )
   if (signals.length > 0) {
-    parts.push(t('review.summaryHolds', { signals: fmt.list(signals) }))
+    // A trait and an indicator can read the same: a database.
+    parts.push(t('review.summaryHolds', { signals: fmt.conjunction([...new Set(signals)]) }))
   }
   return parts.join(' · ')
 }

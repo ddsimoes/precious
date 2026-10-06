@@ -155,7 +155,7 @@ describe('Review list', () => {
                 years: [2003, 2004],
                 files: 120,
                 bytes: 400 * MiB,
-                signals: ['editable_document_present', 'contains_vcs', 'database_present'],
+                signals: ['contains_user_material', 'camera_photo_present', 'database_present'],
               },
             }),
           ],
@@ -170,7 +170,7 @@ describe('Review list', () => {
     expect(row).toHaveTextContent('400 MiB')
     expect(
       within(row).getByText(
-        'Installed application · 2003–2004 · 120 files · 400 MiB · holds Office document, Contains version history',
+        'Installed application · 2003–2004 · 120 files · 400 MiB · holds personal material and camera photos',
       ),
     ).toBeInTheDocument()
     expect(within(row).getByText('Fotos · Feb 1, 2003 – Nov 30, 2004 · Suggestion: Review')).toBeInTheDocument()

@@ -41,6 +41,11 @@ export function formatList(items: string[], locale: string): string {
   return new Intl.ListFormat(locale, { style: 'short', type: 'unit' }).format(items)
 }
 
+// formatConjunction joins items in a sentence: "a, b, and c".
+export function formatConjunction(items: string[], locale: string): string {
+  return new Intl.ListFormat(locale, { style: 'long', type: 'conjunction' }).format(items)
+}
+
 // formatDate formats an RFC 3339 time as a date; formatDateTime adds the
 // time of day. Both use the browser's time zone.
 export function formatDate(time: string, locale: string): string {
@@ -84,6 +89,7 @@ export interface Formatters {
   count: (count: number) => string
   percent: (fraction: number) => string
   list: (items: string[]) => string
+  conjunction: (items: string[]) => string
   date: (time: string) => string
   dateTime: (time: string) => string
   dateSpan: (oldest: string | null, newest: string | null) => string | null
@@ -100,6 +106,7 @@ export function useFormat(): Formatters {
       count: (count) => formatCount(count, locale),
       percent: (fraction) => formatPercent(fraction, locale),
       list: (items) => formatList(items, locale),
+      conjunction: (items) => formatConjunction(items, locale),
       date: (time) => formatDate(time, locale),
       dateTime: (time) => formatDateTime(time, locale),
       dateSpan: (oldest, newest) => formatDateSpan(oldest, newest, locale),
