@@ -463,7 +463,7 @@ Some folders are refused:
 
 The browser never sends a typed path. Each folder the picker shows carries an opaque handle signed with a key that Precious makes when it starts, and adding a source names that handle. After a restart the old handles are refused, so reopen the picker.
 
-Removing a source deletes its index: its entries, folder totals, decisions, and tag assignments. The tags themselves stay, and no file on the disk is touched. A source cannot be removed while its scan is queued, running, or paused (`job_active`); cancel the scan first.
+Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed while its scan is queued, running, or paused (`job_active`); cancel the scan first. A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
 
 ### Allowed roots
 
