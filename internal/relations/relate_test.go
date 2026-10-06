@@ -186,7 +186,8 @@ func TestPartnerThroughAWrapperFolder(t *testing.T) {
 
 // An ancestor's overlap does not hide a descendant that is entirely the
 // other folder: fotos/2014 holds the same files as fotos-b, which is the
-// line the owner acts on (it ranks first).
+// line the owner acts on (it ranks first). fotos-b holds nothing but 2014,
+// so the same pair names fotos-b/2014, year with year.
 func TestOverlapDoesNotHideAStrongerDescendantResult(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)
@@ -196,10 +197,10 @@ func TestOverlapDoesNotHideAStrongerDescendantResult(t *testing.T) {
 	w.file("fotos/2014/y/b.jpg", 100, "b")
 	w.file("fotos/z.jpg", 100, "")
 	s, rels := w.relate()
-	if got := s.lines(rels, true); len(got) == 0 || got[0] != "same fotos/2014<-fotos-b" {
-		t.Fatalf("relations %q, want same fotos/2014<-fotos-b first", got)
+	if got := s.lines(rels, true); len(got) == 0 || got[0] != "same fotos/2014<-fotos-b/2014" {
+		t.Fatalf("relations %q, want same fotos/2014<-fotos-b/2014 first", got)
 	}
-	wantShort(t, s, rels, "same fotos/2014<-fotos-b", "overlap fotos-b<-fotos")
+	wantShort(t, s, rels, "same fotos/2014<-fotos-b/2014", "overlap fotos-b<-fotos")
 }
 
 // Folders related only through a third are one group: with fotos/2013 and
@@ -215,7 +216,7 @@ func TestFoldersRelatedThroughAThirdAreOneGroup(t *testing.T) {
 	}
 	w.file("fotos/extras/x.jpg", 500, "")
 	s, rels := w.relate()
-	wantShort(t, s, rels, "same fotos-reorg2<-fotos-b", "same fotos/2013<-fotos-b")
+	wantShort(t, s, rels, "same fotos-reorg2/2013<-fotos-b/2013", "same fotos/2013<-fotos-b/2013")
 }
 
 // Two copies of the same photos, both inside a larger original: each copy
@@ -246,10 +247,11 @@ func TestRelationsAcrossSources(t *testing.T) {
 	w.file("music/x.mp3", 5000, "")
 	w.file("usb:other/y.bin", 7000, "")
 	s, rels := w.relate()
-	// usb:backup holds nothing but docs: the line names it. Side a is the
-	// path-later side, docs (after backup).
-	wantShort(t, s, rels, "same docs<-usb:backup")
-	if rels[0].A != w.ref("docs") || rels[0].B != w.ref("usb:backup") {
+	// usb:backup holds nothing but docs: the same pair names docs on both
+	// sides (the deepest equivalent folders). Side a is the path-later
+	// side, docs (after backup/docs).
+	wantShort(t, s, rels, "same docs<-usb:backup/docs")
+	if rels[0].A != w.ref("docs") || rels[0].B != w.ref("usb:backup/docs") {
 		t.Errorf("sides %v %v", rels[0].A, rels[0].B)
 	}
 }
@@ -343,4 +345,17 @@ func TestHardLinkedArchiveFreesNothing(t *testing.T) {
 	w.archive(wf{path: "daily.1/bkp.zip", size: 400, ino: 9}, members...)
 	s, rels := w.relate()
 	wantLines(t, s, rels, "same daily.1/bkp.zip<-daily.0/bkp.zip matched=300 redundant=0 a=2/300 b=2/300 a_only=0/0 b_only=0/0")
+}
+
+// A file of an ancestor is no partner (a fix to m4b, which proposed the
+// ancestor itself): a copy of a file kept beside its folder relates to
+// nothing, as in the corpus's ISOs/copia.
+func TestAncestorIsNoPartner(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	w.file("ISOs/a.iso", 1500, "iso")
+	w.file("ISOs/b.iso", 1200, "")
+	w.file("ISOs/copia/a.iso", 1500, "iso")
+	s, rels := w.relate()
+	wantShort(t, s, rels)
 }

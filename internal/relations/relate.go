@@ -217,6 +217,10 @@ func (s *Snapshot) partner(a int32, sc *relScratch) (int32, match) {
 				j = s.lowerBound(occ, j, s.end[a]+1) // a's own occurrences
 				continue
 			}
+			if s.contains(d, a) {
+				j++ // a file of one of a's ancestors: no partner
+				continue
+			}
 			t := s.partnerTop(d, a)
 			if sc.stamp[t] != tag {
 				sc.stamp[t] = tag
@@ -483,7 +487,7 @@ func (s *Snapshot) Relate() []result {
 				// side a against a folder (M4b design D10, the owner's
 				// choice); otherwise the path-later side, the path-first
 				// one being the reference.
-				la, lb := s.lift(a), s.lift(b)
+				la, lb := s.lower(a), s.lower(b)
 				var swap bool
 				if inA, inB := s.arc[la] >= 0, s.arc[lb] >= 0; inA != inB {
 					swap = inB
@@ -504,13 +508,20 @@ func (s *Snapshot) Relate() []result {
 		default:
 			continue
 		}
-		// Name each side by its highest equivalent folder: a folder whose
-		// parents up to it hold nothing else, or the archive a folder holds
-		// and nothing else. Both hold the same files, so the counts stand,
-		// except that a part of an archive named by the whole archive frees
-		// its size.
+		// Name each side by its equivalent folder: the folders of a chain
+		// where each holds nothing but the next hold the same files. Inside
+		// and overlap name the highest (fotos-b rather than its only child
+		// fotos-b/2014); same names the deepest on both sides, so that two
+		// copies of a program folder pair up as themselves even when one is
+		// alone in its parent. A folder holding nothing but an archive is
+		// named by the archive, and no name leaves or enters an archive.
+		// Both hold the same files, so the counts stand, except that a part
+		// of an archive named by the whole archive frees its size.
 		c, o := s.lift(r.a), s.lift(r.b)
-		if c != r.a && s.arc[r.a] >= 0 {
+		if r.kind == KindSame {
+			c, o = s.lower(r.a), s.lower(r.b)
+		}
+		if c != r.a || o != r.b {
 			r.m = s.match(c, o)
 		}
 		r.a, r.b = c, o
@@ -690,6 +701,27 @@ func (s *Snapshot) lift(d int32) int32 {
 		return z
 	}
 	return d
+}
+
+// lower returns d's deepest descendant-or-self holding exactly what d
+// holds: d and the folders below it down to that one each hold nothing but
+// the next. It stops at an archive, and a folder holding nothing but one
+// archive lowers to that archive. Every folder of such a chain lowers to
+// the same folder.
+func (s *Snapshot) lower(d int32) int32 {
+	for {
+		if z, ok := s.lowered[d]; ok {
+			return z
+		}
+		if s.isArchive(d) {
+			return d
+		}
+		c := d + 1 // the first child in pre order
+		if int(c) >= len(s.parent) || s.parent[c] != d || s.end[c] != s.end[d] || s.subtree(c) != s.subtree(d) {
+			return d
+		}
+		d = c
+	}
 }
 
 // isArchive reports whether d is an archive's own folder.

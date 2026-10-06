@@ -171,9 +171,14 @@ See `proposal.md` for why. R1 left these facts that shape R2:
   - `pending`, `changed`, `unreadable`, an unreadable folder, and a mount boundary are gaps;
   - symlinks match by link text;
   - empty files are ignored.
-- **The algorithm** is m4b's, unchanged: `partner`, `Relate`, `maximal`, `lift`, and freeable bytes (renamed redundant bytes).
+- **The algorithm** is m4b's: `partner`, `Relate`, `maximal`, `lift`, and freeable bytes (renamed redundant bytes), with these changes (agreed during implementation, 2026-10-06):
   - `overlap` needs at least 50% of one side's bytes ("a large share", §6.4). m4b used 10% for searches the owner started.
   - There is no reporting floor: ranking by bytes keeps small relations at the bottom.
+  - There are no file results: duplicate groups cover single files (D12).
+  - **Naming `same` sides.** m4b's `lift` names a side by its highest equivalent folder (the folders of a chain where each holds nothing but the next). For `same`, both sides are named by their deepest equivalent folder instead, stopping at an archive (a folder holding only an archive still names the archive). Otherwise the Winamp copy, alone in `HD antigo/backup pc velho/Arquivos de programas`, would relate as that parent, against the spec scenario and the ground truth. `inside` and `overlap` keep `lift`.
+  - **Ancestors are no partners.** m4b proposed an ancestor of folder A as A's partner when one of A's keys occurred among that ancestor's own files, so a copy kept beside its folder gave "`ISOs/copia` inside `ISOs`". Such occurrences are skipped (regression test `TestAncestorIsNoPartner`).
+  - **Overlap orientation.** An overlap found from either side is one pair, oriented by the larger matched share, so an overlap whose larger-share side is already `inside` the other is that same pair and is not listed twice.
+  - **Only-one-side counts** are the side's non-empty files and file members whose key does not occur on the other side; gaps are not counted (Compare, D11, proves gaps by size on request).
 - **What is stored.** Each relation stores its sides, kind, bytes, and only-one-side counts. Compare (D11) computes the file lists on request.
 - **Sides of a relation:**
   - `inside`: `a` is the contained side;
