@@ -123,6 +123,9 @@ func maxRSS(t *testing.T) int64 {
 }
 
 func TestRelateAtScale(t *testing.T) {
+	if raceEnabled {
+		t.Skip("time and memory targets are measured without the race detector; make test-slow runs this test in its second pass")
+	}
 	st, _ := seedBig(t)
 	runtime.GC()
 	rssBefore := maxRSS(t)

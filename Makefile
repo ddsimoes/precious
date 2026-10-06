@@ -17,8 +17,12 @@ test:
 
 # Adds the `slow` tests, among them R1.10 (a 2-million-entry scan, about
 # 2 minutes plain and 30 under the race detector), hence the longer timeout.
+# The R2 time and memory targets at 2 million entries (relate, Compare,
+# review lists) are meaningless under the race detector, so those tests skip
+# in the first pass and run in a second pass without it.
 test-slow:
 	go test -race -tags slow -timeout 60m ./...
+	go test -tags slow -timeout 60m -run 'TestRelateAtScale|TestReviewPagesStayFastAt2MillionEntries' ./internal/relations/ ./internal/review/
 
 # The browser suite (web/ui/e2e): builds the UI and the binary, serves the
 # regression corpus, and drives Chromium through the R1 flows. It needs Go,

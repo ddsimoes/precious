@@ -43,6 +43,9 @@ const (
 //
 // Run with: go test -tags slow -run Review -v ./internal/review/
 func TestReviewPagesStayFastAt2MillionEntries(t *testing.T) {
+	if raceEnabled {
+		t.Skip("time targets are measured without the race detector; make test-slow runs this test in its second pass")
+	}
 	w := newWorld(t)
 	ctx := context.Background()
 	start := time.Now()
