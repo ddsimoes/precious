@@ -586,8 +586,10 @@ test('R2.4: discarding one copy of curriculo.doc in the duplicates list leaves t
       .getByRole('list', { name: 'Copies' })
       .locator(':scope > li')
       .filter({ has: page.getByRole('link', { name: path, exact: true }) })
-  await copy(discarded).getByRole('group', { name: `Decision for ${discarded}` }).getByRole('button', { name: 'Discard' }).click()
+  const discard = copy(discarded).getByRole('group', { name: `Decision for ${discarded}` }).getByRole('button', { name: 'Discard' })
+  await discard.click()
   await expect(copy(discarded)).toContainText('Decision: Discard')
+  await expect(discard).toHaveAttribute('aria-pressed', 'true')
   for (const path of group.filter((p) => p !== discarded)) {
     const decision = before.get(path)?.eff_decision ?? 'undecided'
     await expect(copy(path), path).toContainText(`Decision: ${en.home.decision[decision]}`)

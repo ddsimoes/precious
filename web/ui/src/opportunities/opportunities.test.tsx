@@ -454,6 +454,31 @@ describe('Review list', () => {
     expect(await commandBodies(requests, 'set-decision')).toHaveLength(2)
   })
 
+  it('shows each copy’s own decision among its controls', async () => {
+    const setup = entryRow({ id: '31', name: 'Setup.exe', path: 'Downloads/Setup.exe', eff_decision: 'discard' })
+    const setup1 = entryRow({ id: '32', name: 'Setup(1).exe', path: 'Downloads/Setup(1).exe' })
+    stubApi({
+      ...base,
+      'GET /api/opportunities/duplicates': () =>
+        jsonResponse(200, {
+          card: card('duplicates', 3 * MiB, 1),
+          items: [reviewRow('d2', null, { copies: [copyOf(setup, { decision: 'discard' }), copyOf(setup1)] })],
+          next_cursor: null,
+        }),
+    })
+    renderApp('/opportunities/duplicates')
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Show copies' }))
+    const pressed = (path: string) =>
+      within(screen.getByRole('group', { name: `Decision for ${path}` }))
+        .getAllByRole('button')
+        .filter((button) => button.getAttribute('aria-pressed') === 'true')
+        .map((button) => button.textContent)
+    expect(pressed(setup.path)).toEqual(['Discard'])
+    expect(pressed(setup1.path)).toEqual(['Follow folder'])
+  })
+
   it('names the folder an archive was unpacked in, with a Compare of the two', async () => {
     const zip = entryRow({ id: '61', name: 'eMule0.47c.zip', path: 'Downloads/eMule0.47c.zip', archive_state: 'complete' })
     const emule = folderRow('60', 'emule-0.47c', { path: 'Downloads/emule-0.47c' })

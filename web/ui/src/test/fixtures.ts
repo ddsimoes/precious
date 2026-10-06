@@ -131,7 +131,7 @@ export function card(list: Card['list'], bytes: number, rows: number, overrides:
   return { list, bytes, rows, basis: list === 'duplicates' || list === 'unpacked_archives' ? 'content' : 'rules', ...overrides }
 }
 
-// copyOf is a CopyJSON of row.
+// copyOf is a CopyJSON of row, which follows its folder.
 export function copyOf(row: EntryRow, overrides: Partial<Copy> = {}): Copy {
   return {
     ref: row.id,
@@ -141,6 +141,7 @@ export function copyOf(row: EntryRow, overrides: Partial<Copy> = {}): Copy {
     archive_id: row.archive_id,
     hard_link: false,
     offline: false,
+    decision: null,
     eff_decision: row.eff_decision,
     ...overrides,
   }

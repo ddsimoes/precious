@@ -27,7 +27,9 @@ export function checkedShare(coverage: Coverage): number {
 }
 
 // Copy is CopyJSON: one copy of a content. ref is an entry ID, or "m<id>"
-// for a member of an archive, whose archive_id is then set.
+// for a member of an archive, whose archive_id is then set. decision is the
+// copy's own decision, null when it follows its folder (always for a
+// member).
 export interface Copy {
   ref: string
   source_id: string
@@ -36,6 +38,7 @@ export interface Copy {
   archive_id: string | null
   hard_link: boolean
   offline: boolean
+  decision: Decision | null
   eff_decision: Decision
 }
 

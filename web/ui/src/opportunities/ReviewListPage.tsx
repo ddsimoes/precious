@@ -49,8 +49,8 @@ interface CopyItem {
   sourceId: string
   path: string
   effDecision: Decision
-  // own is the own decision when known (a relation's sides report it).
-  own?: Decision | null
+  // own is the copy's own decision (null: it follows its folder).
+  own: Decision | null
   member: boolean
   hardLink: boolean
   offline: boolean
@@ -62,6 +62,7 @@ function fromCopy(copy: Copy): CopyItem {
     sourceId: copy.source_id,
     path: copy.path,
     effDecision: copy.eff_decision,
+    own: copy.decision,
     member: copy.archive_id !== null,
     hardLink: copy.hard_link,
     offline: copy.offline,
