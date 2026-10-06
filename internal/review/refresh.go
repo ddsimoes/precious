@@ -500,7 +500,8 @@ func duplicateRows(rels []relation, copies contentCopies) []newRow {
 }
 
 // unpackedRows returns the unpacked_archives card's rows: each archive file
-// that is the a side of a same or inside relation with a folder, once.
+// that is the a side of a same or inside relation with a folder, once, with
+// that folder as its group.
 func unpackedRows(rels []relation) []newRow {
 	var out []newRow
 	seen := map[int64]bool{}
@@ -510,7 +511,7 @@ func unpackedRows(rels []relation) []newRow {
 			continue
 		}
 		seen[r.a.entry] = true
-		out = append(out, newRow{list: ListUnpackedArchives, source: r.a.src, entry: r.a.entry,
+		out = append(out, newRow{list: ListUnpackedArchives, source: r.a.src, entry: r.a.entry, group: r.b.entry,
 			bytes: r.a.bytes, files: 1, sortKey: r.a.bytes})
 	}
 	return out

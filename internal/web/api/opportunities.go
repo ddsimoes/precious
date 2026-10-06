@@ -170,17 +170,37 @@ func (h *handler) reviewList(w http.ResponseWriter, r *http.Request) {
 // its first copy.
 const groupCopies = 100
 
-// reviewRows renders review rows as RowJSON.
+// reviewRows renders review rows as RowJSON. An unpacked_archives row
+// carries its archive's relation with the folder it was unpacked into,
+// seen from the archive (side a).
 func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row) ([]reviewRowJSON, error) {
 	var relIDs []int64
+	unpacked := map[int64]int64{} // review row ID → relation ID
 	for _, it := range items {
-		if it.Relation != 0 {
+		switch {
+		case it.Relation != 0:
 			relIDs = append(relIDs, it.Relation)
+		case it.List == review.ListUnpackedArchives && it.Group != 0:
+			id, err := unpackedRelation(ctx, tx, it.Entry, it.Group)
+			if err != nil {
+				return nil, err
+			}
+			if id != 0 {
+				unpacked[it.ID] = id
+				relIDs = append(relIDs, id)
+			}
 		}
 	}
 	rels, err := relationsByID(ctx, tx, relIDs)
 	if err != nil {
 		return nil, err
+	}
+	relJSON := func(rel relations.Relation) (*relationJSON, error) {
+		rj, err := h.relationsJSON(ctx, tx, []relations.Relation{rel}, func(relations.Relation) string { return "a" })
+		if err != nil || len(rj) == 0 {
+			return nil, err
+		}
+		return &rj[0], nil
 	}
 	var refs []domain.Ref
 	for _, it := range items {
@@ -212,6 +232,11 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 			if self == nil {
 				continue // deleted since the rows were computed
 			}
+			if rel, ok := rels[unpacked[it.ID]]; ok {
+				if j.Relation, err = relJSON(rel); err != nil {
+					return nil, err
+				}
+			}
 		case it.Relation != 0:
 			rel, ok := rels[it.Relation]
 			if !ok {
@@ -220,14 +245,12 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 			if self, _ = rows.get(rel.A); self == nil {
 				continue
 			}
-			rj, err := h.relationsJSON(ctx, tx, []relations.Relation{rel}, func(relations.Relation) string { return "a" })
-			if err != nil {
+			if j.Relation, err = relJSON(rel); err != nil {
 				return nil, err
 			}
-			if len(rj) == 0 {
+			if j.Relation == nil {
 				continue
 			}
-			j.Relation = &rj[0]
 		default:
 			if it.Copy == (domain.Ref{}) {
 				continue
@@ -249,6 +272,24 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 		out = append(out, j)
 	}
 	return out, nil
+}
+
+// unpackedRelation is the ID of the visible generation's same or inside
+// relation of the archive file archive (side a) with the folder it was
+// unpacked into (side b), 0 for none.
+func unpackedRelation(ctx context.Context, tx *sql.Tx, archive, folder domain.EntryID) (int64, error) {
+	var id int64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM relations
+		WHERE a_entry = ? AND a_member IS NULL AND b_entry = ? AND b_member IS NULL AND kind IN ('same', 'inside')
+			AND gen = (SELECT gen FROM review_state WHERE id = 1)
+		ORDER BY id LIMIT 1`, int64(archive), int64(folder)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("api: relation of unpacked archive %s: %w", archive, err)
+	}
+	return id, nil
 }
 
 // refOf is the ref of a row.

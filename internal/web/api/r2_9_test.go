@@ -152,6 +152,40 @@ func TestR2_9_5UnknownDatesAreNull(t *testing.T) {
 	}
 }
 
+// 9.9 (A9): an unpacked_archives row names the folder its archive was
+// unpacked into: its relation, seen from the archive (self a), has that
+// folder as the other side, and the pair opens in Compare.
+func TestR2_9_9UnpackedArchiveRowsNameTheirFolder(t *testing.T) {
+	w := newContentWorld(t)
+	var list struct {
+		Items []struct {
+			Entry    *contentRow  `json:"entry"`
+			Relation *relationRes `json:"relation"`
+			Copies   []copyRes    `json:"copies"`
+		} `json:"items"`
+	}
+	w.get(t, "/api/opportunities/unpacked_archives?limit=500", 200, &list)
+	if len(list.Items) == 0 {
+		t.Fatal("no unpacked_archives rows")
+	}
+	for _, it := range list.Items {
+		if it.Entry == nil || it.Relation == nil || it.Copies != nil || it.Relation.Self != "a" ||
+			it.Relation.Other.Kind != "directory" || it.Relation.Other.ID == it.Entry.ID ||
+			(it.Relation.Kind != "same" && it.Relation.Kind != "inside") {
+			t.Errorf("unpacked row %+v", it)
+			continue
+		}
+		var cmp struct {
+			Left  contentRow `json:"left"`
+			Right contentRow `json:"right"`
+		}
+		w.get(t, fmt.Sprintf("/api/compare?left=%s&right=%s", it.Entry.ID, it.Relation.Other.ID), 200, &cmp)
+		if cmp.Left.ID != it.Entry.ID || cmp.Right.ID != it.Relation.Other.ID {
+			t.Errorf("compare %s with %s: %s, %s", it.Entry.ID, it.Relation.Other.ID, cmp.Left.ID, cmp.Right.ID)
+		}
+	}
+}
+
 // contentDetail reads GET /api/entries/{ref} with the R2 fields.
 func (e *env) contentDetail(t *testing.T, ref string) detailRes {
 	t.Helper()
