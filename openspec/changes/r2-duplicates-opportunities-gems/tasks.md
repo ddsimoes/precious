@@ -253,7 +253,7 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - the e2e tests pass in privileged Docker;
   - `openspec validate r2-duplicates-opportunities-gems --strict` passes;
   - `walkbench` warm on the development machine shows no regression against the R1 A13 numbers.
-- [ ] 8.6 Smoke-check the built binary with a throwaway script, with no network access:
+- [x] 8.6 Smoke-check the built binary with a throwaway script, with no network access:
   1. `check-config`;
   2. `serve` against a copy of an R1 database;
   3. add a generated corpus and scan it;
