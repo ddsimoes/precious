@@ -2,7 +2,7 @@
 
 Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks: it never writes to, moves, or deletes anything on them. This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
 
-This release, R1, is the full index and the explorer: sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags. Finding duplicates, organizing files into new folders, and cleanup (quarantine and deletion) come in later releases; nothing in R1 changes a file on a disk. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
+This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, opportunity cards with review lists, and Gems, the valuable files with no other copy. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing files into new folders and cleanup (quarantine and deletion) come in later releases. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
 
 ## Installation
 
@@ -577,7 +577,6 @@ Both measurements are warm. A warm walk is the fastest baseline, so the warm rat
 
 ## Hashing
 
-<!-- owner: H -->
 Precious finds copies by reading file content and computing its SHA-256 digest. Hashing only reads; it never writes to a source, and it opens every file read-only, without updating its access time where the filesystem allows that.
 
 ### When it runs
@@ -652,7 +651,6 @@ A zip costs a read of its central directory, plus a read of each member whose si
 
 ## Archives
 
-<!-- owner: A -->
 Precious opens archives in memory to list their members, so that a photo inside a zip counts as a copy of the same photo elsewhere, and so that you can browse and view the members. Nothing is ever unpacked to disk, not even to a temporary file, and the archive file itself is only read.
 
 ### Formats
@@ -801,7 +799,6 @@ The rules are versioned, and each scan records the version it used (`rules-v2+ma
 
 ## Duplicates and Compare
 
-<!-- owner: R -->
 Precious finds copies by content, never by name: two files are copies when their SHA-256 digests are equal. Hashing (see [Hashing](#hashing)) fills in the digests in the background, and everything below follows it.
 
 ### Duplicate groups
@@ -861,7 +858,6 @@ On a development machine, a run over 2 million entries takes seconds and well un
 
 ## Opportunities and Gems
 
-<!-- owner: V -->
 Opportunities answers "what should I look at first?" with seven cards, and Gems answers "what is valuable and has no other copy?". Both are built from the index, the rules' classification, and the duplicates; neither decides anything for you.
 
 ### The cards
@@ -993,7 +989,6 @@ Files on a source come from anywhere, so the viewer treats each one as untrusted
 
 ### Content, duplicates, and archive endpoints
 
-<!-- owner: Q -->
 What hashing learns (see [Hashing](#hashing), [Duplicates and Compare](#duplicates-and-compare), and [Opportunities and Gems](#opportunities-and-gems)) is read through the same API. Like the rest, these endpoints need a session, change nothing, and name entries only by ID.
 
 **Archive members.** A member of an archive Precious read completely is named `m` followed by its number, such as `"m45"`. Every endpoint below `/api/entries/` accepts it where it accepts an entry ID. A member row has `"id":"m45"`, `"archive_id"` (the archive's entry ID), the path `archive path!path inside`, such as `Downloads/fotos.zip!Carnaval/DSC01001.JPG`, `"decision":null`, `"tag_ids":[]`, and the archive's effective decision: a member has no decision or tags of its own and follows its archive. `set-decision` and `set-tags` naming a member answer `invalid_request`; decide the archive instead. Members cannot be searched by name.
@@ -1198,7 +1193,6 @@ Files from a disk are never run as part of Precious:
 
 ### Opportunities, Compare, and Gems
 
-<!-- owner: U -->
 **Home** also shows **Checked for copies**: how many bytes of the files that could have a copy (those sharing their size with another file) have been read, with the files not checked yet and those that could not be read. Each running hashing job shows what it is doing (listing archives, reading large files, reading small files) and its checked bytes, live. The opportunity cards follow, largest first; each opens its review list. All of these follow the source chosen at the top.
 
 **Opportunities** (in the main menu) lists the seven cards largest first, each with its bytes, how many items it holds, and whether it rests on the rules or on the same content found by hashing. A card counts only what is still undecided, so its bytes shrink as you decide.
