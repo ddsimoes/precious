@@ -169,9 +169,13 @@ type Row struct {
 	// value), "" when it was not listed.
 	ArchiveState string
 	// Member is set, and ID is 0, on the row of an archive member; ArchiveID
-	// is then the archive's entry.
-	Member    domain.MemberID
-	ArchiveID domain.EntryID
+	// is then the archive's entry, MemberPath the member's path inside the
+	// archive (the end of Path, after '!'), and Zip whether the archive is a
+	// zip, whose names display through domain.MemberDisplayName.
+	Member     domain.MemberID
+	ArchiveID  domain.EntryID
+	MemberPath []byte
+	Zip        bool
 }
 
 // FamilyAmount is one family's share of a composition.

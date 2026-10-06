@@ -88,7 +88,7 @@ func (h *handler) content(w http.ResponseWriter, r *http.Request) {
 	hd.Set("Content-Security-Policy", t.csp)
 	hd.Set("Cache-Control", "private, no-cache")
 	if t.download {
-		hd.Set("Content-Disposition", attachment(f.name))
+		hd.Set("Content-Disposition", attachment(f.display))
 	}
 	if f.seeker != nil {
 		// An empty name keeps ServeContent from choosing a type; the one
@@ -138,8 +138,8 @@ func protect(h http.Header) {
 
 // attachment is the Content-Disposition of a download, naming the file by
 // its display name.
-func attachment(name []byte) string {
-	if v := mime.FormatMediaType("attachment", map[string]string{"filename": domain.DisplayName(name)}); v != "" {
+func attachment(display string) string {
+	if v := mime.FormatMediaType("attachment", map[string]string{"filename": display}); v != "" {
 		return v
 	}
 	return "attachment"
@@ -156,8 +156,9 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 // opened is a file or a file member open for reading.
 type opened struct {
 	// name is the raw name the type table reads; path the raw path errors
-	// name.
+	// name; display the name a download is given.
 	name, path []byte
+	display    string
 	size       int64
 	modTime    time.Time
 	// content yields the bytes; closing it releases everything.
@@ -212,15 +213,19 @@ func (h *handler) openFile(ctx context.Context, id domain.EntryID) (*opened, err
 		return nil, err
 	}
 	sec := io.NewSectionReader(file, 0, info.Size)
-	return &opened{name: name, path: row.Path, size: info.Size, modTime: info.ModTime, seeker: sec,
+	return &opened{name: name, path: row.Path, display: domain.DisplayName(name), size: info.Size, modTime: info.ModTime, seeker: sec,
 		content: &closer{Reader: sec, close: func() error { return errors.Join(file.Close(), src.Root.Close()) }}}, nil
 }
 
 // openMember opens a file member of a complete archive through OpenMember.
 func (h *handler) openMember(ctx context.Context, ref domain.Ref) (*opened, error) {
-	var name, path []byte
-	err := h.q.QueryRowContext(ctx, `SELECT name, path FROM archive_members WHERE id = ?`, int64(ref.Member)).
-		Scan(&name, &path)
+	var (
+		name, path []byte
+		zip        bool
+	)
+	err := h.q.QueryRowContext(ctx, `SELECT m.name, m.path, a.format = 'zip'
+		FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id WHERE m.id = ?`, int64(ref.Member)).
+		Scan(&name, &path, &zip)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.Errorf(domain.CodeNotFound, "member %s not found", ref)
 	}
@@ -231,7 +236,8 @@ func (h *handler) openMember(ctx context.Context, ref domain.Ref) (*opened, erro
 	if err != nil {
 		return nil, err
 	}
-	return &opened{name: name, path: path, size: m.Size, modTime: m.ModTime, content: m.Content, seeker: m.Seeker}, nil
+	return &opened{name: name, path: path, display: domain.MemberDisplayName(name, zip), size: m.Size, modTime: m.ModTime,
+		content: m.Content, seeker: m.Seeker}, nil
 }
 
 // closer is a reader with its own Close.

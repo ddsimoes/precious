@@ -366,14 +366,17 @@ func selfCopy(ctx context.Context, tx *sql.Tx, ref domain.Ref) (content.Copy, er
 		var (
 			archive int64
 			mpath   []byte
+			zip     bool
 		)
-		err = tx.QueryRowContext(ctx, `SELECT m.archive_id, e.source_id, e.path, m.path, s.state <> 'online', e.eff_decision
-			FROM archive_members m JOIN entries e ON e.id = m.archive_id JOIN sources s ON s.id = e.source_id
-			WHERE m.id = ?`, int64(ref.Member)).Scan(&archive, &src, &path, &mpath, &c.Offline, &eff)
+		err = tx.QueryRowContext(ctx, `SELECT m.archive_id, e.source_id, e.path, m.path, a.format = 'zip', s.state <> 'online',
+				e.eff_decision
+			FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id JOIN entries e ON e.id = m.archive_id
+			JOIN sources s ON s.id = e.source_id
+			WHERE m.id = ?`, int64(ref.Member)).Scan(&archive, &src, &path, &mpath, &zip, &c.Offline, &eff)
 		if err == nil {
 			a := domain.EntryID(archive)
 			c.Ref, c.ArchiveID = domain.Ref{Entry: a, Member: ref.Member}, &a
-			c.Path = domain.DisplayName(path) + "!" + domain.DisplayName(mpath)
+			c.Path = domain.DisplayName(path) + "!" + domain.MemberDisplayName(mpath, zip)
 			c.PathB64 = append(append(path, '!'), mpath...)
 		}
 	} else {
@@ -587,20 +590,22 @@ func (h *handler) compare(w http.ResponseWriter, r *http.Request) {
 			c := res.Summary[b]
 			body.Summary[b] = amount{Files: c.Files, Bytes: c.Bytes}
 		}
-		side := func(ref *domain.Ref) *entryRow {
+		side := func(ref *domain.Ref) (*entryRow, bool) {
 			if ref == nil {
-				return nil
+				return nil, false
 			}
 			row, ok := rows.get(*ref)
 			if !ok {
-				return nil
+				return nil, false
 			}
 			j := rowJSON(row)
-			return &j
+			return &j, row.Member != 0 && row.Zip
 		}
 		for _, it := range res.Items {
-			body.Items = append(body.Items, compareItemJSON{Path: domain.DisplayName(it.Path), PathB64: it.Path,
-				Left: side(it.Left), Right: side(it.Right)})
+			lj, lz := side(it.Left)
+			rj, rz := side(it.Right)
+			body.Items = append(body.Items, compareItemJSON{Path: domain.MemberDisplayName(it.Path, lz || rz), PathB64: it.Path,
+				Left: lj, Right: rj})
 		}
 		if res.NextCursor != "" {
 			body.NextCursor = &res.NextCursor

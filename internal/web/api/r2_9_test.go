@@ -51,6 +51,42 @@ func TestR2_9_2UnreadableFilesAreNoCandidates(t *testing.T) {
 	}
 }
 
+// 9.4 (A4): the raw name of a zip member that is not UTF-8 (as Windows zip
+// tools write it, without the UTF-8 flag) displays decoded from code page
+// 850 in rows and ancestors, while name_b64 and path_b64 keep the raw
+// bytes; a tar member's same raw name keeps DisplayName's escapes.
+func TestR2_9_4ZipMemberNamesDecodeFromCodePage850(t *testing.T) {
+	e := newEnv(t)
+	s := indextest.Seed(t, e.st, indextest.Tree{Source: "pen", CreateSource: true, MountPoint: "/media/pen",
+		Nodes: []indextest.Node{{Path: "Docs/pacote.zip", Size: 900}, {Path: "Docs/pacote.tar", Size: 900}}})
+	const folder, file = "Relat\xA2rios", "Relat\xA2rios/Anota\x87\xE4es.txt"
+	members := []indextest.Member{{Path: file, Size: 40, Content: indextest.Content{State: domain.ContentPending}}}
+	zip := s.SeedArchive(e.st, "Docs/pacote.zip", indextest.Archive{Format: domain.ArchiveZip, Members: members})
+	tar := s.SeedArchive(e.st, "Docs/pacote.tar", indextest.Archive{Format: domain.ArchiveTar, Members: members})
+
+	var page struct {
+		Items []row `json:"items"`
+	}
+	e.get(t, fmt.Sprintf("/api/entries/%s/children", domain.Ref{Member: zip.Member(folder)}), 200, &page)
+	if len(page.Items) != 1 {
+		t.Fatalf("children of the zip folder: %+v", page.Items)
+	}
+	r := page.Items[0]
+	if r.Name != "Anotações.txt" || string(r.NameB64) != "Anota\x87\xE4es.txt" ||
+		r.Path != "Docs/pacote.zip!Relatórios/Anotações.txt" || string(r.PathB64) != "Docs/pacote.zip!"+file {
+		t.Errorf("zip member: name %q (%q), path %q (%q)", r.Name, r.NameB64, r.Path, r.PathB64)
+	}
+	d := e.contentDetail(t, domain.Ref{Member: zip.Member(file)}.String())
+	if a := d.Ancestors; len(a) == 0 || a[len(a)-1].Name != "Relatórios" {
+		t.Errorf("ancestors of the zip member: %+v", a)
+	}
+	e.get(t, fmt.Sprintf("/api/entries/%s/children", domain.Ref{Member: tar.Member(folder)}), 200, &page)
+	if len(page.Items) != 1 || page.Items[0].Name != `Anota\x87\xE4es.txt` ||
+		page.Items[0].Path != `Docs/pacote.tar!Relat\xA2rios/Anota\x87\xE4es.txt` {
+		t.Errorf("tar member: %+v", page.Items)
+	}
+}
+
 // contentDetail reads GET /api/entries/{ref} with the R2 fields.
 func (e *env) contentDetail(t *testing.T, ref string) detailRes {
 	t.Helper()

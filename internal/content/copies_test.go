@@ -10,7 +10,9 @@ import (
 
 // Copies lists the other copies of a file's or member's content, files and
 // members, pages through them, flags another name of the same file, and
-// marks a copy on an offline source.
+// marks a copy on an offline source. A zip member's raw name that is not
+// UTF-8 (a Windows zip tool's, without the UTF-8 flag) displays decoded
+// from code page 850; path_b64 keeps the raw bytes.
 func TestCopies(t *testing.T) {
 	e := newEnv(t)
 	data := []byte("curriculum vitae, 2004")
@@ -19,7 +21,7 @@ func TestCopies(t *testing.T) {
 	a := docs.File("curriculo.doc", 0, fileTime).Content(data)
 	docs.HardLink("curriculo-link.doc", a)
 	root.Dir("Downloads").File("curriculo (1).doc", 0, fileTime).Content(data)
-	root.File("docs.zip", 0, fileTime).Content(makeZip(t, zipEntry{name: "cv/curriculo.doc", data: data}))
+	root.File("docs.zip", 0, fileTime).Content(makeZip(t, zipEntry{name: "cv/Anota\x87\xE4es.doc", data: data}))
 	e.disk("usb", "/mnt/usb", posix).File("cv.doc", 0, fileTime).Content(data)
 	e.scan("fotos")
 	e.scan("usb")
@@ -52,8 +54,9 @@ func TestCopies(t *testing.T) {
 			if !c.HardLink {
 				t.Error("the hard link is not flagged")
 			}
-		case "docs.zip!cv/curriculo.doc":
-			if c.ArchiveID == nil || *c.ArchiveID != e.id("fotos", "docs.zip") || !c.Ref.IsMember() {
+		case "docs.zip!cv/Anotações.doc":
+			if c.ArchiveID == nil || *c.ArchiveID != e.id("fotos", "docs.zip") || !c.Ref.IsMember() ||
+				string(c.PathB64) != "docs.zip!cv/Anota\x87\xE4es.doc" {
 				t.Errorf("member copy %+v", c)
 			}
 		case "cv.doc":
@@ -66,7 +69,7 @@ func TestCopies(t *testing.T) {
 		}
 	}
 	want := []string{"fotos:Documentos/curriculo-link.doc", "fotos:Downloads/curriculo (1).doc", "usb:cv.doc",
-		"fotos:docs.zip!cv/curriculo.doc"}
+		"fotos:docs.zip!cv/Anotações.doc"}
 	slices.Sort(paths)
 	slices.Sort(want)
 	if !slices.Equal(paths, want) {

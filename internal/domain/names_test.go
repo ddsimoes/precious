@@ -159,3 +159,24 @@ func TestDisplayNameKeepsPrintableText(t *testing.T) {
 		}
 	}
 }
+
+// A zip member's name that is not UTF-8 decodes from code page 850, one
+// '/'-separated component at a time; UTF-8 names and other formats' names
+// render as DisplayName renders them.
+func TestMemberDisplayNameDecodesCodePage850(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		zip  bool
+		want string
+	}{
+		{"Anota\x87\xE4es.txt", true, "Anotações.txt"},
+		{"Anotações.txt", true, "Anotações.txt"},
+		{"Anota\x87\xE4es.txt", false, `Anota\x87\xE4es.txt`},
+		{"Relatórios/Anota\x87\xE4es/a\\b.txt", true, `Relatórios/Anotações/a\\b.txt`},
+		{"a\x01\x87.txt", true, `a\u{0001}ç.txt`},
+	} {
+		if got := MemberDisplayName([]byte(c.raw), c.zip); got != c.want {
+			t.Errorf("MemberDisplayName(%q, %v) = %q, want %q", c.raw, c.zip, got, c.want)
+		}
+	}
+}

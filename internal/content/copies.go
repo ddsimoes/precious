@@ -15,7 +15,7 @@ import (
 // Interfaces): a present file on any source, offline ones included, or a
 // file member of a complete archive. Path is the copy's raw source-relative
 // path in display form, a member's as its archive's path, '!', and its
-// path inside the archive; PathB64 holds the raw bytes. ArchiveID is set
+// path inside the archive (domain.MemberDisplayName); PathB64 holds the raw bytes. ArchiveID is set
 // for a member, HardLink for another name of the same physical file, and a
 // member's EffDecision is its archive's.
 type Copy struct {
@@ -67,12 +67,12 @@ func Copies(ctx context.Context, q store.Queryer, ref domain.Ref, cursor string,
 	if !content.Valid {
 		return []Copy{}, 0, "", nil
 	}
-	const entries = `SELECT 0 AS member, e.id AS id, e.source_id, e.path, NULL, NULL, s.state <> 'online', e.eff_decision,
+	const entries = `SELECT 0 AS member, e.id AS id, e.source_id, e.path, NULL, NULL, 0, s.state <> 'online', e.eff_decision,
 			e.nlink > 1 AND coalesce(json_extract(s.capabilities, '$.stable_identity'), 0) AND s.volume_id = ?2
 				AND e.dev IS ?3 AND e.ino IS ?4 AND ?5
 		FROM file_content f JOIN entries e ON e.id = f.entry_id JOIN sources s ON s.id = e.source_id
 		WHERE f.content_id = ?1 AND e.state = 'present' AND e.id <> ?6`
-	const members = `SELECT 1, m.id, e.source_id, e.path, m.path, e.id, s.state <> 'online', e.eff_decision,
+	const members = `SELECT 1, m.id, e.source_id, e.path, m.path, e.id, a.format = 'zip', s.state <> 'online', e.eff_decision,
 			coalesce(m.link_member, m.id) = ?7
 		FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id JOIN entries e ON e.id = a.entry_id
 			JOIN sources s ON s.id = e.source_id
@@ -99,8 +99,9 @@ func Copies(ctx context.Context, q store.Queryer, ref domain.Ref, cursor string,
 			path, mpath  []byte
 			archiveID    sql.NullInt64
 			offline, hdl bool
+			zip          bool
 		)
-		if err := rows.Scan(&member, &id, &src, &path, &mpath, &archiveID, &offline, &eff, &hdl); err != nil {
+		if err := rows.Scan(&member, &id, &src, &path, &mpath, &archiveID, &zip, &offline, &eff, &hdl); err != nil {
 			return nil, 0, "", err
 		}
 		if len(out) == limit {
@@ -115,7 +116,7 @@ func Copies(ctx context.Context, q store.Queryer, ref domain.Ref, cursor string,
 			a := domain.EntryID(archiveID.Int64)
 			c.ArchiveID = &a
 			c.PathB64 = append(append(path, '!'), mpath...)
-			c.Path += "!" + domain.DisplayName(mpath)
+			c.Path += "!" + domain.MemberDisplayName(mpath, zip)
 		} else {
 			c.Ref = domain.Ref{Entry: domain.EntryID(id)}
 		}

@@ -70,10 +70,15 @@ func rowJSON(r *search.Row) entryRow {
 		s := r.ArchiveID.String()
 		archiveID = &s
 	}
+	name, path := domain.DisplayName(r.Name), domain.DisplayName(r.Path)
+	if r.Member != 0 && r.Zip {
+		name = domain.MemberDisplayName(r.Name, true)
+		path = domain.DisplayName(r.Path[:len(r.Path)-len(r.MemberPath)]) + domain.MemberDisplayName(r.MemberPath, true)
+	}
 	return entryRow{
 		ID: domain.Ref{Entry: r.ID, Member: r.Member}.String(), SourceID: r.Source,
-		Name: domain.DisplayName(r.Name), NameB64: r.Name,
-		Path: domain.DisplayName(r.Path), PathB64: r.Path,
+		Name: name, NameB64: r.Name,
+		Path: path, PathB64: r.Path,
 		Kind:     r.Kind,
 		FileKind: nonEmpty(&r.FileKind), MainKind: nonEmpty(&r.MainKind),
 		Category: nonEmpty(&r.Category), Family: nonEmpty(&r.Family), Triage: nonEmpty(&r.Triage),
