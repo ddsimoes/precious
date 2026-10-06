@@ -25,6 +25,10 @@
 //     source's (source_id, path) index.
 //   - Within: the descendants of an entry, the folder itself excluded, as the
 //     same path range.
+//   - Dup: the duplicate state of a present file (R2 design D15): copies
+//     (another physical copy anywhere, archive members included),
+//     elsewhere (one outside the Within folder; needs Within), unique, or
+//     unchecked. It has no index and is tested on each candidate.
 //
 // The descendants of an entry at path p are the entries of its source whose
 // path starts with p + "/" (every entry but the root, for the root): the
@@ -80,9 +84,8 @@ type Query struct {
 	Triages    []domain.Triage   `json:"triage,omitempty"`
 	Tags       []int64           `json:"tag,omitempty"`
 	Decisions  []domain.Decision `json:"decision,omitempty"`
-	// Dup filters by duplicate state (R2 design D15); elsewhere requires
-	// Within. It is parsed and validated; Page and Resolve do not match on
-	// it until the duplicate filter's SQL lands with the content index.
+	// Dup filters by duplicate state (R2 design D15, see dupFilter);
+	// elsewhere requires Within.
 	Dup    []domain.DupFilter `json:"dup,omitempty"`
 	Within *domain.EntryID    `json:"within,omitempty,string"`
 	Sort   string             `json:"sort,omitempty"`
@@ -269,17 +272,24 @@ func Resolve(ctx context.Context, q store.Queryer, query Query, max int) ([]doma
 }
 
 // Columns are the columns of a Row, in the order ScanRow reads them, for a
-// statement over From.
-const Columns = `e.id, e.source_id, e.name, e.path, e.kind, e.special_kind, e.file_kind, e.main_kind,
+// statement over From. The R2 fields: a file's content state, its copies
+// (copiesColumn), a folder's dir_dups figures, and an archive's listing
+// state (NULL while it is being listed, which readers ignore).
+var Columns = `e.id, e.source_id, e.name, e.path, e.kind, e.special_kind, e.file_kind, e.main_kind,
 	e.category, e.family, e.triage, e.is_group, e.veto, e.size, e.total_bytes, e.total_files,
 	e.mtime_ns, e.newest_ns, e.oldest_ns, e.state, e.partial, e.mount_boundary, e.decision, e.eff_decision,
 	ds.by_family,
-	NULL AS content_state, NULL AS copies, NULL AS candidate_bytes, NULL AS checked_bytes,
-	NULL AS duplicated_bytes, NULL AS archive_state, NULL AS archive_id`
+	fc.state AS content_state, ` + copiesColumn + ` AS copies,
+	dd.candidate_bytes, dd.checked_bytes, dd.duplicated_bytes,
+	CASE WHEN ar.state <> 'listing' THEN ar.state END AS archive_state, NULL AS archive_id`
 
-// From is what Columns read: entries aliased e, and a folder's dir_stats
-// aliased ds, joined on its primary key.
-const From = `entries e LEFT JOIN dir_stats ds ON ds.entry_id = e.id`
+// From is what Columns read: entries aliased e, with a folder's dir_stats
+// (ds) and dir_dups (dd), a file's file_content (fc), and an archive's
+// archives row (ar), each joined on its primary key.
+const From = `entries e LEFT JOIN dir_stats ds ON ds.entry_id = e.id
+	LEFT JOIN file_content fc ON fc.entry_id = e.id
+	LEFT JOIN dir_dups dd ON dd.entry_id = e.id
+	LEFT JOIN archives ar ON ar.entry_id = e.id`
 
 // pageSQL is the page statement of f in order s, starting after a position
 // when after is set.

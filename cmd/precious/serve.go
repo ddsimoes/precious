@@ -262,7 +262,7 @@ func newHandler(d handlerDeps) http.Handler {
 	mux.Handle("GET /api/events", jobs.NewEventsHandler(d.runner))
 	sources.Register(mux, d.sources, d.log)
 	api.Register(mux, d.store, d.policy, d.log)
-	viewer.Register(mux, d.store, d.sources, d.log)
+	viewer.Register(mux, d.store, d.sources, d.hashing, d.log)
 	mux.HandleFunc("/api", apiNotFound)
 	mux.HandleFunc("/api/", apiNotFound)
 	mux.Handle("/", d.spa)

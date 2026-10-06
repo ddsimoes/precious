@@ -994,7 +994,47 @@ Files on a source come from anywhere, so the viewer treats each one as untrusted
 ### Content, duplicates, and archive endpoints
 
 <!-- owner: Q -->
-This section will document what R2 adds to the read API: the content fields of every entry row, member refs (`m45`), the detail's content, relations, archive, and coverage, the copies, opportunities, Gems, and Compare endpoints, Search's `dup` filter, and viewing archive members.
+What hashing learns (see [Hashing](#hashing), [Duplicates and Compare](#duplicates-and-compare), and [Opportunities and Gems](#opportunities-and-gems)) is read through the same API. Like the rest, these endpoints need a session, change nothing, and name entries only by ID.
+
+**Archive members.** A member of an archive Precious read completely is named `m` followed by its number, such as `"m45"`. Every endpoint below `/api/entries/` accepts it where it accepts an entry ID. A member row has `"id":"m45"`, `"archive_id"` (the archive's entry ID), the path `archive path!path inside`, such as `Downloads/fotos.zip!Carnaval/DSC01001.JPG`, `"decision":null`, `"tag_ids":[]`, and the archive's effective decision: a member has no decision or tags of its own and follows its archive. `set-decision` and `set-tags` naming a member answer `invalid_request`; decide the archive instead. Members cannot be searched by name.
+
+**New fields of every entry row** (children, treemap, search, and the detail), each `null` where it does not apply:
+
+| Field | Of | Meaning |
+|---|---|---|
+| `content_state` | files and file members | `unique_size` (no other file of that size), `pending` (not read yet), `sampled` (unique by its samples), `hashed`, `changed` (changed while read), or `unreadable` |
+| `copies` | files and file members | how many physical copies the content has, this one included: hard links of one file count once, and so do a tar hard link and its target; `1` for a unique size or sample; `null` while not checked |
+| `candidate_bytes`, `checked_bytes`, `duplicated_bytes` | folders and member folders | the bytes inside that could have a copy, those checked, and those with another copy anywhere (computed by the last relations pass, and on read for a member folder) |
+| `archive_state` | archive files | the archive's [outcome](#outcomes), `null` while it was never listed or is being listed |
+| `archive_id` | members | the archive's entry ID |
+
+**Endpoints.**
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/entries/{id}` | Also `content` for a file or file member: its state, its SHA-256 in hex once read in full, when it was last read, up to 20 other copies, and their count; `relations`: up to 20 [relations](#folder-relations) of a folder, archive, or member folder, each with `self` (`a` or `b`, which side this entry is), the `other` side's row, the matched and redundant bytes, and the files and bytes only here and only there; `archive` for an archive file: its format, outcome, detail, members, and unpacked bytes; and `coverage`, the share checked over every source. A member's `ancestors` run from the source root through the archive to the member folder above it. |
+| `GET /api/entries/{id}/copies?cursor=&limit=` | Every other copy of a file or file member, files first, 100 per page by default and at most 1,000, with their count. A copy names its source, path, archive (for a member), whether it is a hard link of the same file, whether its source is offline, and its effective decision. |
+| `GET /api/entries/{id}/children`, `GET /api/entries/{id}/treemap` | Also for an archive read completely, whose items are its top members, and for a member folder. They sort and page as for folders; a member file has no items. |
+| `GET /api/home` | Also `coverage` (of the chosen source, or of all), `cards` (the seven opportunity cards), and `hashing` (hashing jobs in progress, like the scans, with their kind and progress). |
+| `GET /api/opportunities?source=` | The seven [cards](#the-cards), largest first, with the bytes and rows still open, the coverage of every source, and when the lists were last computed (`computed_at`, `null` before the first pass). |
+| `GET /api/opportunities/{list}?source=&decided=&cursor=&limit=` | One page of a card's open rows (50 by default, at most 500), largest first, with the card; `decided=1` lists the rows no longer open. A row of a rules card has its entry. A duplicates row is either a relation, whose `entry` is one side and whose `relation.other` is the other, or a group of copies of one file, which lists its `copies` (up to 101). Each row has the `summary` the interface writes its line from: category, oldest and newest year, files, bytes, and up to two signals. An unknown list answers `404 not_found`. |
+| `GET /api/gems?section=unique\|rescue\|only_in_copy&source=&cursor=&limit=` | One page of a [Gems](#gems) section, with the coverage its claims rest on. A rescue item names its group; an only-in-copy item names the overlapping folder it is in and the relation, seen from that folder. A missing or unknown section answers `invalid_request`. |
+| `GET /api/compare?left=&right=&bucket=&cursor=&limit=` | Both sides' rows, the files and bytes of the five [Compare](#compare) groups (`only_left`, `only_right`, `identical`, `different`, `unchecked`), and one page of the chosen group's items (100 by default, at most 1,000), each with its path and its row on each side. A side is a folder, an archive read completely, or a member folder. A file, two sides of which one holds the other, an unknown group, or a malformed ID answers `invalid_request`; a side that does not exist answers `not_found`. |
+
+**Every claim of no other copy carries the share checked.** A file reads "no other copy" only when its state is `unique_size` or `sampled`, or when it is `hashed` with `copies` 1. A copy can be on any source, so the claim always comes with `coverage` over every source: when 80% of the candidate bytes are checked, a file whose copy sits among the other 20% still reads unique. Archives Precious does not open (7z, rar, and partial ones) count as plain files: a file inside one is never seen as a copy.
+
+**Search's `dup` filter** (repeats) matches present files by what hashing found:
+
+| Value | Matches |
+|---|---|
+| `dup=copies` | Files with another physical copy anywhere, members of archives included. |
+| `dup=elsewhere` | Files with a copy outside the `within` folder: on another source, outside the folder's paths, or in an archive outside it. It needs `within`, otherwise `invalid_request`. With `within` set to a source's top folder it means a copy on another source. |
+| `dup=unique` | Files with no other copy: a unique size, a unique sample, or hashed with one copy. |
+| `dup=unchecked` | Files not checked yet, changed while read, or unreadable. |
+
+The filter has no index of its own: it is tested on each entry the other filters select, so combine it with `within`, `tag`, `source`, or a name. A selection stores the filter like the others, so "Select all results" on, for example, `within=ID&dup=elsewhere` selects the copies of that folder that have another copy outside it, ready to be discarded in one confirmed change.
+
+**Viewing a member.** `/content` and `/text` serve a file member under the [viewer's rules](#viewer-safety): the type comes from the member's own name, the same sandbox applies, and HTML is only a download. The member is read from the archive in memory: nothing is written to the state directory, to `TMPDIR`, or to the source. The archive file must still match the index and its listing, else `409 invalid_entry_state` until a rescan; its source must be online, else `source_offline`. A member stored without compression in a zip, and a compressed one up to `archives.view_max_bytes`, answers range requests; a larger one, and every member of a tar-family or gzip archive, is streamed whole without ranges (see [Viewing members](#viewing-members)). A member folder answers `invalid_entry_state`, like a folder.
 
 ## Decisions and tags
 

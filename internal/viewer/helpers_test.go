@@ -10,6 +10,7 @@ import (
 
 	"precious/internal/clock"
 	"precious/internal/config"
+	"precious/internal/content"
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
 	"precious/internal/fsaccess/synthfs"
@@ -64,7 +65,8 @@ func newEnvOn(t *testing.T, fsys *synthfs.FS, root *synthfs.Node, caps fsaccess.
 		t.Fatal(err)
 	}
 	e.mux = http.NewServeMux()
-	viewer.Register(e.mux, e.st, svc, nil)
+	def := config.Defaults()
+	viewer.Register(e.mux, e.st, svc, content.NewService(e.st, svc, clock.Real{}, def.Hashing, def.Archives, def.Duplicates), nil)
 	return e
 }
 

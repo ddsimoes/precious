@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 
+	"precious/internal/content"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/jobs"
+	"precious/internal/review"
 	"precious/internal/search"
 )
 
@@ -21,6 +23,11 @@ type homeBody struct {
 	Decisions map[domain.Decision]amount `json:"decisions"`
 	Partial   bool                       `json:"partial"`
 	Scans     []homeScan                 `json:"scans"`
+	// The R2 fields: what hashing checked, the opportunity cards, and the
+	// active hashing jobs.
+	Coverage coverageJSON `json:"coverage"`
+	Cards    []cardJSON   `json:"cards"`
+	Hashing  []homeScan   `json:"hashing"`
 }
 
 type homeTotals struct {
@@ -29,9 +36,12 @@ type homeTotals struct {
 	Dirs  int64 `json:"dirs"`
 }
 
+// homeScan is an active job: a scan, or a hashing job, which names its
+// kind (hash or hash_now).
 type homeScan struct {
 	SourceID domain.SourceID  `json:"source_id"`
 	JobID    string           `json:"job_id"`
+	Kind     jobs.Kind        `json:"kind,omitempty"`
 	State    domain.JobState  `json:"state"`
 	Progress map[string]int64 `json:"progress"`
 }
@@ -41,7 +51,10 @@ type homeScan struct {
 // the sums of the root entries and their dir_stats (a source not scanned
 // yet adds nothing), decisions are decisions.Totals summed, partial is set
 // when a root is partial or unreadable, and scans are the queued, running,
-// and paused scans with their progress. An unknown source is not_found.
+// and paused scans with their progress. Coverage is the source's (all
+// sources' without one), cards are review.Cards for the source, and
+// hashing lists the active hash and hash_now jobs like the scans. An
+// unknown source is not_found.
 func (h *handler) home(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if err := checkParams(q, "source"); err != nil {
@@ -123,33 +136,47 @@ func readHome(ctx context.Context, tx *sql.Tx, src domain.SourceID) (homeBody, e
 		}
 	}
 
-	if body.Scans, err = activeScans(ctx, tx, src); err != nil {
+	if body.Scans, err = activeJobs(ctx, tx, src, false, jobs.KindScan); err != nil {
+		return homeBody{}, err
+	}
+	if body.Hashing, err = activeJobs(ctx, tx, src, true, content.KindHash, content.KindHashNow); err != nil {
+		return homeBody{}, err
+	}
+	if body.Coverage, err = readCoverage(ctx, tx, src); err != nil {
+		return homeBody{}, err
+	}
+	if body.Cards, err = readCards(ctx, tx, src); err != nil {
 		return homeBody{}, err
 	}
 	return body, nil
 }
 
-// activeScans lists the queued, running, and paused scans of src (every
-// source when ""), oldest first.
-func activeScans(ctx context.Context, tx *sql.Tx, src domain.SourceID) ([]homeScan, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, source_id, state, cancel_requested, progress FROM jobs
-		WHERE kind = ?1 AND state IN ('queued', 'running', 'paused') AND (?2 = '' OR source_id = ?2)
-		ORDER BY id`, string(jobs.KindScan), string(src))
+// activeJobs lists the queued, running, and paused jobs of the kinds for
+// src (every source when ""), oldest first, naming their kind when named.
+func activeJobs(ctx context.Context, tx *sql.Tx, src domain.SourceID, named bool, kinds ...jobs.Kind) ([]homeScan, error) {
+	args := make([]any, 0, len(kinds)+2)
+	for _, k := range kinds {
+		args = append(args, string(k))
+	}
+	args = append(args, string(src), string(src))
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, source_id, state, cancel_requested, progress FROM jobs
+		WHERE kind IN (`+marks(len(kinds))+`) AND state IN ('queued', 'running', 'paused') AND (? = '' OR source_id = ?)
+		ORDER BY id`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("api: active scans: %w", err)
+		return nil, fmt.Errorf("api: active jobs: %w", err)
 	}
 	defer rows.Close()
-	scans := []homeScan{}
+	out := []homeScan{}
 	for rows.Next() {
 		var (
-			job       int64
-			source    string
-			state     string
-			cancelReq bool
-			progress  []byte
+			job          int64
+			kind, source string
+			state        string
+			cancelReq    bool
+			progress     []byte
 		)
-		if err := rows.Scan(&job, &source, &state, &cancelReq, &progress); err != nil {
-			return nil, fmt.Errorf("api: active scans: %w", err)
+		if err := rows.Scan(&job, &kind, &source, &state, &cancelReq, &progress); err != nil {
+			return nil, fmt.Errorf("api: active jobs: %w", err)
 		}
 		s := homeScan{
 			SourceID: domain.SourceID(source),
@@ -157,13 +184,42 @@ func activeScans(ctx context.Context, tx *sql.Tx, src domain.SourceID) ([]homeSc
 			State:    jobs.DisplayState(domain.JobState(state), cancelReq),
 			Progress: map[string]int64{},
 		}
+		if named {
+			s.Kind = jobs.Kind(kind)
+		}
 		if err := json.Unmarshal(progress, &s.Progress); err != nil {
 			return nil, fmt.Errorf("api: progress of job %d: %w", job, err)
 		}
-		scans = append(scans, s)
+		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("api: active scans: %w", err)
+		return nil, fmt.Errorf("api: active jobs: %w", err)
 	}
-	return scans, nil
+	return out, nil
+}
+
+// cardJSON is CardJSON.
+type cardJSON struct {
+	List  review.List `json:"list"`
+	Bytes int64       `json:"bytes"`
+	Rows  int64       `json:"rows"`
+	Basis string      `json:"basis"`
+}
+
+func toCardJSON(c review.Card) cardJSON {
+	return cardJSON{List: c.List, Bytes: c.Bytes, Rows: c.Rows, Basis: c.Basis}
+}
+
+// readCards reads the seven cards of src ("" = every source), largest
+// first.
+func readCards(ctx context.Context, tx *sql.Tx, src domain.SourceID) ([]cardJSON, error) {
+	cards, err := review.Cards(ctx, tx, src)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]cardJSON, len(cards))
+	for i, c := range cards {
+		out[i] = toCardJSON(c)
+	}
+	return out, nil
 }

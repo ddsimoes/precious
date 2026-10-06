@@ -19,6 +19,14 @@ type entryBody struct {
 	Classification classification `json:"classification"`
 	Intent         intent         `json:"intent"`
 	Stats          *folderStats   `json:"stats"`
+	// The R2 fields (design D16): a file's or file member's content, the
+	// relations of a folder, archive, or member folder, the archive of an
+	// archive file Precious opened, and the coverage of every source
+	// together, which every claim of no other copy carries (I7).
+	Content   *contentJSON   `json:"content"`
+	Relations []relationJSON `json:"relations"`
+	Archive   *archiveJSON   `json:"archive"`
+	Coverage  coverageJSON   `json:"coverage"`
 }
 
 type ancestor struct {
@@ -99,9 +107,10 @@ type folderStats struct {
 // from the root to its parent, its classification with each rule's
 // explanation and the folder's indicators, its intent (decisions.Effective),
 // and a folder's stats with its notable entries (null for any other kind;
-// zero for a folder not scanned yet).
+// zero for a folder not scanned yet); and its content, relations, archive,
+// and the global coverage. A member ("m<id>") reads as readMember says.
 func (h *handler) entry(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
+	ref, err := pathRef(r)
 	if err == nil {
 		err = checkParams(r.URL.Query())
 	}
@@ -110,8 +119,73 @@ func (h *handler) entry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		return h.readEntry(ctx, tx, id)
+		var (
+			body *entryBody
+			err  error
+		)
+		if ref.IsMember() {
+			body, err = h.readMember(ctx, tx, ref.Member)
+		} else {
+			body, err = h.readEntry(ctx, tx, ref.Entry)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if body.Content, err = readContent(ctx, tx, ref); err != nil {
+			return nil, err
+		}
+		if body.Relations, err = h.readRelations(ctx, tx, ref); err != nil {
+			return nil, err
+		}
+		if !ref.IsMember() {
+			if body.Archive, err = readArchive(ctx, tx, ref.Entry); err != nil {
+				return nil, err
+			}
+		}
+		if body.Coverage, err = readCoverage(ctx, tx, ""); err != nil {
+			return nil, err
+		}
+		return body, nil
 	})
+}
+
+// readMember reads the detail of an archive member: its row, its ancestors
+// (the archive's, the archive, and the member folders above it), no
+// classification, the intent of its archive (the decision and tags it
+// reads, all inherited), and a member folder's stats.
+func (h *handler) readMember(ctx context.Context, tx *sql.Tx, id domain.MemberID) (*entryBody, error) {
+	m, agg, err := memberByID(ctx, tx, h.pol, id)
+	if err != nil {
+		return nil, err
+	}
+	body := &entryBody{Entry: rowJSON(&m.row),
+		Classification: classification{Traits: []domain.Trait{}, Rules: []ruleJSON{}, Indicators: []indicator{}}}
+	if body.Ancestors, err = memberAncestors(ctx, tx, m); err != nil {
+		return nil, err
+	}
+	in, err := decisions.Effective(ctx, tx, m.archive)
+	if err != nil {
+		return nil, err
+	}
+	// An own tag of the archive is inherited from the archive.
+	archive := &ref{ID: m.archive.String()}
+	if err := tx.QueryRowContext(ctx, `SELECT path FROM entries WHERE id = ?`, int64(m.archive)).Scan(&archive.PathB64); err != nil {
+		return nil, fmt.Errorf("api: archive %s: %w", m.archive, err)
+	}
+	archive.Path = domain.DisplayName(archive.PathB64)
+	body.Intent = intent{EffDecision: in.Effective, From: refJSON(in.From), Tags: make([]tagRef, len(in.Tags))}
+	for i, t := range in.Tags {
+		from := refJSON(t.From)
+		if t.Own {
+			from = archive
+		}
+		body.Intent.Tags[i] = tagRef{ID: t.ID, Name: t.Name, From: from}
+	}
+	if agg != nil {
+		body.Stats = &folderStats{Dirs: agg.dirs, Files: agg.files, ByKind: agg.b.kindList(), ByYear: agg.b.yearList(),
+			Inside: []insideItem{}}
+	}
+	return body, nil
 }
 
 func (h *handler) readEntry(ctx context.Context, tx *sql.Tx, id domain.EntryID) (*entryBody, error) {
