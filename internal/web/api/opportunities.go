@@ -425,10 +425,11 @@ func selfCopy(ctx context.Context, tx *sql.Tx, ref domain.Ref) (content.Copy, er
 			c.PathB64 = append(append(path, '!'), mpath...)
 		}
 	} else {
-		err = tx.QueryRowContext(ctx, `SELECT e.source_id, e.path, s.state <> 'online', e.eff_decision
+		var decision sql.NullString
+		err = tx.QueryRowContext(ctx, `SELECT e.source_id, e.path, s.state <> 'online', e.decision, e.eff_decision
 			FROM entries e JOIN sources s ON s.id = e.source_id WHERE e.id = ?`, int64(ref.Entry)).
-			Scan(&src, &path, &c.Offline, &eff)
-		c.Ref, c.Path, c.PathB64 = ref, domain.DisplayName(path), path
+			Scan(&src, &path, &c.Offline, &decision, &eff)
+		c.Ref, c.Path, c.PathB64, c.Decision = ref, domain.DisplayName(path), path, domain.Decision(decision.String)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return content.Copy{}, domain.Errorf(domain.CodeNotFound, "%s not found", ref)

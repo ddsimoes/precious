@@ -10,9 +10,11 @@ import (
 
 // Copies lists the other copies of a file's or member's content, files and
 // members, pages through them, flags another name of the same file, and
-// marks a copy on an offline source. A zip member's raw name that is not
-// UTF-8 (a Windows zip tool's, without the UTF-8 flag) displays decoded
-// from code page 850; path_b64 keeps the raw bytes.
+// marks a copy on an offline source. A copy's own decision is listed beside
+// its effective one; a copy that follows its folder, and a member, has none.
+// A zip member's raw name that is not UTF-8 (a Windows zip tool's, without
+// the UTF-8 flag) displays decoded from code page 850; path_b64 keeps the
+// raw bytes.
 func TestCopies(t *testing.T) {
 	e := newEnv(t)
 	data := []byte("curriculum vitae, 2004")
@@ -28,6 +30,12 @@ func TestCopies(t *testing.T) {
 	e.hash("fotos")
 	e.hash("usb")
 	e.setOffline("usb")
+	for _, p := range []struct{ path, decision string }{{"Downloads/curriculo (1).doc", "discard"}, {"docs.zip", "keep"}} {
+		if _, err := e.st.Writer().Exec(`UPDATE entries SET decision = ?1, eff_decision = ?1 WHERE source_id = 'fotos' AND path = ?2`,
+			p.decision, []byte(p.path)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx := context.Background()
 	self := domain.Ref{Entry: e.id("fotos", "Documentos/curriculo.doc")}
 	var all []Copy
@@ -64,8 +72,15 @@ func TestCopies(t *testing.T) {
 				t.Error("the copy on the offline source is not marked offline")
 			}
 		}
-		if c.EffDecision != domain.DecisionUndecided {
-			t.Errorf("%s: decision %q", c.Path, c.EffDecision)
+		want := map[string][2]domain.Decision{
+			"Downloads/curriculo (1).doc": {domain.DecisionDiscard, domain.DecisionDiscard},
+			"docs.zip!cv/Anotações.doc":   {"", domain.DecisionKeep},
+		}[c.Path]
+		if want == ([2]domain.Decision{}) {
+			want = [2]domain.Decision{"", domain.DecisionUndecided}
+		}
+		if got := [2]domain.Decision{c.Decision, c.EffDecision}; got != want {
+			t.Errorf("%s: decision %q, effective %q; want %q", c.Path, got[0], got[1], want)
 		}
 	}
 	want := []string{"fotos:Documentos/curriculo-link.doc", "fotos:Downloads/curriculo (1).doc", "usb:cv.doc",
