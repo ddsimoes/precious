@@ -1,22 +1,39 @@
 import { devices, expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test'
 
-import { formatBytes, formatCount } from '../src/lib/format'
-import { adminPassword, bulkFiles, bulkFolders, corpusPath, groundTruth, origin, type TruthEntry } from './env'
+import { en } from '../src/i18n/en'
+import { formatBytes, formatCount, formatPercent } from '../src/lib/format'
+import { awaitDuplicates, type Coverage } from './duplicates'
+import {
+  adminPassword,
+  bulkFiles,
+  bulkFolders,
+  corpusPath,
+  groundTruth,
+  origin,
+  type TruthEntry,
+  type TruthMember,
+} from './env'
 
-// The suite drives one browser session through the R1 acceptance flows, in
-// order, against the server global-setup.ts started over the regression
-// corpus. Every test also fails on a Content Security Policy violation, a
-// console error, an uncaught page error, or a JavaScript dialog.
+// The suite drives one browser session through the R1 and R2 acceptance
+// flows, in order, against the server global-setup.ts started over the
+// regression corpus. Every test also fails on a Content Security Policy
+// violation, a console error, an uncaught page error, or a JavaScript dialog.
 test.describe.configure({ mode: 'serial' })
 
 const sourceLabel = 'Old disk'
 const programs = 'Backup_PC_2004/C/Arquivos de programas'
 const keptThumbs = 'Fotos/2006/Praia/Thumbs.db'
 const tagName = 'Fotos de 2006'
+const pendrive = 'Downloads/fotos_2005_do_pendrive'
+const pendriveZip = `${pendrive}.zip`
 
-const truth = groundTruth()
+const corpus = groundTruth()
+const truth = corpus.entries
 const bytes = (n: number) => formatBytes(n, 'en')
 const count = (n: number) => formatCount(n, 'en')
+
+type Decision = keyof typeof en.home.decision
+type ListName = keyof typeof en.opportunities.list
 
 let context: BrowserContext
 let page: Page
@@ -149,6 +166,36 @@ test('scans the corpus and Home shows its ground-truth totals', async () => {
   await expect(term(totals, 'Folders')).toHaveText(count(folders))
   // privado cannot be read, so the figures are marked incomplete.
   await expect(page.getByRole('status').filter({ hasText: 'Some folders could not be read' })).toBeVisible()
+})
+
+test('R2.1: Home shows the hashing coverage, and every duplicate group is found', async () => {
+  // Hashing started on its own after the scan. Home shows how much is
+  // checked, and refreshes when hashing ends.
+  const coverage = page.getByRole('region', { name: 'Checked for copies' })
+  await expect(coverage).toContainText(/ of .+ checked \(\d+%\)/)
+  await awaitDuplicates(page.request, startHash)
+  const home: { coverage: Coverage } = await (await page.request.get('/api/home')).json()
+  const candidate = bytes(home.coverage.candidate.bytes)
+  expect(home.coverage.checked).toEqual(home.coverage.candidate)
+  await expect(coverage.getByText(/ checked \(/)).toHaveText(`${candidate} of ${candidate} checked (100%)`)
+  await expect(coverage).toContainText('Not checked yet: 0 files (0 B)')
+  await expect(coverage).toContainText('Could not be read: 0 files (0 B)')
+
+  // Every indexed copy of the ground truth's groups has another copy, and
+  // nothing else has (members are not searched).
+  const copies = corpus.duplicates.flatMap((d) => d.copies.map((c) => c.path)).filter((p) => !p.includes('!'))
+  const found = await allPages<{ path: string }>('/api/search', { dup: 'copies' })
+  expect(found.items.map((i) => i.path).toSorted()).toEqual(copies.toSorted())
+  await search({ copies: true })
+  const results = page.getByRole('region', { name: 'Results' })
+  await expect(results.getByRole('status').first()).toHaveText(`${count(copies.length)} results`)
+  const setup = corpus.duplicates.find((d) => d.copies.some((c) => c.path === 'Downloads/Setup.exe'))
+  expect(setup?.copies.map((c) => c.path)).toEqual(['Downloads/Setup(1).exe', 'Downloads/Setup.exe'])
+  await search({ name: 'Setup', copies: true })
+  await expect(results.getByRole('status').first()).toHaveText('2 results')
+  for (const name of ['Setup.exe', 'Setup(1).exe']) {
+    await expect(results.getByRole('link', { name, exact: true })).toBeVisible()
+  }
 })
 
 test('R1.2: the Map shows the size and file count of every program folder', async () => {
@@ -351,6 +398,362 @@ test('D22: the detail panel shows a photo without Open', async () => {
   await expect(page.getByRole('dialog')).toHaveCount(0)
 })
 
+test('R2.2: Compare of Fotos with Fotos - Copia, chosen from the detail panel', async () => {
+  const relation = corpus.relations.find((r) => r.kind === 'overlap' && r.a.path === 'Fotos - Copia' && r.b.path === 'Fotos')
+  if (relation === undefined) {
+    throw new Error('the ground truth has no overlap of Fotos - Copia with Fotos')
+  }
+  const onlyLeft = relation.b_only.map((p) => p.path.slice('Fotos/'.length))
+  const onlyRight = relation.a_only.map((p) => p.path.slice('Fotos - Copia/'.length))
+  expect(onlyRight).toEqual(['2006/Praia/DSC_editada.JPG'])
+  expect(onlyLeft).toHaveLength(3)
+
+  await openFolder('')
+  await page.getByRole('link', { name: 'Details of Fotos', exact: true }).click()
+  const fotos = page.getByRole('complementary', { name: 'Fotos' })
+  await fotos.getByRole('button', { name: 'Compare with…' }).click()
+  await expect(fotos.getByRole('status')).toContainText('Chosen for Compare.')
+  await fotos.getByRole('button', { name: 'Close details' }).click()
+  await page.getByRole('link', { name: 'Details of Fotos - Copia', exact: true }).click()
+  await page
+    .getByRole('complementary', { name: 'Fotos - Copia' })
+    .getByRole('link', { name: 'Compare with Fotos', exact: true })
+    .click()
+  await expect(page).toHaveURL(/\/compare\?left=\d+&right=\d+$/)
+
+  // Reloading shows the same comparison: its sides are in the address.
+  for (const reload of [false, true]) {
+    if (reload) {
+      await page.reload()
+    }
+    const sides = page.getByRole('region', { name: 'Folders compared' }).locator(':scope > div')
+    await expect(sides.nth(0).getByText('Fotos', { exact: true })).toBeVisible()
+    await expect(sides.nth(1).getByText('Fotos - Copia', { exact: true })).toBeVisible()
+    expect(await compareGroup('Only on the left')).toEqual(onlyLeft)
+    expect(await compareGroup('Only on the right')).toEqual(onlyRight)
+    await expectGroupFigures('Not checked yet', 0, 0)
+    await expectGroupFigures('Same name, different content', 0, 0)
+  }
+})
+
+test('R2.3: the pendrive zip is the same as its unpacked folder, in the panel and in Compare', async () => {
+  expect(corpus.relations).toContainEqual(
+    expect.objectContaining({
+      kind: 'same',
+      a: expect.objectContaining({ path: pendriveZip }),
+      b: expect.objectContaining({ path: pendrive }),
+    }),
+  )
+  const listing = archiveListing(pendriveZip)
+  const files = listing.filter((m) => m.kind === 'file')
+
+  await openFolder(parent(pendriveZip))
+  await page.getByRole('link', { name: 'Details of fotos_2005_do_pendrive.zip', exact: true }).click()
+  const panel = page.getByRole('complementary', { name: 'fotos_2005_do_pendrive.zip' })
+  const archive = panel.getByRole('region', { name: 'Archive' })
+  await expect(term(archive, 'Contents')).toHaveText('Read completely')
+  await expect(term(archive, 'Items inside')).toHaveText(count(listing.length))
+  const same = panel
+    .getByRole('list', { name: 'Folders related to this one' })
+    .getByRole('listitem')
+    .filter({ hasText: `Same content as ${pendrive}` })
+  await expect(same).toContainText('only here: 0 files (0 B) · only there: 0 files (0 B)')
+  await same.getByRole('link', { name: 'Compare', exact: true }).click()
+
+  const sides = page.getByRole('region', { name: 'Folders compared' }).locator(':scope > div')
+  await expect(sides.nth(0).getByText(pendriveZip, { exact: true })).toBeVisible()
+  await expect(sides.nth(1).getByText(pendrive, { exact: true })).toBeVisible()
+  expect(await compareGroup('Identical')).toEqual(files.map((m) => m.path).toSorted())
+  await expectGroupFigures('Identical', files.length, files.reduce((sum, m) => sum + (m.size ?? 0), 0))
+  for (const group of ['Only on the left', 'Only on the right', 'Same name, different content', 'Not checked yet']) {
+    await expectGroupFigures(group, 0, 0)
+  }
+})
+
+test('browsing inside the pendrive zip in the Map shows its members, decided with the archive', async () => {
+  const listing = archiveListing(pendriveZip)
+  const filesUnder = (folder: string) => listing.filter((m) => m.kind === 'file' && m.path.startsWith(`${folder}/`))
+  await openFolder(pendriveZip)
+  const table = page.getByRole('table', { name: 'Contents of fotos_2005_do_pendrive.zip' })
+  const areas = page.getByRole('list', { name: 'Areas of the treemap' })
+  const folders = listing.filter((m) => m.kind === 'directory' && !m.path.includes('/'))
+  expect(folders.length).toBeGreaterThan(1)
+  await expect(table.getByRole('row')).toHaveCount(folders.length + 1)
+  for (const folder of folders) {
+    const below = filesUnder(folder.path)
+    const size = bytes(below.reduce((sum, m) => sum + (m.size ?? 0), 0))
+    const row = table.getByRole('row').filter({ has: page.getByRole('link', { name: folder.path, exact: true }) })
+    await expect(row.getByRole('cell').nth(1), folder.path).toHaveText(size)
+    await expect(row.getByRole('cell').nth(2), folder.path).toHaveText(count(below.length))
+    await expect(areas.getByRole('button', { name: `Open ${folder.path} (${size})`, exact: true })).toBeAttached()
+  }
+
+  const folder = folders[0]?.path ?? ''
+  await openFolder(`${pendriveZip}/${folder}`)
+  const inside = page.getByRole('table', { name: `Contents of ${folder}` })
+  const photos = filesUnder(folder)
+  await expect(inside.getByRole('row')).toHaveCount(photos.length + 1)
+  for (const photo of photos) {
+    const name = photo.path.slice(folder.length + 1)
+    const row = inside.getByRole('row').filter({ has: page.getByRole('link', { name, exact: true }) })
+    await expect(row.getByRole('cell').nth(1), name).toHaveText(bytes(photo.size ?? 0))
+    await expect(row.getByRole('cell').last(), name).toHaveText('Undecided (with its archive)')
+    await expect(
+      areas.getByRole('button', { name: `Details of ${name} (${bytes(photo.size ?? 0)})`, exact: true }),
+    ).toBeAttached()
+  }
+
+  const photo = photos[0]?.path ?? ''
+  const name = photo.slice(folder.length + 1)
+  const others = copiesOf(`${pendriveZip}!${photo}`).filter((p) => p !== `${pendriveZip}!${photo}`)
+  await inside.getByRole('link', { name, exact: true }).click()
+  const panel = page.getByRole('complementary', { name })
+  await expect(panel.getByRole('navigation', { name: 'Location' })).toContainText(folder)
+  await expect(panel).toContainText('Inside the archive fotos_2005_do_pendrive.zip')
+  await expect(panel.getByRole('region', { name: 'Decision' })).toContainText('Decided with the archive: Undecided')
+  await expect(panel.getByRole('group', { name: 'Set decision' })).toHaveCount(0)
+  await expect(panel.getByRole('region', { name: 'Tags' })).toHaveCount(0)
+  const copies = panel.getByRole('region', { name: 'Copies' })
+  await expect(copies).toContainText(`${count(others.length)} other copies:`)
+  const listed = copies.getByRole('list', { name: 'Other copies' }).getByRole('link')
+  await expect(listed).toHaveCount(others.length)
+  expect((await listed.allTextContents()).toSorted()).toEqual(others.toSorted())
+})
+
+test('R2.8: a photo inside the pendrive zip opens in the viewer', async () => {
+  // The last photo: the browsing test previewed the first, which the
+  // browser keeps in its cache.
+  const photo = archiveListing(pendriveZip).findLast((m) => m.kind === 'file' && /\.jpe?g$/i.test(m.path))?.path ?? ''
+  const name = photo.split('/').at(-1) ?? ''
+  await openFolder(`${pendriveZip}/${parent(photo)}`)
+  // The panel's preview may fetch the photo before the viewer does.
+  const content = page.waitForResponse((r) => /^\/api\/entries\/m\d+\/content$/.test(new URL(r.url()).pathname))
+  await page.getByRole('table', { name: /^Contents of / }).getByRole('link', { name, exact: true }).click()
+  const response = await content
+  expect([200, 206]).toContain(response.status())
+  expect(response.headers()['content-type']).toBe('image/jpeg')
+  expect(response.headers()['content-security-policy']).toMatch(/^sandbox/)
+  await page.getByRole('complementary', { name }).getByRole('button', { name: 'Open' }).click()
+  const viewer = page.getByRole('dialog', { name })
+  await expect
+    .poll(() => viewer.getByRole('img', { name }).evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBeGreaterThan(0)
+  await closeViewer(viewer)
+})
+
+test('R2.7: a file with no other copy says so, with the checked share', async () => {
+  const gem = corpus.gems.unique.find((g) => parent(g.path) === 'Documentos' && g.copies === 1)
+  if (gem === undefined) {
+    throw new Error('the ground truth has no unique file in Documentos')
+  }
+  const name = gem.path.slice('Documentos/'.length)
+  const home: { coverage: Coverage } = await (await page.request.get('/api/home')).json()
+  const share = formatPercent(home.coverage.checked.bytes / home.coverage.candidate.bytes, 'en')
+  await openFolder('Documentos')
+  await page.getByRole('table', { name: 'Contents of Documentos' }).getByRole('link', { name, exact: true }).click()
+  const copies = page.getByRole('complementary', { name }).getByRole('region', { name: 'Copies' })
+  await expect(copies.getByText(/^No other copy/)).toBeVisible()
+  await expect(copies.getByText(`On all disks, ${share} of what could have a copy is checked.`)).toBeVisible()
+})
+
+test('R2.4: discarding one copy of curriculo.doc in the duplicates list leaves the other copies as they were', async () => {
+  const tagged = 'Documentos/curriculo.doc'
+  const discarded = 'Documentos/curriculo (1).doc'
+  const group = copiesOf(tagged)
+  expect(group).toContain(discarded)
+  expect(group.every((p) => !p.includes('!'))).toBe(true)
+
+  // A tag on one copy first.
+  await openFolder(parent(tagged))
+  await page.getByRole('table', { name: 'Contents of Documentos' }).getByRole('link', { name: 'curriculo.doc', exact: true }).click()
+  const details = page.getByRole('complementary', { name: 'curriculo.doc' })
+  await details.getByRole('textbox', { name: 'New tag' }).fill('documento')
+  await details.getByRole('button', { name: 'Create and add' }).click()
+  await expect(details.getByRole('list', { name: 'Own tags' })).toContainText('documento')
+  const before = new Map<string, IntentState>()
+  for (const path of group) {
+    before.set(path, await intentOf(path))
+  }
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Opportunities' }).click()
+  await page.getByRole('link', { name: en.opportunities.list.duplicates, exact: true }).click()
+  const rows = page.getByRole('list', { name: `Rows of ${en.opportunities.list.duplicates}` })
+  const row = rows.locator(':scope > li').filter({ hasText: `${count(group.length)} copies of curriculo.doc` })
+  await row.getByRole('button', { name: 'Show copies' }).click()
+  const copy = (path: string) =>
+    row
+      .getByRole('list', { name: 'Copies' })
+      .locator(':scope > li')
+      .filter({ has: page.getByRole('link', { name: path, exact: true }) })
+  await copy(discarded).getByRole('group', { name: `Decision for ${discarded}` }).getByRole('button', { name: 'Discard' }).click()
+  await expect(copy(discarded)).toContainText('Decision: Discard')
+  for (const path of group.filter((p) => p !== discarded)) {
+    const decision = before.get(path)?.eff_decision ?? 'undecided'
+    await expect(copy(path), path).toContainText(`Decision: ${en.home.decision[decision]}`)
+  }
+
+  // Through the API: only the discarded copy changed, and only its decision.
+  for (const path of group) {
+    const after = await intentOf(path)
+    const was = before.get(path)
+    expect(after, path).toEqual(path === discarded ? { ...was, decision: 'discard', eff_decision: 'discard' } : was)
+  }
+  expect(before.get(tagged)?.tags).toEqual(['documento'])
+  // Through the panel: the tagged copy keeps its tag, and the discarded one
+  // gained none.
+  await copy(tagged).getByRole('link', { name: tagged, exact: true }).click()
+  await expect(details.getByRole('list', { name: 'Own tags' }).getByRole('listitem')).toHaveText([/^documento/])
+  await copy(discarded).getByRole('link', { name: discarded, exact: true }).click()
+  const discardedPanel = page.getByRole('complementary', { name: 'curriculo (1).doc' })
+  await expect(term(discardedPanel, 'Effective decision')).toContainText('Discard')
+  await expect(discardedPanel.getByRole('list', { name: 'Own tags' })).toHaveCount(0)
+})
+
+test('R2.5: every card’s bytes equal the sum of its review list over all pages', async () => {
+  const opportunities: { cards: { list: ListName; bytes: number; rows: number }[] } = await (
+    await page.request.get('/api/opportunities')
+  ).json()
+  expect(opportunities.cards.map((c) => c.list).toSorted()).toEqual(Object.keys(en.opportunities.list).toSorted())
+  for (const card of opportunities.cards) {
+    const rows = await allPages<{ id: string; bytes: number }>(`/api/opportunities/${card.list}`, { limit: '2' })
+    expect(new Set(rows.items.map((r) => r.id)).size, card.list).toBe(rows.items.length)
+    expect(rows.items.length, card.list).toBe(card.rows)
+    expect(rows.items.reduce((sum, r) => sum + r.bytes, 0), card.list).toBe(card.bytes)
+  }
+  expect(opportunities.cards.find((c) => c.list === 'duplicates')?.bytes).toBeGreaterThan(0)
+
+  for (const card of opportunities.cards) {
+    const label = en.opportunities.list[card.list]
+    const rowsText = `${count(card.rows)} ${card.rows === 1 ? 'item' : 'items'} to review`
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Opportunities' }).click()
+    const tile = page
+      .getByRole('list', { name: 'Opportunity cards' })
+      .getByRole('listitem')
+      .filter({ has: page.getByRole('link', { name: label, exact: true }) })
+    await expect(tile, label).toContainText(bytes(card.bytes))
+    await expect(tile, label).toContainText(rowsText)
+    await tile.getByRole('link', { name: label, exact: true }).click()
+    await expect(page.getByRole('heading', { name: label, level: 1 })).toBeVisible()
+    await expect(page.getByRole('main').getByText(rowsText).locator('..'), label).toContainText(bytes(card.bytes))
+    const list = page.getByRole('list', { name: `Rows of ${label}` })
+    if (card.rows === 0) {
+      await expect(page.getByText('Nothing left to review in this list.')).toBeVisible()
+      continue
+    }
+    const more = page.getByRole('button', { name: 'Load more' })
+    while (await more.isVisible()) {
+      await more.click()
+    }
+    await expect(list.locator(':scope > li'), label).toHaveCount(card.rows)
+  }
+})
+
+test('R2.6: Gems lists the ground truth’s unique personal files, the rescued spreadsheet, and the edited photo', async () => {
+  const unique = await allPages<{ entry: { path: string } }>('/api/gems', { section: 'unique', limit: '5' })
+  expect(unique.items.map((g) => g.entry.path)).toEqual(corpus.gems.unique.map((g) => g.path))
+  const rescue = await allPages<{ entry: { path: string } }>('/api/gems', { section: 'rescue', limit: '5' })
+  expect(rescue.items.map((g) => g.entry.path)).toEqual(corpus.gems.rescue.map((g) => g.path))
+  const onlyInCopy = await allPages<{ entry: { path: string } }>('/api/gems', { section: 'only_in_copy', limit: '5' })
+  expect(onlyInCopy.items.map((g) => g.entry.path)).toEqual(
+    expect.arrayContaining(corpus.gems.only_in_copy.map((g) => g.path)),
+  )
+  const spreadsheet = corpus.gems.rescue.find((g) => g.path.endsWith('/Meu orcamento casamento.xls'))
+  const edited = corpus.gems.only_in_copy.find((g) => g.path.endsWith('/DSC_editada.JPG'))
+  if (spreadsheet?.group === undefined || edited === undefined) {
+    throw new Error('the ground truth lacks the rescued spreadsheet or the edited photo')
+  }
+  const home: { coverage: Coverage } = await (await page.request.get('/api/home')).json()
+  const claim = `On all disks, ${formatPercent(home.coverage.checked.bytes / home.coverage.candidate.bytes, 'en')} of what could have a copy is checked.`
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Gems' }).click()
+  const sections = Object.values(en.gems.section).map((title) => page.getByRole('region', { name: title }))
+  for (const section of sections) {
+    await expect(section.getByText(claim)).toBeVisible()
+  }
+  const [first, second, third] = sections
+  const firstList = first?.getByRole('list', { name: en.gems.section.unique }) ?? page.locator('none')
+  const more = first?.getByRole('button', { name: 'Load more' }) ?? page.locator('none')
+  await expect(firstList.locator(':scope > li').first()).toBeVisible()
+  while (await more.isVisible()) {
+    await more.click()
+  }
+  await expect(firstList.locator(':scope > li > div:first-child > a')).toHaveText(
+    corpus.gems.unique.map((g) => g.path),
+  )
+  const rescued = second?.getByRole('listitem').filter({ has: page.getByRole('link', { name: spreadsheet.path, exact: true }) })
+  await expect(rescued ?? page.locator('none')).toContainText(`Inside ${spreadsheet.group.path}`)
+  await expect(third?.getByRole('link', { name: edited.path, exact: true }) ?? page.locator('none')).toBeVisible()
+})
+
+test('review keys decide and move through the system junk list', async () => {
+  const label = en.opportunities.list.system_junk
+  const open = await allPages<{ entry: { path: string; name: string } }>('/api/opportunities/system_junk', {})
+  const paths = open.items.map((r) => r.entry.path)
+  expect(paths.length).toBeGreaterThanOrEqual(5)
+  const [p0, p1, p2, p3] = paths as [string, string, string, string]
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Opportunities' }).click()
+  await page.getByRole('link', { name: label, exact: true }).click()
+  const rows = page.getByRole('list', { name: `Rows of ${label}` })
+  const row = (path: string) =>
+    rows.locator(':scope > li').filter({ has: page.getByRole('link', { name: path, exact: true }) })
+  await expect(rows.locator(':scope > li')).toHaveCount(paths.length)
+
+  await page.keyboard.press('j')
+  await expect(row(p0)).toHaveAttribute('aria-current', 'true')
+  await expect(row(p0)).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(row(p1)).toHaveAttribute('aria-current', 'true')
+  await page.keyboard.press('ArrowUp')
+  await expect(row(p0)).toHaveAttribute('aria-current', 'true')
+
+  // A decided row leaves the list, and the next key selects the row that
+  // took its place.
+  for (const [key, path, next] of [
+    ['d', p0, p1],
+    ['k', p1, p2],
+    ['l', p2, p3],
+  ] as const) {
+    await page.keyboard.press(key)
+    await expect(row(path)).toHaveCount(0)
+    await page.keyboard.press('j')
+    await expect(row(next)).toHaveAttribute('aria-current', 'true')
+  }
+
+  // Enter opens the selected row's details. Keys typed there are the
+  // panel's: the row is not decided.
+  await page.keyboard.press('Enter')
+  const name = p3.split('/').at(-1) ?? ''
+  const panel = page.getByRole('complementary', { name })
+  await expect(panel).toBeVisible()
+  const newTag = panel.getByRole('textbox', { name: 'New tag' })
+  await newTag.click()
+  await page.keyboard.type('kdl')
+  await expect(newTag).toHaveValue('kdl')
+  await page.keyboard.press('Escape')
+  await expect(panel).toBeHidden()
+  await expect(row(p3)).toHaveAttribute('aria-current', 'true')
+  await page.keyboard.press('k')
+  await expect(row(p3)).toHaveCount(0)
+
+  for (const [path, decision] of [
+    [p0, 'discard'],
+    [p1, 'keep'],
+    [p2, 'later'],
+    [p3, 'keep'],
+  ] as const) {
+    expect((await intentOf(path)).decision, path).toBe(decision)
+  }
+  // The address holds the toggle, so the box turns on once the route does.
+  const showDecided = page.getByRole('checkbox', { name: 'Show decided rows' })
+  await showDecided.click()
+  await expect(showDecided).toBeChecked()
+  const decided = page.getByRole('list', { name: `Decided rows of ${label}` })
+  for (const path of [p0, p1, p2, p3]) {
+    await expect(decided.getByRole('link', { name: path, exact: true })).toBeVisible()
+  }
+})
+
 // spaced matches text, ignoring the whitespace between its words, so a list
 // item whose parts are separate elements matches what it reads as.
 function spaced(text: string): RegExp {
@@ -390,12 +793,19 @@ async function openFolder(path: string) {
   }
 }
 
-// search runs a search from the Search screen's filters.
-async function search({ name }: { name: string }) {
+// search runs a search from the Search screen's filters: by name, and with
+// copies only the files that have another copy.
+async function search({ name, copies }: { name?: string; copies?: boolean }) {
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Search' }).click()
   const filters = page.getByRole('form', { name: 'Filters' })
   await filters.getByRole('button', { name: 'Clear filters' }).click()
-  await filters.getByRole('searchbox', { name: 'Name contains' }).fill(name)
+  if (name !== undefined) {
+    await filters.getByRole('searchbox', { name: 'Name contains' }).fill(name)
+  }
+  if (copies === true) {
+    await filters.locator('summary').filter({ hasText: /^Copies/ }).click()
+    await filters.getByRole('checkbox', { name: 'Has another copy' }).check()
+  }
   await filters.getByRole('button', { name: 'Search', exact: true }).click()
 }
 
@@ -443,8 +853,8 @@ async function contentPath(name: string): Promise<string> {
 }
 
 // command sends a command as the app does, with the session's CSRF token,
-// and returns the response status and error code.
-async function command(name: string, body: unknown): Promise<{ status: number; code?: string }> {
+// and returns the response status, error code, and body.
+async function command<T = unknown>(name: string, body: unknown): Promise<{ status: number; code?: string; body: T }> {
   const session: { csrf_token: string } = await (await page.request.get('/api/session')).json()
   const resp = await page.request.post(`/api/commands/${name}`, {
     data: body,
@@ -454,8 +864,100 @@ async function command(name: string, body: unknown): Promise<{ status: number; c
       'Idempotency-Key': `e2e-${name}-${Date.now()}-${Math.random()}`,
     },
   })
-  const out: { error?: { code: string } } = await resp.json()
-  return { status: resp.status(), code: out.error?.code }
+  const out: T & { error?: { code: string } } = await resp.json()
+  return { status: resp.status(), code: out.error?.code, body: out }
+}
+
+// startHash starts a hashing job of the corpus source and returns its ID.
+async function startHash(): Promise<string> {
+  const sources: { sources: { id: string; label: string }[] } = await (await page.request.get('/api/sources')).json()
+  const source = sources.sources.find((s) => s.label === sourceLabel)
+  const started = await command<{ job_id: string }>('start-hash', { source_id: source?.id })
+  expect(started.status).toBe(202)
+  return started.body.job_id
+}
+
+// allPages reads every page of a cursor-paged list of the read API.
+async function allPages<T>(path: string, params: Record<string, string>): Promise<{ items: T[]; pages: number }> {
+  const items: T[] = []
+  let pages = 0
+  let cursor: string | null = null
+  do {
+    const query = new URLSearchParams(params)
+    if (cursor !== null) {
+      query.set('cursor', cursor)
+    }
+    const resp = await page.request.get(`${path}?${query}`)
+    expect(resp.status(), `${path}?${query}`).toBe(200)
+    const body: { items: T[]; next_cursor: string | null } = await resp.json()
+    items.push(...body.items)
+    cursor = body.next_cursor
+    pages++
+  } while (cursor !== null)
+  return { items, pages }
+}
+
+// archiveListing returns the ground truth's members of the archive at path.
+function archiveListing(path: string): TruthMember[] {
+  const archive = corpus.members.find((a) => a.path === path)
+  if (archive === undefined) {
+    throw new Error(`the ground truth does not list ${path}`)
+  }
+  return archive.members
+}
+
+// copiesOf returns the copies of the ground truth's duplicate group that
+// holds path (a member as "archive!member/path").
+function copiesOf(path: string): string[] {
+  const group = corpus.duplicates.find((d) => d.copies.some((c) => c.path === path))
+  if (group === undefined) {
+    throw new Error(`${path} is in no duplicate group of the ground truth`)
+  }
+  return group.copies.map((c) => c.path)
+}
+
+// IntentState is what the owner set on an entry, and its suggestion.
+interface IntentState {
+  decision: string | null
+  eff_decision: Decision
+  triage: string | null
+  tags: string[]
+}
+
+// intentOf reads the decision, suggestion, and tags of the entry at path
+// in the corpus source, from the read API.
+async function intentOf(path: string): Promise<IntentState> {
+  const sources: { sources: { label: string; root_entry_id: string }[] } = await (
+    await page.request.get('/api/sources')
+  ).json()
+  let id = sources.sources.find((s) => s.label === sourceLabel)?.root_entry_id ?? ''
+  for (const name of path.split('/')) {
+    const children = await allPages<{ id: string; name: string }>(`/api/entries/${id}/children`, { sort: 'name' })
+    id = children.items.find((c) => c.name === name)?.id ?? ''
+    expect(id, `${path}: ${name}`).not.toBe('')
+  }
+  const detail: {
+    entry: { decision: string | null; eff_decision: Decision; triage: string | null }
+    intent: { tags: { name: string }[] }
+  } = await (await page.request.get(`/api/entries/${id}`)).json()
+  const { decision, eff_decision, triage } = detail.entry
+  return { decision, eff_decision, triage, tags: detail.intent.tags.map((t) => t.name) }
+}
+
+// compareGroup opens a group of the Compare screen and returns the paths of
+// its files.
+async function compareGroup(label: string): Promise<string[]> {
+  await page.getByRole('navigation', { name: 'Groups' }).getByRole('link', { name: new RegExp(`^${label}`) }).click()
+  const list = page.getByRole('list', { name: `Files: ${label}` })
+  await expect(list.locator(':scope > li').first()).toBeVisible()
+  return list.locator(':scope > li > a').allTextContents()
+}
+
+// expectGroupFigures checks the files and bytes a Compare group shows.
+async function expectGroupFigures(label: string, files: number, size: number) {
+  await expect(
+    page.getByRole('navigation', { name: 'Groups' }).getByRole('link', { name: new RegExp(`^${label}`) }),
+  ).toHaveText(spaced(`${label} ${count(files)} ${files === 1 ? 'file' : 'files'} · ${bytes(size)}`))
 }
 
 // expectNoScriptRan checks that no fixture script set its flag in any frame

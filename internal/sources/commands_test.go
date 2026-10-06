@@ -342,6 +342,47 @@ func TestRemoveSourceWithActiveScan(t *testing.T) {
 	e.wantStatus(e.command(CommandRemoveSource, map[string]string{"source_id": "busy"}), http.StatusOK, "")
 }
 
+// A source's hashing never blocks its removal: whether its hash job is
+// queued, running, or paused, remove-source succeeds, the job goes away with
+// the source, and relations are marked for a refresh, so the other sources'
+// relations and review rows drop the removed copies.
+func TestRemoveSourceWhileHashing(t *testing.T) {
+	for _, state := range []string{"queued", "running", "paused"} {
+		t.Run(state, func(t *testing.T) {
+			e := newEnv(t)
+			e.serve()
+			e.insertSource("gone", uuidVolume("u-1", ""), "")
+			indextest.Seed(t, e.st, indextest.Tree{Source: "gone", Nodes: []indextest.Node{{Path: "a", Size: 1}}})
+			if _, err := e.st.Writer().Exec(`UPDATE review_state SET dirty = 0`); err != nil {
+				t.Fatal(err)
+			}
+			var job domain.JobID
+			if err := e.r.Write(context.Background(), func(tx *jobs.Tx) error {
+				rec, _, err := tx.EnqueueOnce(jobs.Spec{Kind: "hash", SourceID: "gone", ScopeKey: "hash:gone"})
+				job = rec.ID
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.st.Writer().Exec(`UPDATE jobs SET state = ? WHERE id = ?`, state, int64(job)); err != nil {
+				t.Fatal(err)
+			}
+			e.wantStatus(e.command(CommandRemoveSource, map[string]string{"source_id": "gone"}), http.StatusOK, "")
+			for q, want := range map[string]int{
+				`SELECT count(*) FROM sources WHERE id = 'gone'`:                                     0,
+				`SELECT count(*) FROM entries WHERE source_id = 'gone'`:                              0,
+				`SELECT count(*) FROM jobs WHERE source_id = 'gone'`:                                 0,
+				`SELECT count(*) FROM review_state WHERE dirty = 1`:                                  1,
+				`SELECT count(*) FROM jobs WHERE kind = 'relate' AND state IN ('queued', 'running')`: 1,
+			} {
+				if n := e.count(q); n != want {
+					t.Errorf("%s = %d, want %d", q, n, want)
+				}
+			}
+		})
+	}
+}
+
 // R1.18: a source can be added only through the picker, inside an allowed
 // root. A raw path or a location outside the allowed roots is refused, and
 // nothing else in the API accepts a path.

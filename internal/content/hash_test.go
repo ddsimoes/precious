@@ -10,6 +10,7 @@ import (
 	"precious/internal/domain"
 	"precious/internal/fsaccess/instrument"
 	"precious/internal/fsaccess/synthfs"
+	"precious/internal/jobs"
 	"precious/internal/relations"
 	"precious/internal/store"
 )
@@ -153,6 +154,42 @@ func TestRescanDuringReadDropsResult(t *testing.T) {
 	}
 	if got := e.opened(); !slices.Equal(got, []string{"a.mov"}) {
 		t.Errorf("the next run opened %q, want only a.mov", got)
+	}
+}
+
+// A source removed while its hash job reads one of its files (remove-source
+// does not wait for hashing): the attempt ends without committing anything
+// for the removed entries, and the other source's results stay (I9).
+func TestSourceRemovedDuringRead(t *testing.T) {
+	e := newEnv(t)
+	gone := e.disk("gone", "/mnt/gone", posix)
+	kept := e.disk("kept", "/mnt/kept", posix)
+	for _, name := range []string{"a", "b", "c"} {
+		gone.File("g"+name+".jpg", 5000+int64(name[0]), fileTime)
+		kept.File("k"+name+".jpg", 5000+int64(name[0]), fileTime)
+	}
+	e.scan("gone")
+	e.scan("kept")
+	e.hash("kept")
+	e.onRead("gb.jpg", func() {
+		if err := e.r.Write(context.Background(), func(tx *jobs.Tx) error {
+			return e.src.Remove(context.Background(), tx, "gone")
+		}); err != nil {
+			t.Errorf("remove gone: %v", err)
+		}
+	})
+	_ = e.hashWith(context.Background(), "gone", &fakeRuntime{})
+	for q, want := range map[string]int{
+		`SELECT count(*) FROM sources WHERE id = 'gone'`:                                       0,
+		`SELECT count(*) FROM file_content WHERE source_id = 'gone'`:                           0,
+		`SELECT count(*) FROM file_content WHERE entry_id NOT IN (SELECT id FROM entries)`:     0,
+		`SELECT count(*) FROM content_coverage WHERE source_id = 'gone'`:                       0,
+		`SELECT count(*) FROM file_content WHERE source_id = 'kept' AND state = 'hashed'`:      3,
+		`SELECT count(*) FROM content_coverage WHERE source_id = 'kept' AND checked_files = 3`: 1,
+	} {
+		if n := e.count(q); n != want {
+			t.Errorf("%s = %d, want %d", q, n, want)
+		}
 	}
 }
 

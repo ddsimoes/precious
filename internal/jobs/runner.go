@@ -673,6 +673,11 @@ func (r *Runner) finish(a *attempt, herr error) {
 	var stale bool
 	err := r.Write(context.WithoutCancel(r.baseCtx), func(t *Tx) error {
 		rec, err := t.Get(a.job.ID)
+		if domain.CodeOf(err) == domain.CodeNotFound {
+			// The row went away with its source (remove-source).
+			stale = true
+			return nil
+		}
 		if err != nil {
 			return err
 		}
