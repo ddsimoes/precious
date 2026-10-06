@@ -368,6 +368,14 @@ Durations are strings such as `"30s"`, `"15m"`, or `"12h"`.
 | `sources.allowed_roots` | array of strings | `[]` | Folders the picker offers, and below which sources may be added. Each entry must be the absolute path of an existing directory; entries are cleaned. Empty selects the platform defaults: on Linux the service account's home, `/media`, `/mnt`, `/run/media`, and `/srv`, those that exist. |
 | `scan.batch_size` | integer | `1000` | Most row changes a scan commits in one write transaction, 1 to 10000. |
 | `scan.list_batch` | integer | `256` | Most directory entries one directory read returns, 1 to 4096. |
+| `hashing.read_chunk_bytes` | integer | `1048576` | Bytes one read call takes when Precious reads a file's content to compare it, 65536 (64 KiB) to 16777216 (16 MiB). |
+| `hashing.yield_bytes` | integer | `67108864` | Bytes a hashing job reads before it gives way to scans and pages, even inside one file, 1048576 (1 MiB) to 1073741824 (1 GiB). |
+| `archives.max_members` | integer | `1000000` | Most members Precious lists in one archive, 1 to 5000000. An archive with more is left partial, with no members. |
+| `archives.max_unpacked_bytes` | integer | `1099511627776` | Most unpacked bytes Precious reads from one archive, 1048576 (1 MiB) to 17592186044416 (16 TiB). An archive that unpacks to more is left partial. |
+| `archives.max_ratio` | integer | `100` | Highest ratio of unpacked to packed bytes accepted in one archive, 2 to 100000. A higher ratio, typical of an archive bomb, leaves the archive partial. |
+| `archives.max_time` | duration | `"4h"` | Longest time Precious spends reading one archive, from 1 minute to 7 days. A slower archive is left partial. |
+| `archives.view_max_bytes` | integer | `67108864` | Largest compressed zip member the viewer unpacks into memory to serve with ranges, 1048576 (1 MiB) to 1073741824 (1 GiB). A larger one is streamed without ranges. |
+| `duplicates.refresh_interval` | duration | `"10m"` | How often duplicate folders and the review lists are recomputed while hashing runs, from 1 minute to 24 hours. They are also recomputed when hashing ends and after each scan. |
 
 ## Platform and supported systems
 
