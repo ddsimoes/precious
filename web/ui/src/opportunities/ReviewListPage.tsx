@@ -27,6 +27,7 @@ import { useFormat } from '@/lib/format'
 import { useSourceLabel, useSourceParam } from '@/lib/sourceParams'
 import { cn } from '@/lib/utils'
 import { ListSelectAll } from '@/opportunities/ListSelectAll'
+import { cardFigures } from '@/opportunities/cardFigures'
 import { summaryLine } from '@/opportunities/summary'
 
 // ReviewListPage is the review list of one opportunity card (spec §11.5, R2
@@ -413,12 +414,12 @@ function CardFigures({ card, list }: { card: Card | undefined; list: ReviewListN
   if (card === undefined) {
     return null
   }
+  const figures = cardFigures(card, t, fmt)
   return (
     <div className="grid gap-1 text-sm">
       <p>
-        <span className="text-xl font-semibold">{fmt.bytes(card.bytes)}</span>{' '}
-        {t('opportunities.rows', { count: card.rows, formatted: fmt.count(card.rows) })} ·{' '}
-        {t(`opportunities.basis.${card.basis}`)}
+        <span className="text-xl font-semibold">{figures.headline}</span>{' '}
+        {[...(figures.rows === null ? [] : [figures.rows]), t(`opportunities.basis.${card.basis}`)].join(' · ')}
       </p>
       <p className="text-muted-foreground">{t(`opportunities.help.${list}`)}</p>
     </div>

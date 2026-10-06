@@ -642,6 +642,8 @@ export const en = {
     none: 'Nothing to review yet.',
     rows_one: '{{formatted}} item to review',
     rows_other: '{{formatted}} items to review',
+    items_one: '{{formatted}} item',
+    items_other: '{{formatted}} items',
     basis: {
       rules: 'Based on the rules',
       content: 'Based on the same content',

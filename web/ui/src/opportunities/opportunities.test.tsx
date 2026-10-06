@@ -100,7 +100,7 @@ describe('Opportunities', () => {
           cards:
             new URL(request.url).searchParams.get('source') === 'fotos'
               ? [card('caches', 1 * GiB, 2)]
-              : [card('leftovers', 1 * MiB, 5), card('duplicates', 8 * GiB, 9), card('installers', 3 * GiB, 4)],
+              : [card('leftovers', 0, 604), card('duplicates', 8 * GiB, 9), card('installers', 3 * GiB, 4)],
           coverage: coverage(),
           computed_at: '2026-10-06T10:00:00Z',
         }),
@@ -116,6 +116,9 @@ describe('Opportunities', () => {
     ])
     expect(cards.getAllByRole('listitem')[0]).toHaveTextContent('Based on the same content')
     expect(cards.getAllByRole('listitem')[1]).toHaveTextContent('Based on the rules')
+    // Empty files and folders hold no bytes: their count heads the card.
+    expect(cards.getAllByRole('listitem')[2]).toHaveTextContent(/^Partial downloads, empty folders, and empty files604 items/)
+    expect(cards.getAllByRole('listitem')[2]).not.toHaveTextContent(/0\sB/)
     expect(screen.getByText('80 GiB of 90 GiB checked (89%)')).toBeInTheDocument()
     expect(screen.getByText(/^Figures as of/)).toBeInTheDocument()
 

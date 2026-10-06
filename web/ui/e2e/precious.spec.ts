@@ -611,7 +611,9 @@ test('R2.4: discarding one copy of curriculo.doc in the duplicates list leaves t
 })
 
 test('R2.5: every card’s bytes equal the sum of its review list over all pages', async () => {
-  const opportunities: { cards: { list: ListName; bytes: number; rows: number }[] } = await (
+  const opportunities: {
+    cards: { list: ListName; bytes: number; rows: number; basis: keyof typeof en.opportunities.basis }[]
+  } = await (
     await page.request.get('/api/opportunities')
   ).json()
   expect(opportunities.cards.map((c) => c.list).toSorted()).toEqual(Object.keys(en.opportunities.list).toSorted())
@@ -625,17 +627,27 @@ test('R2.5: every card’s bytes equal the sum of its review list over all pages
 
   for (const card of opportunities.cards) {
     const label = en.opportunities.list[card.list]
-    const rowsText = `${count(card.rows)} ${card.rows === 1 ? 'item' : 'items'} to review`
+    // A card whose rows hold no bytes heads with its item count instead.
+    const countFirst = card.bytes === 0 && card.rows > 0
+    const items = `${count(card.rows)} ${card.rows === 1 ? 'item' : 'items'}`
+    const headline = countFirst ? items : bytes(card.bytes)
+    const rowsText = countFirst ? null : `${items} to review`
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Opportunities' }).click()
     const tile = page
       .getByRole('list', { name: 'Opportunity cards' })
       .getByRole('listitem')
       .filter({ has: page.getByRole('link', { name: label, exact: true }) })
-    await expect(tile, label).toContainText(bytes(card.bytes))
-    await expect(tile, label).toContainText(rowsText)
+    await expect(tile, label).toContainText(headline)
+    if (rowsText !== null) {
+      await expect(tile, label).toContainText(rowsText)
+    }
     await tile.getByRole('link', { name: label, exact: true }).click()
     await expect(page.getByRole('heading', { name: label, level: 1 })).toBeVisible()
-    await expect(page.getByRole('main').getByText(rowsText).locator('..'), label).toContainText(bytes(card.bytes))
+    const header = page.getByRole('main').getByText(en.opportunities.basis[card.basis]).locator('..')
+    await expect(header, label).toContainText(headline)
+    if (rowsText !== null) {
+      await expect(header, label).toContainText(rowsText)
+    }
     const list = page.getByRole('list', { name: `Rows of ${label}` })
     if (card.rows === 0) {
       await expect(page.getByText('Nothing left to review in this list.')).toBeVisible()
