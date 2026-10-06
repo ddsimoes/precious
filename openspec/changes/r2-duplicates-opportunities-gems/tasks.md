@@ -236,7 +236,7 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
   - layout of Opportunities, a review list, Compare, and Gems at 1366×768 and 1920×1080.
 
   Verify that `npx playwright test` passes headless with no CSP violation or console error.
-- [ ] 8.4 Finish `docs/operator.md`:
+- [x] 8.4 Finish `docs/operator.md`:
   - remove the owner markers;
   - add the R2 introduction and upgrade notes;
   - update the README's feature list and status for R2.
