@@ -449,6 +449,31 @@ describe('Review list', () => {
     expect(await commandBodies(requests, 'set-decision')).toHaveLength(2)
   })
 
+  it('names the folder an archive was unpacked in, with a Compare of the two', async () => {
+    const zip = entryRow({ id: '61', name: 'eMule0.47c.zip', path: 'Downloads/eMule0.47c.zip', archive_state: 'complete' })
+    const emule = folderRow('60', 'emule-0.47c', { path: 'Downloads/emule-0.47c' })
+    stubApi({
+      ...base,
+      'GET /api/opportunities/unpacked_archives': () =>
+        jsonResponse(200, {
+          card: card('unpacked_archives', zip.total_bytes, 1),
+          items: [reviewRow('u61', zip, { relation: relationTo(emule) })],
+          next_cursor: null,
+        }),
+    })
+    renderApp('/opportunities/unpacked_archives')
+
+    const rows = within(await screen.findByRole('list', { name: 'Rows of Archives already unpacked' }))
+    const row = rows.getAllByRole('listitem')[0]!
+    expect(row).toHaveTextContent(`Unpacked in ${emule.path}`)
+    expect(within(row).getByRole('link', { name: emule.path })).toHaveAttribute(
+      'href',
+      '/opportunities/unpacked_archives?entry=60',
+    )
+    expect(within(row).getByRole('link', { name: 'Compare' })).toHaveAttribute('href', '/compare?left=61&right=60')
+    expect(within(row).getByRole('group', { name: `Decision for ${zip.name}` })).toBeInTheDocument()
+  })
+
   it('answers an unknown list as not found', async () => {
     stubApi(base)
     renderApp('/opportunities/colors')

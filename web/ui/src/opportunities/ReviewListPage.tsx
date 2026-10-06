@@ -1,6 +1,6 @@
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { useEffect, useEffectEvent, useId, useMemo, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import type { Copy } from '@/api/content'
@@ -475,7 +475,8 @@ const targetClass = 'rounded-lg border bg-card p-3 text-sm focus:outline-none fo
 
 // EntryReviewRow is a row of every list but duplicates: an outermost entry
 // that matches the card, with its size, dates, suggestion, summary, and
-// decision controls.
+// decision controls. An unpacked archive also names the folder it was
+// unpacked in, with a Compare of the two.
 function EntryReviewRow({ row, section, cursorKey, onSelect }: RowProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -510,6 +511,22 @@ function EntryReviewRow({ row, section, cursorKey, onSelect }: RowProps) {
           ...(entry.triage === null ? [] : [t('review.suggestion', { triage: t(`entry.triage.${entry.triage}`) })]),
         ].join(' · ')}
       </p>
+      {row.relation !== null && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="min-w-0 break-all">
+            <Trans
+              i18nKey="review.unpackedIn"
+              values={{ path: row.relation.other.path }}
+              components={{
+                folderLink: (
+                  <Link to={{ search: entryLink(row.relation.other.id) }} className="text-primary hover:underline" />
+                ),
+              }}
+            />
+          </p>
+          <CompareLink left={entry.id} right={row.relation.other.id} />
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span>{t('review.decision', { decision: t(`home.decision.${entry.eff_decision}`) })}</span>
         {isMember(entry) ? (
@@ -575,16 +592,7 @@ function DuplicatesRow({ row, section, cursorKey, expanded, onSelect, onToggle }
           {open ? t('review.hideCopies') : t('review.showCopies')}
         </Button>
         {row.relation !== null && row.entry !== null && (
-          <Button asChild size="sm" variant="outline">
-            <Link
-              to={{
-                pathname: '/compare',
-                search: `?${new URLSearchParams({ left: row.entry.id, right: row.relation.other.id })}`,
-              }}
-            >
-              {t('review.compare')}
-            </Link>
-          </Button>
+          <CompareLink left={row.entry.id} right={row.relation.other.id} />
         )}
       </div>
       {open && (
@@ -635,5 +643,17 @@ function DuplicatesRow({ row, section, cursorKey, expanded, onSelect, onToggle }
         </ul>
       )}
     </li>
+  )
+}
+
+// CompareLink opens Compare on a row's two sides.
+function CompareLink({ left, right }: { left: string; right: string }) {
+  const { t } = useTranslation()
+  return (
+    <Button asChild size="sm" variant="outline">
+      <Link to={{ pathname: '/compare', search: `?${new URLSearchParams({ left, right })}` }}>
+        {t('review.compare')}
+      </Link>
+    </Button>
   )
 }

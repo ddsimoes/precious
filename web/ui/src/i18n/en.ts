@@ -693,6 +693,7 @@ export const en = {
     hideCopies: 'Hide copies',
     copiesList: 'Copies',
     compare: 'Compare',
+    unpackedIn: 'Unpacked in <folderLink>{{path}}</folderLink>',
     memberDecision: 'Decided with its archive',
     selectAll: 'Select all rows',
     selectingAll: 'Counting…',
