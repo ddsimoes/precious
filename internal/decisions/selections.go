@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"precious/internal/clock"
@@ -49,10 +50,6 @@ type Selection struct {
 // query matching more than search.MaxResolve entries. It first prunes the
 // entries of expired selections.
 func (s *Service) CreateSelection(ctx context.Context, tx *sql.Tx, q search.Query) (Selection, error) {
-	now := s.clk.Now()
-	if err := pruneSelections(ctx, tx, now); err != nil {
-		return Selection{}, err
-	}
 	ids, err := search.Resolve(ctx, tx, q, search.MaxResolve)
 	if err != nil {
 		return Selection{}, err
@@ -61,18 +58,52 @@ func (s *Service) CreateSelection(ctx context.Context, tx *sql.Tx, q search.Quer
 	if err != nil {
 		return Selection{}, fmt.Errorf("decisions: encode selection query: %w", err)
 	}
+	return s.NewSelection(ctx, tx, query, ids)
+}
+
+// NewSelection stores a selection of the given entries, which another
+// resolver (a review list, R2 design D13) found inside tx, with query as the
+// JSON that describes them. Counts, bytes, kept figures, and expiry are those
+// of CreateSelection. Repeated IDs count once; more than search.MaxResolve
+// entries is invalid_request, and an ID with no entry is not_found. It first
+// prunes the entries of expired selections.
+func (s *Service) NewSelection(ctx context.Context, tx *sql.Tx, query json.RawMessage, ids []domain.EntryID) (Selection, error) {
+	if !json.Valid(query) {
+		return Selection{}, errors.New("decisions: selection query is not JSON")
+	}
+	if !strictlyAscending(ids) {
+		ids = slices.Clone(ids)
+		slices.Sort(ids)
+		ids = slices.Compact(ids)
+	}
+	if len(ids) > search.MaxResolve {
+		return Selection{}, domain.Errorf(domain.CodeInvalidRequest,
+			"a selection holds at most %d entries; this one has %d", search.MaxResolve, len(ids))
+	}
+	now := s.clk.Now()
+	if err := pruneSelections(ctx, tx, now); err != nil {
+		return Selection{}, err
+	}
 	sel := Selection{ID: rand.Text(), Count: int64(len(ids)), CreatedAt: now, ExpiresAt: now.Add(SelectionTTL)}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO selections (id, query, count, bytes, kept, created_at, expires_at)
 		VALUES (?, ?, ?, 0, 0, ?, ?)`, sel.ID, string(query), sel.Count, clock.Millis(now), clock.Millis(sel.ExpiresAt)); err != nil {
 		return Selection{}, fmt.Errorf("decisions: create selection: %w", err)
 	}
-	for len(ids) > 0 {
-		chunk := ids[:min(len(ids), selectionChunk)]
-		ids = ids[len(chunk):]
+	for rest := ids; len(rest) > 0; {
+		chunk := rest[:min(len(rest), selectionChunk)]
+		rest = rest[len(chunk):]
 		if _, err := tx.ExecContext(ctx, `INSERT INTO selection_entries (selection_id, entry_id) SELECT ?, value FROM json_each(?)`,
 			sel.ID, idArray(chunk)); err != nil {
 			return Selection{}, fmt.Errorf("decisions: store selection entries: %w", err)
 		}
+	}
+	var found int64
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM selection_entries s JOIN entries e ON e.id = s.entry_id
+		WHERE s.selection_id = ?`, sel.ID).Scan(&found); err != nil {
+		return Selection{}, fmt.Errorf("decisions: create selection: %w", err)
+	}
+	if found != sel.Count {
+		return Selection{}, domain.Errorf(domain.CodeNotFound, "%d of the selection's entries do not exist", sel.Count-found)
 	}
 	if err := tx.QueryRowContext(ctx, selectionMeasureSQL, sel.ID).Scan(&sel.Bytes, &sel.KeptCount, &sel.KeptBytes); err != nil {
 		return Selection{}, fmt.Errorf("decisions: measure selection: %w", err)
@@ -82,6 +113,17 @@ func (s *Service) CreateSelection(ctx context.Context, tx *sql.Tx, q search.Quer
 		return Selection{}, fmt.Errorf("decisions: create selection: %w", err)
 	}
 	return sel, nil
+}
+
+// strictlyAscending reports whether ids are sorted with no repeats, as
+// search.Resolve returns them.
+func strictlyAscending(ids []domain.EntryID) bool {
+	for i := 1; i < len(ids); i++ {
+		if ids[i] <= ids[i-1] {
+			return false
+		}
+	}
+	return true
 }
 
 // selectionMeasureSQL measures a selection in one sorted pass. Each entry
