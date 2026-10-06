@@ -707,8 +707,8 @@ test('review keys decide and move through the system junk list', async () => {
   await page.keyboard.press('ArrowUp')
   await expect(row(p0)).toHaveAttribute('aria-current', 'true')
 
-  // A decided row leaves the list, and the next key selects the row that
-  // took its place.
+  // A decided row leaves the list, and the row that took its place is
+  // selected, so the keys decide consecutive rows without moving.
   for (const [key, path, next] of [
     ['d', p0, p1],
     ['k', p1, p2],
@@ -716,8 +716,8 @@ test('review keys decide and move through the system junk list', async () => {
   ] as const) {
     await page.keyboard.press(key)
     await expect(row(path)).toHaveCount(0)
-    await page.keyboard.press('j')
     await expect(row(next)).toHaveAttribute('aria-current', 'true')
+    await expect(row(next)).toBeFocused()
   }
 
   // Enter opens the selected row's details. Keys typed there are the

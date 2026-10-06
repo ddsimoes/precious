@@ -92,21 +92,29 @@ function copyItems(row: ReviewRow): CopyItem[] {
   return []
 }
 
+// Section is a part of the list: its open rows, or its decided ones.
+type Section = 'open' | 'decided'
+
 // Target is what the keyboard moves through: a row, or a copy of an
-// expanded duplicates row. entryId is what K, D, and L decide (null: the
-// target has no decision of its own); open is what Enter does.
+// expanded duplicates row, in a section. row is the key of its row;
+// entryId is what K, D, and L decide (null: the target has no decision of
+// its own); open is what Enter does.
 interface Target {
   key: string
+  row: string
+  section: Section
   entryId: string | null
   open: () => void
 }
 
-function rowKey(row: ReviewRow) {
-  return `row:${row.id}`
+// A row's key names its section: a row decided from the open rows leaves
+// them, even when it shows again among the decided ones.
+function rowKey(section: Section, row: ReviewRow) {
+  return `${section}:row:${row.id}`
 }
 
-function copyKey(row: ReviewRow, item: CopyItem) {
-  return `copy:${row.id}:${item.ref}`
+function copyKey(section: Section, row: ReviewRow, item: CopyItem) {
+  return `${section}:copy:${row.id}:${item.ref}`
 }
 
 const keyChoices: Record<string, 'keep' | 'discard' | 'later'> = { k: 'keep', d: 'discard', l: 'later' }
@@ -121,10 +129,11 @@ function ReviewList({ list }: { list: ReviewListName }) {
   const decidedId = useId()
   const listRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  // cursor is the selected target, with its index when it was selected: a
-  // decided row leaves the list, and the row that took its place is next.
-  const [cursor, setCursor] = useState<{ key: string; index: number } | null>(null)
-  const focusCursor = useRef(false)
+  // cursor is the selected target, its row's key, and its index when it was
+  // selected: when a decided row leaves the list, the row that took its
+  // place is selected, and a hidden copy hands the selection to its row.
+  // focus is set when the keyboard selected it.
+  const [cursor, setCursor] = useState<{ key: string; row: string; index: number; focus: boolean } | null>(null)
   const decide = useDecide()
   const duplicates = list === 'duplicates'
 
@@ -147,6 +156,10 @@ function ReviewList({ list }: { list: ReviewListName }) {
     [showDecided, decidedRows.data],
   )
   const card = openRows.data?.pages[0]?.card
+  const sections = {
+    open: { rows, pages: openRows },
+    decided: { rows: decided, pages: decidedRows },
+  }
 
   const toggle = (row: ReviewRow) =>
     setExpanded((current) => {
@@ -160,44 +173,57 @@ function ReviewList({ list }: { list: ReviewListName }) {
     })
 
   const targets: Target[] = []
-  for (const row of [...rows, ...decided]) {
-    if (!duplicates) {
-      const entry = row.entry
-      if (entry !== null) {
-        targets.push({
-          key: rowKey(row),
-          entryId: isMember(entry) ? null : entry.id,
-          open: () => void navigate({ search: entryLink(entry.id) }),
-        })
+  for (const section of ['open', 'decided'] as const) {
+    for (const row of sections[section].rows) {
+      const key = rowKey(section, row)
+      if (!duplicates) {
+        const entry = row.entry
+        if (entry !== null) {
+          targets.push({
+            key,
+            row: key,
+            section,
+            entryId: isMember(entry) ? null : entry.id,
+            open: () => void navigate({ search: entryLink(entry.id) }),
+          })
+        }
+        continue
       }
-      continue
-    }
-    targets.push({ key: rowKey(row), entryId: null, open: () => toggle(row) })
-    if (expanded.has(row.id)) {
-      for (const item of copyItems(row)) {
-        targets.push({
-          key: copyKey(row, item),
-          entryId: item.member ? null : item.ref,
-          open: () => void navigate({ search: entryLink(item.ref) }),
-        })
+      targets.push({ key, row: key, section, entryId: null, open: () => toggle(row) })
+      if (expanded.has(row.id)) {
+        for (const item of copyItems(row)) {
+          targets.push({
+            key: copyKey(section, row, item),
+            row: key,
+            section,
+            entryId: item.member ? null : item.ref,
+            open: () => void navigate({ search: entryLink(item.ref) }),
+          })
+        }
       }
     }
+  }
+  const cursorAt = cursor === null ? -1 : targets.findIndex((target) => target.key === cursor.key)
+
+  // keyboardCursor selects the target at index from the keyboard.
+  const keyboardCursor = (index: number) => {
+    const target = targets[index]
+    return target === undefined ? null : { key: target.key, row: target.row, index, focus: true }
+  }
+
+  // A selected target that left the list hands the selection to its row (a
+  // copy hidden), or to the target that took its place (a decided row).
+  if (cursor !== null && cursorAt < 0) {
+    const row = targets.findIndex((target) => target.key === cursor.row)
+    setCursor(keyboardCursor(row >= 0 ? row : Math.min(cursor.index, targets.length - 1)))
   }
 
   const move = (delta: 1 | -1) => {
     if (targets.length === 0) {
       return
     }
-    let index: number
-    if (cursor === null) {
-      index = delta === 1 ? 0 : targets.length - 1
-    } else {
-      const at = targets.findIndex((target) => target.key === cursor.key)
-      index = at >= 0 ? at + delta : delta === 1 ? cursor.index : cursor.index - 1
-    }
-    index = Math.max(0, Math.min(targets.length - 1, index))
-    focusCursor.current = true
-    setCursor({ key: targets[index]!.key, index })
+    const index = cursorAt < 0 ? (delta === 1 ? 0 : targets.length - 1) : cursorAt + delta
+    setCursor(keyboardCursor(Math.max(0, Math.min(targets.length - 1, index))))
   }
 
   const onKey = useEffectEvent((event: KeyboardEvent) => {
@@ -210,7 +236,7 @@ function ReviewList({ list }: { list: ReviewListName }) {
     if (origin !== null && origin.closest('input, select, textarea, [contenteditable="true"], dialog, aside') !== null) {
       return
     }
-    const current = cursor === null ? undefined : targets.find((target) => target.key === cursor.key)
+    const current = cursorAt < 0 ? undefined : targets[cursorAt]
     const key = event.key.toLowerCase()
     const choice = keyChoices[key]
     if (choice !== undefined) {
@@ -239,21 +265,18 @@ function ReviewList({ list }: { list: ReviewListName }) {
     return () => document.removeEventListener('keydown', listener)
   }, [])
 
-  // A target the keyboard moved to takes the focus, so it scrolls into view
+  // A target the keyboard selected takes the focus, so it scrolls into view
   // and assistive technology follows.
   useEffect(() => {
-    if (!focusCursor.current || cursor === null) {
-      return
+    if (cursor?.focus === true) {
+      listRef.current?.querySelector<HTMLElement>(`[data-review-key="${cursor.key}"]`)?.focus()
     }
-    focusCursor.current = false
-    const element = listRef.current?.querySelector<HTMLElement>(`[data-review-key="${cursor.key}"]`)
-    element?.focus()
   }, [cursor])
 
   const select = (key: string) => {
     const index = targets.findIndex((target) => target.key === key)
     if (index >= 0 && cursor?.key !== key) {
-      setCursor({ key, index })
+      setCursor({ key, row: targets[index]!.row, index, focus: false })
     }
   }
 
@@ -317,6 +340,7 @@ function ReviewList({ list }: { list: ReviewListName }) {
         {openRows.isError && <ErrorBanner error={openRows.error} onRetry={() => void openRows.refetch()} />}
         {openRows.data !== undefined && (
           <RowList
+            section="open"
             label={t('review.rows', { list: listLabel })}
             rows={rows}
             emptyText={t('review.noRows')}
@@ -335,6 +359,7 @@ function ReviewList({ list }: { list: ReviewListName }) {
             )}
             {decidedRows.data !== undefined && (
               <RowList
+                section="decided"
                 label={t('review.decidedRows', { list: listLabel })}
                 rows={decided}
                 emptyText={t('review.noDecided')}
@@ -377,6 +402,7 @@ interface RowListProps {
   hasMore: boolean
   loadingMore: boolean
   onLoadMore: () => void
+  section: Section
   duplicates: boolean
   cursorKey: string | null
   expanded: ReadonlySet<string>
@@ -420,13 +446,13 @@ const targetClass = 'rounded-lg border bg-card p-3 text-sm focus:outline-none fo
 // EntryReviewRow is a row of every list but duplicates: an outermost entry
 // that matches the card, with its size, dates, suggestion, summary, and
 // decision controls.
-function EntryReviewRow({ row, cursorKey, onSelect }: RowProps) {
+function EntryReviewRow({ row, section, cursorKey, onSelect }: RowProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const entryLink = useEntryLink()
   const sourceLabel = useSourceLabel()
   const entry = row.entry
-  const key = rowKey(row)
+  const key = rowKey(section, row)
   if (entry === null) {
     return null
   }
@@ -469,12 +495,12 @@ function EntryReviewRow({ row, cursorKey, onSelect }: RowProps) {
 // DuplicatesRow is a row of the duplicates list: a folder relation or a
 // group of copies of one file, which expands into its copies, each decided
 // on its own (R2 design D2).
-function DuplicatesRow({ row, cursorKey, expanded, onSelect, onToggle }: RowProps) {
+function DuplicatesRow({ row, section, cursorKey, expanded, onSelect, onToggle }: RowProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const entryLink = useEntryLink()
   const sourceLabel = useSourceLabel()
-  const key = rowKey(row)
+  const key = rowKey(section, row)
   const items = copyItems(row)
   const open = expanded.has(row.id)
   const copiesId = useId()
@@ -534,7 +560,7 @@ function DuplicatesRow({ row, cursorKey, expanded, onSelect, onToggle }: RowProp
       {open && (
         <ul id={copiesId} aria-label={t('review.copiesList')} className="grid gap-2">
           {items.map((item) => {
-            const itemKey = copyKey(row, item)
+            const itemKey = copyKey(section, row, item)
             return (
               <li
                 key={item.ref}

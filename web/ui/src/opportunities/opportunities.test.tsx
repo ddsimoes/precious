@@ -206,13 +206,13 @@ describe('Review list', () => {
     expect(current()).toHaveLength(1)
     expect(current()[0]).toHaveTextContent(thumbs.path)
 
-    // D discards it; it leaves the list, and the next key selects the row
-    // that followed it.
+    // D discards it; it leaves the list, and the row that took its place is
+    // selected.
     await user.keyboard('d')
     await waitFor(() => expect(screen.queryByRole('link', { name: thumbs.path })).not.toBeInTheDocument())
     expect(await commandBodies(requests, 'set-decision')).toEqual([{ entry_id: '21', decision: 'discard' }])
-    await user.keyboard('j')
-    expect(current()[0]).toHaveTextContent(recycler.path)
+    await waitFor(() => expect(current()[0]).toHaveTextContent(recycler.path))
+    expect(current()[0]).toHaveFocus()
     await user.keyboard('{ArrowDown}')
     expect(current()[0]).toHaveTextContent(temp.path)
     await user.keyboard('{ArrowUp}')
@@ -243,6 +243,29 @@ describe('Review list', () => {
         { entry_id: '22', decision: 'later' },
       ]),
     )
+  })
+
+  it('decides consecutive rows from the keyboard without moving', async () => {
+    const list = junkList([thumbs, recycler, temp])
+    const requests = stubApi({ ...base, ...list.routes })
+    renderApp('/opportunities/system_junk')
+    const user = userEvent.setup()
+    await screen.findByRole('link', { name: thumbs.path })
+
+    await user.keyboard('j')
+    await user.keyboard('d')
+    await waitFor(() => expect(current()[0]).toHaveTextContent(recycler.path))
+    await user.keyboard('k')
+    await waitFor(() => expect(current()[0]).toHaveTextContent(temp.path))
+    expect(await commandBodies(requests, 'set-decision')).toEqual([
+      { entry_id: '21', decision: 'discard' },
+      { entry_id: '22', decision: 'keep' },
+    ])
+
+    // Deciding the last row leaves nothing selected.
+    await user.keyboard('l')
+    expect(await screen.findByText('Nothing left to review in this list.')).toBeInTheDocument()
+    expect(screen.queryAllByRole('listitem').filter((item) => item.getAttribute('aria-current') === 'true')).toEqual([])
   })
 
   it('shows decided rows on request', async () => {
