@@ -384,8 +384,12 @@ func (s *Snapshot) candidates(src domain.SourceID) [][2]Range {
 		if s.src[a] != int32(si) && s.src[b] != int32(si) {
 			continue
 		}
+		// Each side by its highest equivalent folder, as Relate names it.
+		a, b = s.lift(a), s.lift(b)
 		pairs = append(pairs, [2]int32{min(a, b), max(a, b)})
 	}
+	slices.SortFunc(pairs, func(x, y [2]int32) int { return cmp.Or(cmp.Compare(x[0], y[0]), cmp.Compare(x[1], y[1])) })
+	pairs = slices.Compact(pairs)
 	// Outer pairs first; a pair nested in a kept pair is dropped.
 	slices.SortFunc(pairs, func(x, y [2]int32) int {
 		return cmp.Or(cmp.Compare(s.depth[x[0]]+s.depth[x[1]], s.depth[y[0]]+s.depth[y[1]]),
