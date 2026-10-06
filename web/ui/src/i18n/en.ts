@@ -596,7 +596,7 @@ export const en = {
       copies: 'Has another copy',
       elsewhere: 'Has a copy outside this folder',
       unique: 'No other copy',
-      unchecked: 'Not checked yet',
+      unchecked: 'Not checked or unreadable',
     },
     manageTags: 'Manage tags',
     rename: 'Rename {{name}}',
