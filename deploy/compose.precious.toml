@@ -1,0 +1,32 @@
+# precious configuration for deploy/compose.yaml. Paths are container paths.
+# The fully commented example is deploy/examples/precious.toml; every key is
+# described in docs/operator.md, "Configuration reference".
+#
+# compose.yaml mounts this file read-only at /etc/precious/precious.toml. It
+# holds no secrets: the administrator password hash lives in the database.
+
+# The named volume "state" from compose.yaml.
+state_dir = "/var/lib/precious"
+
+[server]
+# Inside a container the server must listen on the container's network
+# interface: Docker's published port cannot reach 127.0.0.1 inside the
+# container. 0.0.0.0 is a non-loopback address, so precious refuses it unless
+# allow_non_loopback_listen opts in explicitly. The port is still reachable
+# only from the host's loopback, because compose.yaml publishes it as
+# 127.0.0.1:8080:8080. Never publish it on all host interfaces.
+listen = "0.0.0.0:8080"
+allow_non_loopback_listen = true
+
+# The exact origin the browser uses. With the loopback-only publish that is
+# http://127.0.0.1:8080, and plain HTTP needs allow_insecure_http. Behind an
+# HTTPS reverse proxy instead: set the proxy's origin, for example
+# "https://precious.example.net", delete allow_insecure_http, and list the
+# proxy's address in trusted_proxies.
+external_origin = "http://127.0.0.1:8080"
+allow_insecure_http = true
+
+[sources]
+# compose.yaml mounts every source read-only below /sources; the picker offers
+# that folder only.
+allowed_roots = ["/sources"]

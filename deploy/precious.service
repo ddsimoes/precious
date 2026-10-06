@@ -1,0 +1,66 @@
+# precious systemd unit (spec §12.3). Precious never writes to a source.
+#
+# Install as /etc/systemd/system/precious.service; full steps are in
+# docs/operator.md, "Installation". Expects:
+#   - a system user and group "precious" (useradd --system --user-group ...)
+#   - the binary at /usr/local/bin/precious
+#   - /etc/precious/precious.toml with state_dir = "/var/lib/precious"
+# Make the disks to index visible read-only with a drop-in (systemctl edit
+# precious), not by editing this file:
+#   [Unit]
+#   RequiresMountsFor=/srv/old-disk
+#   [Service]
+#   ReadOnlyPaths=/srv/old-disk
+#   SupplementaryGroups=archive-readers
+
+[Unit]
+Description=Precious: index and explore old disks (read-only)
+After=network.target local-fs.target
+
+[Service]
+Type=simple
+User=precious
+Group=precious
+ExecStart=/usr/local/bin/precious serve --config /etc/precious/precious.toml
+Restart=on-failure
+RestartSec=5s
+
+# Private state: /var/lib/precious, owned by precious, mode 0700. Every file
+# the service creates is owner-only.
+StateDirectory=precious
+StateDirectoryMode=0700
+UMask=0077
+
+# The whole filesystem is read-only to the service except the state directory;
+# /home, /root, and /run/user are visible read-only.
+ProtectSystem=strict
+ProtectHome=read-only
+# Source disks, listed explicitly so they stay read-only even if ProtectSystem
+# is relaxed, and so statfs reports them read-only. Prefix a path with "-" if
+# it may be unmounted when the service starts. Set this in the drop-in above:
+#ReadOnlyPaths=/srv/old-disk -/media/backup-2003
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# The private /dev has no /dev/disk; bind it in read-only so volumes are
+# recognized by filesystem UUID and label wherever they are mounted. No device
+# node is needed.
+BindReadOnlyPaths=-/dev/disk
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

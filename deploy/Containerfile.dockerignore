@@ -1,0 +1,13 @@
+# Build context exclusions for deploy/Containerfile. Docker BuildKit reads this
+# file automatically; podman needs --ignorefile deploy/Containerfile.dockerignore.
+.git
+.claude
+/precious
+/bin
+/dist
+/state
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.test
+**/*.out

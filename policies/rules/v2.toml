@@ -1,0 +1,493 @@
+# Rules v2 (precious-spec §6.6, §8; design D9). Loaded by internal/rules
+# together with policies/markers/.
+#
+# The file is versioned: every scan records it, so change `version` whenever
+# a rule changes.
+#
+# A rule classifies a file or a folder (`target`) when every condition it
+# lists holds:
+#   - `name`: patterns on the entry's own name, any of which may match. They
+#     compare ASCII letters case-insensitively; `*` matches any run of bytes,
+#     `?` exactly one byte.
+#   - `child_signals` (folders): `any` (at least one of), `all`, and `none`,
+#     among the signals of the folder's immediate children.
+#   - `subtree_signals` (folders): `{ signal, min_count }` items, each of which
+#     must be raised by at least `min_count` (default 1) entries anywhere
+#     below the folder.
+#   - `kind_share`: `{ kinds, min_files, min_bytes_share }`, the files of the
+#     listed kinds anywhere below the folder (for a file, the file itself):
+#     at least `min_files` (default 1) of them, holding at least
+#     `min_bytes_share` (default 0) of the bytes.
+# Among the matching rules with a `category`, the highest `priority` decides.
+# Two different categories at that priority give `unknown` (conflicting
+# rules), and no match gives `unknown` (no rule matched). `traits` are the
+# union over every matching rule. `triage = "review"` holds a category for
+# review where its usual suggestion would be keep or discard. `explain` is
+# the sentence the detail panel shows, in plain words.
+#
+# The triage of a category, its family, and which categories make a folder a
+# group are fixed by precious (design D9), not by this file.
+version = "rules-v2"
+
+# ---------------------------------------------------------------- files ----
+
+[[rules]]
+id = "recovered_fragment_file"
+target = "file"
+name = ["*.CHK"]
+priority = 100
+category = "system_junk"
+triage = "review"
+explain = "A piece of a damaged file that a disk check recovered. It may hold part of something you made, so look at it before discarding it."
+
+[[rules]]
+id = "system_file"
+target = "file"
+name = ["Thumbs.db", "ehthumbs.db", "desktop.ini", ".DS_Store"]
+priority = 100
+category = "system_junk"
+explain = "A file the operating system makes on its own, such as picture previews or folder view settings. It is made again whenever it is needed."
+
+[[rules]]
+id = "office_lock_file"
+target = "file"
+name = ["~$*"]
+priority = 90
+category = "temporary_data"
+explain = "A lock file that an office program leaves beside a document while it is open. It holds none of the document's content."
+
+[[rules]]
+id = "temporary_file"
+target = "file"
+name = ["*.tmp", "*.temp", "*.$$$", "*.swp"]
+priority = 80
+category = "temporary_data"
+explain = "A temporary file that a program left behind."
+
+[[rules]]
+id = "partial_download"
+target = "file"
+name = ["*.part", "*.partial", "*.crdownload"]
+priority = 80
+category = "temporary_data"
+explain = "An unfinished download. It cannot be opened as it is."
+
+[[rules]]
+id = "credential_file"
+target = "file"
+name = [
+  "id_rsa",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "*.kdbx",
+  "*.kdb",
+  "*.pfx",
+  "*.p12",
+  "*.ppk",
+  "key3.db",
+  "key4.db",
+  "logins.json",
+  "Login Data",
+  "wallet.dat",
+  ".netrc",
+  ".pgpass",
+  "secring.gpg",
+  "*.keychain",
+  "*.keychain-db",
+]
+priority = 70
+category = "application_user_data"
+traits = ["contains_credentials", "contains_user_material"]
+explain = "A key or password file. It may be the only way into an account or into encrypted files."
+
+[[rules]]
+id = "mail_store_file"
+target = "file"
+name = ["*.pst", "*.ost", "*.dbx", "*.mbox", "*.mbx", "*.nsf"]
+priority = 70
+category = "application_user_data"
+traits = ["contains_user_material"]
+explain = "A mail program's mailbox, with messages that may exist nowhere else."
+
+[[rules]]
+id = "save_file"
+target = "file"
+name = ["*.sav"]
+priority = 70
+category = "application_user_data"
+traits = ["contains_user_material"]
+explain = "A saved game: progress that exists nowhere else."
+
+[[rules]]
+id = "installer_file"
+target = "file"
+name = ["setup*.exe", "*install*.exe", "*.msi", "*.msu", "*.msp"]
+priority = 60
+category = "installer_download"
+explain = "An installer. Programs from installers like this can usually be downloaded again."
+
+[[rules]]
+id = "disk_image_file"
+target = "file"
+name = ["*.iso", "*.img", "*.nrg", "*.mdf", "*.cue"]
+priority = 60
+category = "installer_download"
+explain = "A disk image: a copy of a CD or DVD, usually an installation disc."
+
+[[rules]]
+id = "disk_image_bin_file"
+target = "file"
+name = ["*.bin"]
+kind_share = { kinds = ["archive"] }
+priority = 60
+category = "installer_download"
+explain = "A disk image in two files: this .bin holds the disc, the .cue beside it describes it."
+
+[[rules]]
+id = "program_file"
+target = "file"
+name = ["*.exe"]
+priority = 30
+category = "installer_download"
+explain = "A program file. On its own it is most often an old download; inside an installed application, the application folder's suggestion is the one that counts."
+
+[[rules]]
+id = "database_file"
+target = "file"
+name = ["*.sqlite", "*.sqlite3", "*.mdb", "*.accdb", "*.fdb"]
+priority = 0
+traits = ["contains_database"]
+explain = "A database file, which programs use to keep records such as history, contacts, or accounts."
+
+[[rules]]
+id = "office_recovery_file"
+target = "file"
+name = ["*.asd", "*.wbk", "*.xar", "*.autosave", "*autorecover*"]
+priority = 0
+traits = ["contains_user_material"]
+explain = "An office program's automatic backup of a document that was being edited."
+
+# -------------------------------------------------------------- folders ----
+
+# System junk.
+
+[[rules]]
+id = "recycle_bin"
+target = "folder"
+name = ["$RECYCLE.BIN", "RECYCLER", "RECYCLED", ".Trash", ".Trash-*", ".Trashes"]
+priority = 100
+category = "system_junk"
+explain = "A drive's recycle bin (trash): files someone already deleted."
+
+[[rules]]
+id = "system_volume_folder"
+target = "folder"
+name = ["System Volume Information", ".Spotlight-V100", ".fseventsd"]
+priority = 100
+category = "system_junk"
+explain = "A folder the operating system keeps on every drive for its own bookkeeping, such as restore points and search indexes."
+
+[[rules]]
+id = "recovered_fragments_folder"
+target = "folder"
+name = ["found.???"]
+priority = 100
+category = "system_junk"
+triage = "review"
+explain = "Where a disk check puts the pieces it recovered from damaged files. They may hold parts of things you made, so look at them before discarding them."
+
+# Operating systems.
+
+[[rules]]
+id = "windows_folder"
+target = "folder"
+name = ["WINDOWS", "WINNT"]
+child_signals = { any = ["os_image_layout_present"] }
+priority = 90
+category = "os_installation"
+explain = "A copy of the Windows folder: the operating system itself, with its system32 folder inside."
+
+[[rules]]
+id = "windows_system_folder"
+target = "folder"
+name = ["system32", "SysWOW64", "WinSxS", "I386"]
+priority = 90
+category = "os_installation"
+explain = "A folder of Windows system files, part of an operating system or of its installation disc."
+
+# Disposable material.
+
+[[rules]]
+id = "dependency_folder"
+target = "folder"
+name = ["node_modules", "__pycache__", ".gradle", ".tox", ".pytest_cache", ".mypy_cache", "CMakeFiles"]
+priority = 80
+category = "generated_artifacts"
+explain = "Packages or files that a build tool downloaded or made. They can be fetched or built again from the project."
+
+[[rules]]
+id = "build_output_folder"
+target = "folder"
+name = ["bin", "obj", "target", "build"]
+subtree_signals = [{ signal = "compiled_output_present", min_count = 3 }]
+priority = 80
+category = "generated_artifacts"
+explain = "Compiler output (.class, .o, or .pyc files) in a build folder. Building the project makes it again."
+
+[[rules]]
+id = "cache_folder"
+target = "folder"
+name = ["Temporary Internet Files", "cache", "caches", "cache2", ".cache", "GPUCache", "Code Cache", "thumbnails", ".thumbnails"]
+priority = 80
+category = "cache"
+explain = "A cache: copies a program keeps to go faster, such as a web browser's saved pages. The program fetches or makes them again."
+
+[[rules]]
+id = "cachedir_tag_folder"
+target = "folder"
+child_signals = { any = ["cachedir_tag_present"] }
+priority = 80
+category = "cache"
+explain = "A cache: the program that made this folder marked it as one (CACHEDIR.TAG)."
+
+[[rules]]
+id = "temporary_folder"
+target = "folder"
+name = ["Temp", "tmp", "Temporary Files"]
+priority = 80
+category = "temporary_data"
+explain = "A folder for temporary files that programs left behind."
+
+# Material that programs keep for you.
+
+[[rules]]
+id = "saves_folder"
+target = "folder"
+name = ["save", "saves", "savegame", "savegames", "saved games", "savedata"]
+priority = 70
+category = "application_user_data"
+traits = ["contains_user_material"]
+explain = "Saved games: progress that exists nowhere else."
+
+[[rules]]
+id = "program_profile_folder"
+target = "folder"
+child_signals = { any = ["profile_data_present", "mail_store_present"] }
+priority = 70
+category = "application_user_data"
+explain = "A program's profile, with your settings, bookmarks, or mail."
+
+[[rules]]
+id = "application_data_folder"
+target = "folder"
+name = ["Application Data", "Dados de aplicativos", "AppData", "Datos de programa", "Anwendungsdaten"]
+priority = 70
+category = "application_user_data"
+explain = "Where Windows programs keep each person's own data, such as profiles, mail, and saved games."
+
+# Projects.
+
+[[rules]]
+id = "source_project"
+target = "folder"
+child_signals = { any = ["vcs_marker_present", "build_manifest_present"] }
+priority = 60
+category = "source_project"
+explain = "A software project: it has version control (such as .git) or a build file (such as package.json or build.xml) at its top."
+
+# Copies of whole drives, and collections.
+
+[[rules]]
+id = "drive_copy"
+target = "folder"
+child_signals = { all = ["program_files_present", "user_profiles_present"] }
+priority = 55
+category = "backup"
+explain = "A copy of a whole Windows drive, with its programs folder and its users' folders side by side."
+
+[[rules]]
+id = "drive_copy_windows"
+target = "folder"
+child_signals = { all = ["windows_folder_present", "program_files_present"] }
+priority = 55
+category = "backup"
+explain = "A copy of a whole Windows drive, with its Windows folder and its programs folder side by side."
+
+# Above the profile rule (70): exported bookmarks or a mail archive at the top
+# of a Downloads folder do not make it a program profile.
+[[rules]]
+id = "downloads_folder"
+target = "folder"
+name = ["Downloads", "Download", "My Downloads"]
+priority = 75
+category = "download_collection"
+explain = "A downloads folder: things fetched from the internet over time, each of which deserves its own look."
+
+[[rules]]
+id = "program_files_folder"
+target = "folder"
+name = ["Program Files", "Program Files (x86)", "Arquivos de programas", "Archivos de programa", "Programme"]
+priority = 50
+category = "mixed"
+explain = "The folder where Windows installs programs. Each program inside is classified on its own."
+
+# Personal material.
+
+[[rules]]
+id = "camera_folder"
+target = "folder"
+name = ["DCIM"]
+priority = 50
+category = "personal_media"
+explain = "A camera's or phone's photo folder (DCIM)."
+
+[[rules]]
+id = "camera_card_folder"
+target = "folder"
+child_signals = { any = ["camera_folder_present"] }
+priority = 50
+category = "personal_media"
+explain = "A camera's memory card or a phone backup: it holds a camera photo folder (DCIM)."
+
+[[rules]]
+id = "media_folder"
+target = "folder"
+kind_share = { kinds = ["image", "video", "audio"], min_files = 2, min_bytes_share = 0.6 }
+priority = 50
+category = "personal_media"
+explain = "Mostly photos, videos, or music: at least 60% of the bytes inside."
+
+[[rules]]
+id = "documents_folder"
+target = "folder"
+kind_share = { kinds = ["document"], min_files = 2, min_bytes_share = 0.6 }
+priority = 50
+category = "documents"
+explain = "Mostly documents: at least 60% of the bytes inside are texts, spreadsheets, presentations, or PDFs."
+
+[[rules]]
+id = "holds_drive_copy"
+target = "folder"
+subtree_signals = [{ signal = "program_files_present" }, { signal = "user_profiles_present" }]
+priority = 45
+category = "mixed"
+explain = "Holds a copy of a Windows drive somewhere inside, along with other things."
+
+# Installed programs.
+
+[[rules]]
+id = "application_folder"
+target = "folder"
+subtree_signals = [{ signal = "executable_present" }]
+kind_share = { kinds = ["executable"], min_bytes_share = 0.5 }
+priority = 40
+category = "application_installation"
+explain = "An installed program: most of its bytes are program files (.exe and .dll). Programs can usually be installed again."
+
+[[rules]]
+id = "application_library_folder"
+target = "folder"
+subtree_signals = [{ signal = "program_support_file_present" }]
+kind_share = { kinds = ["executable"], min_bytes_share = 0.5 }
+priority = 40
+category = "application_installation"
+explain = "Part of an installed program: most of its bytes are program libraries (.dll). Programs can usually be installed again."
+
+[[rules]]
+id = "uninstaller_folder"
+target = "folder"
+child_signals = { any = ["uninstaller_name_present"] }
+priority = 40
+category = "application_installation"
+explain = "An installed program: it has an uninstaller (such as unins000.exe). Programs can usually be installed again."
+
+# Traits: what a folder holds, whatever its category.
+
+[[rules]]
+id = "holds_photos"
+target = "folder"
+subtree_signals = [{ signal = "camera_photo_present" }]
+priority = 0
+traits = ["contains_user_material"]
+explain = "Holds photos or videos named by a camera or phone."
+
+[[rules]]
+id = "holds_camera_folder"
+target = "folder"
+subtree_signals = [{ signal = "camera_folder_present" }]
+priority = 0
+traits = ["contains_user_material"]
+explain = "Holds a camera's photo folder (DCIM)."
+
+[[rules]]
+id = "holds_documents"
+target = "folder"
+subtree_signals = [{ signal = "editable_document_present" }]
+priority = 0
+traits = ["contains_user_material"]
+explain = "Holds office documents (texts, spreadsheets, or presentations)."
+
+[[rules]]
+id = "holds_saves"
+target = "folder"
+subtree_signals = [{ signal = "save_data_present" }]
+priority = 0
+traits = ["contains_user_material"]
+explain = "Holds saved games."
+
+[[rules]]
+id = "holds_profiles"
+target = "folder"
+subtree_signals = [{ signal = "profile_data_present" }]
+priority = 0
+traits = ["contains_user_material"]
+explain = "Holds a program profile with settings or bookmarks."
+
+[[rules]]
+id = "holds_mail"
+target = "folder"
+subtree_signals = [{ signal = "mail_store_present" }]
+priority = 0
+traits = ["contains_user_material"]
+explain = "Holds mail."
+
+[[rules]]
+id = "holds_office_recovery"
+target = "folder"
+subtree_signals = [{ signal = "recovery_material_present" }]
+priority = 0
+traits = ["contains_user_material"]
+explain = "Holds automatic backups of documents that were being edited."
+
+[[rules]]
+id = "holds_credentials"
+target = "folder"
+subtree_signals = [{ signal = "credential_file_present" }]
+priority = 0
+traits = ["contains_credentials"]
+explain = "Holds keys or password files (such as id_rsa or .kdbx)."
+
+[[rules]]
+id = "holds_database"
+target = "folder"
+subtree_signals = [{ signal = "database_present" }]
+priority = 0
+traits = ["contains_database"]
+explain = "Holds database files."
+
+[[rules]]
+id = "holds_version_control"
+target = "folder"
+subtree_signals = [{ signal = "vcs_marker_present" }]
+priority = 0
+traits = ["contains_vcs"]
+explain = "Holds version control history (such as .git)."
+
+[[rules]]
+id = "holds_build_output"
+target = "folder"
+subtree_signals = [{ signal = "generated_output_name_present" }]
+priority = 0
+traits = ["possible_generated_content"]
+explain = "Holds folders where build tools usually put what they make (such as build, bin, or node_modules)."

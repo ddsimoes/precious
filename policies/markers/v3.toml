@@ -1,0 +1,344 @@
+# Markers: signals and file kinds (precious-spec §6.2, §8; design D9).
+# Loaded by internal/rules together with policies/rules/.
+#
+# The file is versioned: every classified entry records it, so change
+# `version` whenever a signal or the file-kind table changes. Signals and file
+# kinds are observations about names, never categories: a signal only states
+# that a name was seen. The rules file decides what the signals mean.
+version = "markers-v3"
+
+# Signals. A signal is raised by an entry whose name matches one of `names`,
+# none of `except`, and whose kind is one of `kinds` (any kind when `kinds`
+# is omitted). The scanner counts them among each folder's immediate children
+# and in its whole subtree. Patterns compare ASCII letters case-insensitively;
+# `*` matches any run of bytes, `?` exactly one byte, every other byte itself.
+# `[`, `]`, and `\` are reserved. Patterns are deliberately narrow: a name that
+# also occurs in ordinary folders (for example `*.db`, which matches every
+# `Thumbs.db`) would mislead the rules.
+#
+# `indicator = true` marks user material (design D9): a folder whose rules
+# would suggest discarding it is suggested for review instead when one of
+# these is anywhere below it. Images that programs ship (icons, skins, splash
+# screens) are deliberately not indicators, or every application folder would
+# be held for review.
+
+# Programs and installations.
+[[signals]]
+id = "executable_present"
+kinds = ["file"]
+names = ["*.exe", "*.com", "*.bat", "*.cmd"]
+
+[[signals]]
+id = "installer_name_present"
+kinds = ["file"]
+names = ["setup*.exe", "*install*.exe", "*.msi"]
+except = ["unins*.exe", "uninst*.exe"]
+
+[[signals]]
+id = "uninstaller_name_present"
+kinds = ["file"]
+names = ["unins???.exe", "unins???.dat", "uninst.exe", "uninstall*.exe"]
+
+[[signals]]
+id = "program_support_file_present"
+kinds = ["file"]
+names = ["*.hlp", "*.chm", "*.cnt", "*.dll", "*.ocx"]
+
+# Disk images: installation discs and copies of them. A `.bin` is a disk image
+# only beside its `.cue` sheet (see file_kind_pairs), which a name alone
+# cannot show, so the sheet stands for the pair here.
+[[signals]]
+id = "disk_image_present"
+kinds = ["file"]
+names = ["*.iso", "*.img", "*.nrg", "*.mdf", "*.cue"]
+
+# Source projects.
+[[signals]]
+id = "vcs_marker_present"
+names = [".git", ".hg", ".svn", ".bzr", "CVS", "_darcs"]
+
+[[signals]]
+id = "build_manifest_present"
+kinds = ["file"]
+names = [
+  "go.mod",
+  "package.json",
+  "Cargo.toml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "CMakeLists.txt",
+  "Makefile",
+  "Makefile.am",
+  "configure.ac",
+  "configure.in",
+  "meson.build",
+  "build.xml",
+  "SConstruct",
+  "pyproject.toml",
+  "setup.py",
+  "Gemfile",
+  "composer.json",
+  "*.sln",
+  "*.csproj",
+  "*.vbproj",
+  "*.vcproj",
+  "*.vcxproj",
+  "*.dsp",
+  "*.dsw",
+  "*.dpr",
+  "*.pro",
+]
+
+# Compiled output: what a compiler writes next to or below a project's
+# sources. Program files that installers ship (`*.dll`, `*.exe`) are not
+# compiled output here, so a program's own `bin` folder stays part of it.
+[[signals]]
+id = "compiled_output_present"
+kinds = ["file"]
+names = ["*.class", "*.o", "*.obj", "*.pyc"]
+
+# Folder names that build tools use for their output. They prove nothing on
+# their own about whether the content can be rebuilt.
+[[signals]]
+id = "generated_output_name_present"
+kinds = ["directory"]
+names = [
+  "build",
+  "target",
+  "dist",
+  "out",
+  "bin",
+  "obj",
+  "Debug",
+  "Release",
+  "node_modules",
+  "__pycache__",
+  ".gradle",
+  "CMakeFiles",
+  ".tox",
+  ".pytest_cache",
+  ".mypy_cache",
+]
+
+# Caches, temporary material, and partial downloads.
+[[signals]]
+id = "cachedir_tag_present"
+kinds = ["file"]
+names = ["CACHEDIR.TAG"]
+
+[[signals]]
+id = "cache_dir_name_present"
+kinds = ["directory"]
+names = ["cache", "caches", "cache2", ".cache", "Temporary Internet Files", "GPUCache", "Code Cache", "thumbnails", ".thumbnails"]
+
+[[signals]]
+id = "temporary_name_present"
+kinds = ["file"]
+names = ["*.tmp", "*.temp", "~*", "*~", "*.swp", "*.$$$"]
+
+[[signals]]
+id = "partial_download_present"
+kinds = ["file"]
+names = ["*.part", "*.partial", "*.crdownload"]
+
+# System junk: what operating systems leave in folders and on volumes.
+[[signals]]
+id = "system_junk_present"
+names = [
+  "Thumbs.db",
+  "ehthumbs.db",
+  "desktop.ini",
+  ".DS_Store",
+  "$RECYCLE.BIN",
+  "RECYCLER",
+  "RECYCLED",
+  "System Volume Information",
+  ".Trash",
+  ".Trash-*",
+  ".Trashes",
+]
+
+# What a disk check recovers: fragments of files that lost their names. They
+# may hold anything the owner wrote, so they count as user material.
+[[signals]]
+id = "recovered_fragment_present"
+names = ["*.CHK", "found.???"]
+indicator = true
+
+# Application-held user material (§6.6 application_user_data, §8).
+[[signals]]
+id = "save_data_present"
+names = ["save", "saves", "savegame", "savegames", "saved games", "savedata", "*.sav"]
+indicator = true
+
+[[signals]]
+id = "profile_data_present"
+kinds = ["file"]
+names = ["prefs.js", "profiles.ini", "sessionstore.js*", "Local State", "*.wab", "*.pab", "abook.mab", "bookmarks.html"]
+indicator = true
+
+[[signals]]
+id = "database_present"
+kinds = ["file"]
+names = ["*.sqlite", "*.sqlite3", "*.mdb", "*.accdb", "*.fdb"]
+indicator = true
+
+[[signals]]
+id = "mail_store_present"
+names = ["*.pst", "*.ost", "*.dbx", "*.mbox", "*.mbx", "*.msf", "*.nsf", "ImapMail"]
+indicator = true
+
+[[signals]]
+id = "credential_file_present"
+kinds = ["file"]
+names = [
+  "id_rsa",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "*.kdbx",
+  "*.kdb",
+  "*.pfx",
+  "*.p12",
+  "*.ppk",
+  "key3.db",
+  "key4.db",
+  "logins.json",
+  "Login Data",
+  "wallet.dat",
+  ".netrc",
+  ".pgpass",
+  "secring.gpg",
+  "*.keychain",
+  "*.keychain-db",
+]
+indicator = true
+
+# Office recovery files: autosaves and backups of documents being edited.
+[[signals]]
+id = "recovery_material_present"
+kinds = ["file"]
+names = ["*.asd", "*.wbk", "*.xar", "*.autosave", "*autorecover*"]
+indicator = true
+
+# Editable office documents, which programs rarely ship and people author.
+# The `~$` lock files an office program leaves beside an open document hold
+# no content.
+[[signals]]
+id = "editable_document_present"
+kinds = ["file"]
+names = ["*.doc", "*.docx", "*.odt", "*.wpd", "*.wps", "*.xls", "*.xlsx", "*.ods", "*.ppt", "*.pptx", "*.odp"]
+except = ["~$*"]
+indicator = true
+
+# Photos and videos named by cameras and phones.
+[[signals]]
+id = "camera_photo_present"
+kinds = ["file"]
+names = [
+  "DSC*.jpg",
+  "DSC*.jpeg",
+  "IMG_*.jpg",
+  "IMG_*.jpeg",
+  "IMG_*.heic",
+  "IMG_*.dng",
+  "IMG_*.cr2",
+  "P???????.jpg",
+  "IMAG*.jpg",
+  "PXL_*.jpg",
+  "IMG-*-WA*.jpg",
+  "MVI_*.avi",
+  "MVI_*.mov",
+  "MVI_*.mp4",
+  "VID_*.mp4",
+  "VID_*.3gp",
+]
+indicator = true
+
+[[signals]]
+id = "camera_folder_present"
+kinds = ["directory"]
+names = ["DCIM"]
+indicator = true
+
+# Copies of an operating system and of whole Windows drives.
+[[signals]]
+id = "os_image_layout_present"
+names = ["I386", "system32", "SysWOW64", "WinSxS", "bootmgr", "ntldr", "install.wim", "boot.wim", "isolinux", "casper"]
+
+[[signals]]
+id = "windows_folder_present"
+kinds = ["directory"]
+names = ["WINDOWS", "WINNT"]
+
+[[signals]]
+id = "program_files_present"
+kinds = ["directory"]
+names = ["Program Files", "Program Files (x86)", "Arquivos de programas", "Archivos de programa", "Programme"]
+
+[[signals]]
+id = "user_profiles_present"
+kinds = ["directory"]
+names = ["Documents and Settings", "Users"]
+
+# Name-derived file kinds of regular files (§6.2): lower-case extensions,
+# without the dot, compared ignoring ASCII case. An extension is the bytes
+# after the last dot of a name that does not start with its only dot.
+# Unlisted extensions, and names without one, are `other`. A kind is a format
+# hint, never proof of what a file holds or who made it.
+[file_kinds]
+image = [
+  "jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif", "avif",
+  "raw", "cr2", "cr3", "nef", "arw", "orf", "rw2", "dng", "psd", "xcf", "pcx", "tga", "ico", "svg",
+]
+video = [
+  "mov", "mp4", "m4v", "avi", "mkv", "wmv", "mpg", "mpeg", "mpe", "3gp", "3g2", "mts", "m2ts",
+  "vob", "flv", "webm", "ogv", "asf", "divx",
+]
+audio = [
+  "mp3", "wav", "flac", "ogg", "oga", "opus", "m4a", "aac", "wma", "aif", "aiff", "mid", "midi",
+  "ape", "amr", "au",
+]
+document = [
+  "txt", "text", "doc", "docx", "docm", "odt", "rtf", "pdf", "xls", "xlsx", "xlsm", "ods", "csv",
+  "ppt", "pptx", "pps", "ppsx", "odp", "wpd", "wps", "wri", "md", "tex", "epub", "djvu", "xps",
+  "ps", "pages", "numbers", "htm", "html",
+]
+source = [
+  "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "cs", "java", "go", "rs", "py", "rb", "pl",
+  "pm", "php", "js", "mjs", "ts", "tsx", "jsx", "swift", "kt", "kts", "scala", "m", "mm", "pas",
+  "dpr", "bas", "frm", "vb", "asm", "s", "f", "f90", "for", "lua", "sh", "bash", "ps1", "sql",
+  "r", "hs", "ml", "ex", "exs", "erl", "clj", "el", "lisp", "scm", "dart", "groovy",
+]
+# Disk images (iso, img, nrg, mdf, cue) are archives: containers of other
+# files. A `.bin` is one only beside its `.cue` (file_kind_pairs below).
+archive = [
+  "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "lz", "lzma", "zst", "z",
+  "cab", "arj", "lzh", "lha", "ace", "jar", "war", "cpio",
+  "iso", "img", "nrg", "mdf", "cue",
+]
+installer = ["msi", "msp", "msu", "msix", "appx", "deb", "rpm", "pkg", "dmg", "apk"]
+executable = ["exe", "com", "bat", "cmd", "scr", "dll", "ocx", "so", "dylib", "appimage", "run"]
+# Recovered fragments from a disk check (`FILE0000.CHK`).
+system = ["chk"]
+
+# Name patterns checked before the extension table, first match wins. They
+# give installer-like program names their own kind, so `GetRight-setup.exe`
+# is an installer while `GetRight.exe` is an executable, and give the files
+# an operating system leaves in folders the system kind.
+[[file_kind_names]]
+kind = "installer"
+names = ["setup.exe", "setup?*.exe", "*-setup*.exe", "*_setup*.exe", "install.exe", "installer.exe", "*-installer*.exe", "*_installer*.exe"]
+
+[[file_kind_names]]
+kind = "system"
+names = ["Thumbs.db", "ehthumbs.db", "desktop.ini", ".DS_Store"]
+
+# A file whose extension is `ext` gets `kind` when its folder holds a file
+# with the same stem (ignoring ASCII case) and the extension `with`. A lone
+# `.bin` stays `other`: the extension is used for far more than disc images.
+[[file_kind_pairs]]
+ext = "bin"
+with = "cue"
+kind = "archive"

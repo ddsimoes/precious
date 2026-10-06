@@ -1,0 +1,70 @@
+# precious Compose example (spec §12.3). Precious never writes to a source.
+#
+# Paths are relative to this file. Before the first start:
+#   1. Edit compose.precious.toml (external_origin).
+#   2. Replace the example source mount below with one read-only bind per
+#      disk, each below /sources, the allowed root of compose.precious.toml.
+#   3. docker compose -f deploy/compose.yaml up -d --build
+#   4. docker compose -f deploy/compose.yaml exec precious \
+#        /precious admin set-password --config /etc/precious/precious.toml
+#   5. Sign in and add the sources from the picker.
+# See docs/operator.md, "Installation" and "Backup and restore".
+name: precious
+
+services:
+  precious:
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+      args:
+        VERSION: ${PRECIOUS_VERSION:-dev}
+    image: precious:${PRECIOUS_VERSION:-dev}
+    restart: unless-stopped
+    # Host loopback only. For remote access, put an HTTPS reverse proxy on the
+    # host in front of 127.0.0.1:8080; do not publish on all interfaces.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # Configuration, read-only. It contains no secrets.
+      - type: bind
+        source: ./compose.precious.toml
+        target: /etc/precious/precious.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      # Private state (database). The image gives /var/lib/precious to UID
+      # 65532 with mode 0700, and Docker copies that onto the empty volume.
+      - type: volume
+        source: state
+        target: /var/lib/precious
+      # Sources, each read-only (the long form of "host:container:ro"). A
+      # missing host path fails the start instead of silently becoming an
+      # empty directory.
+      - type: bind
+        source: /srv/old-disk
+        target: /sources/old-disk
+        read_only: true
+        bind:
+          create_host_path: false
+      # udev's /dev/disk links, read-only (/dev/disk:/dev/disk:ro), so volumes
+      # are recognized by filesystem UUID and label wherever the host mounts
+      # them. No device node is needed; the container's read-only /sys is
+      # enough.
+      - type: bind
+        source: /dev/disk
+        target: /dev/disk
+        read_only: true
+        bind:
+          create_host_path: false
+    # The process needs no privileges and writes only to the state volume and
+    # SQLite's temporary files.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  state: {}

@@ -1,0 +1,108 @@
+schema: spec-driven
+
+# Project context: constraints that must shape every OpenSpec artifact.
+context: |
+  Product: Precious (binary `precious` from R1; `curator` until then), a self-hosted,
+  single-owner application that helps people understand, deduplicate, clean up, and organize
+  accumulated files. Authoritative design: `precious-spec-v0.3.md` at the repo root (v0.3,
+  which supersedes v0.2 per docs/adr/0008-product-reset.md). Cite its section numbers (e.g.
+  §10.2) and acceptance scenario IDs (R1.1-R8.7) instead of restating it. Material deviations
+  from it require an architecture decision note under `docs/adr/`.
+  `directory-first-curator-spec-v0.2.md` is history only.
+
+  Delivery order (§14): R1 full index and explorer -> R2 duplicates, opportunities, and gems
+  -> R3 organizing -> R4 cleanup -> R5 media dates -> R6 classifier assistant (Jev)
+  -> R7 versions, extended viewer, and pt-BR -> R8 platforms and removable media.
+  One OpenSpec change per milestone. A milestone is done only when its listed acceptance
+  scenarios pass, the application runs, the owner smoke-tests it in a real browser on the
+  regression corpus (§15), and operator docs are updated. Do not build later-milestone
+  features early, and keep §13 (out of scope) out.
+
+  Stack (§12): Go, pinned via go.mod `toolchain go1.27.1`. Standard library first. SQLite via
+  CGO-free modernc.org/sqlite: WAL, foreign keys, versioned migrations, serialized writer plus a
+  small read pool, database on local storage outside source roots. Durable SQLite jobs; no
+  external queue. Front end: React + TypeScript + Vite single-page app; built assets are embedded
+  in the binary; Node is a build-time dependency only; nothing loads from a CDN at run time.
+  Every user-facing string goes through translation keys (English first, then pt-BR). JSON API
+  under /api with server-side sort, filter, and cursor paging; server-sent events for progress.
+  Portable core from R1: everything that differs by OS or filesystem sits behind the platform
+  layer (§12), driven by detected filesystem capabilities (§6.1); never assume Linux in the core.
+  Every change builds for linux, darwin, and windows on amd64/arm64; Linux runs the acceptance
+  suite first, macOS and Windows from R8.
+
+  Non-negotiable invariants (§5) that every design and task must preserve:
+  - I1 Observation never mutates sources: scanning, hashing, archive listing, classification,
+    and previews are read-only.
+  - I2 Only one shared executor renames, moves, or deletes, and only for an approved cleanup plan
+    or an organizing action the owner requested. Cleanup and organizing never mix.
+  - I3 No overwrite, through each platform's no-replace primitive (renameat2 RENAME_NOREPLACE,
+    renamex_np RENAME_EXCL, MoveFileEx without replace); a filesystem without one is read-only;
+    journal before each step; ambiguous outcomes stop for manual recovery.
+  - I4 Owner decisions, overrides, and keeper choices survive rescans and late results.
+  - I5 Classification is not authorization. Keep is the protection: plans never remove a kept
+    entry (even under a discarded ancestor), and bulk actions skip anything effectively kept.
+  - I6 Lossless identity: names exactly as the platform gives them (bytes, or UTF-16 on Windows),
+    no case folding or Unicode normalization; the browser addresses entries by ID, never by path.
+  - I7 Scope-honest claims: duplicate and uniqueness claims name the hashed share; unreadable is
+    never empty. Never fabricate sizes, probabilities, or completeness.
+  - I8 Provider independence: domain, UI, and storage never depend on Jev or vendor SDK types.
+  - I9 Late results cannot win: async results apply only if the observed entry is unchanged.
+
+  Testing (§15): the synthetic messy-disk corpus with ground truth, an instrumented filesystem
+  abstraction, fake clocks, and saved/fake provider responses. CI never reads private files or
+  calls paid models. Run `go test -race`; front-end unit tests run in CI; UI acceptance is checked
+  in a real browser against the corpus.
+
+  OpenSpec artifacts are thin contracts over `precious-spec-v0.3.md`. That spec, plus the tests,
+  remain the authority. If an artifact and the spec disagree, stop and surface the conflict, or
+  record an ADR; never resolve it silently.
+
+rules:
+  proposal:
+    - Name the milestone and the exact acceptance scenario IDs (R1.1-R8.7) the change must make pass.
+    - List deferred items explicitly with the milestone that owns them.
+    - At most about one page. Cite § sections and scenario IDs instead of paraphrasing the source spec.
+  specs:
+    - Name capabilities by product area so later milestones extend the same capability
+      instead of creating parallel ones.
+    - Each acceptance scenario the change closes appears as at least one WHEN/THEN scenario
+      whose title starts with its ID, for example "R1.8 non-UTF-8 names stay lossless".
+    - Thin behavior contracts. One observable behavior per requirement, and scenarios cite
+      scenario IDs. Never restate the source spec's prose.
+  design:
+    - Cite the spec section each decision implements. Record every deviation from the spec,
+      or choice the spec leaves open, as a numbered decision with rejected alternatives.
+    - Only numbered decisions, deviations, and choices the spec leaves open, each with rejected
+      alternatives. No restating specs or the proposal.
+    - Besides the decisions, include one Interfaces section that pins every cross-slice
+      contract. List the Go signatures other slices call, the import direction between new
+      packages, and each new endpoint's request body, response body, and error codes,
+      including how a single-item request differs from a bulk one. Also list the JSON shape
+      of any database column that another slice reads.
+    - For every asynchronous or job path, state what is re-checked inside the writing
+      transaction, and what happens when another command commits just before or just after
+      that transaction.
+  tasks:
+    - Each closed acceptance scenario gets its own explicit test task that names the scenario ID.
+    - Each task group lands the operator docs its own work changes; the final group is
+      integration only and includes a smoke check of the built binary.
+    - Each task is a unit one worker slice can own. Name the owned paths and how it is verified.
+    - Signature changes in shared packages belong to the foundation task group. Slices only
+      add to shared packages; they never change an existing signature.
+    - A task's verification may depend only on its own slice and on slices merged before it.
+      If a check needs a later slice, split the task and give that check to the later slice.
+    - No package's `go test -race` run may take longer than about 60 seconds. Shrink the
+      fixtures, or put slow property seeds behind a build tag that only the final verification
+      runs.
+
+operations:
+  apply:
+    guidance:
+      - Never weaken an invariant to make a test pass; stop and surface the conflict instead.
+      - Tests and the source spec decide correctness. Artifacts organize the work and are not
+        proof that a task is done.
+      - Tick a task only after its branch is merged and the full race test suite passes on master.
+  archive:
+    guidance:
+      - Before archiving, append every decision confirmed during apply to design.md as a
+        numbered decision. Record any deviation from the source spec as an ADR under docs/adr/.

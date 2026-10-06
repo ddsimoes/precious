@@ -1,0 +1,103 @@
+# precious example configuration.
+#
+# precious indexes the sources the owner adds in the interface; it never
+# writes to them. Sources are not configured here: this file only says where
+# they may be added from ([sources] allowed_roots).
+#
+# Check a configuration, and print the effective settings, with:
+#   precious check-config --config /etc/precious/precious.toml
+#
+# Unknown keys are errors, including the sections of earlier releases
+# ([[sources]], [discovery], [inbox], [copies], [classifier], ...). A line of
+# the form "# key = value" shows a setting at its default; uncomment it only
+# to change the value. See the "Configuration reference" section of
+# docs/operator.md for every key.
+
+# Private state: the SQLite database and its WAL files. Required. Use an
+# absolute path on local storage (not NFS/SMB). On Linux and macOS precious
+# creates it with mode 0700 when missing and refuses to start when an
+# existing directory is accessible to group or other users.
+state_dir = "/var/lib/precious"
+
+[server]
+# TCP listen address (host:port). The default is loopback only.
+listen = "127.0.0.1:8080"
+
+# The exact origin browsers use to reach precious. Required. It sets the
+# expected Origin header for state-changing requests and cookie security;
+# request headers never change it.
+#
+# This example serves plain HTTP on loopback, which needs the
+# allow_insecure_http opt-in; without it only https:// origins are accepted.
+external_origin = "http://127.0.0.1:8080"
+allow_insecure_http = true
+
+# To serve plain HTTP on a local network instead, listen on every interface
+# and name the address browsers use:
+#   listen = "0.0.0.0:8080"
+#   allow_non_loopback_listen = true
+#   external_origin = "http://192.168.1.10:8080"
+#
+# For remote access, keep precious on loopback behind an HTTPS reverse proxy
+# on the same host and use:
+#   external_origin = "https://precious.example.net"
+#   allow_insecure_http = false
+#   trusted_proxies = ["127.0.0.1", "::1"]
+
+# Listening on a non-loopback address (for example 0.0.0.0 inside a container
+# or on a local network) requires this explicit opt-in.
+# allow_non_loopback_listen = false
+
+# CIDR prefixes, or single addresses, of reverse proxies whose Forwarded,
+# X-Forwarded-For, and X-Forwarded-Proto headers are honored when deriving the
+# client address and scheme. Those headers are ignored from every other peer.
+# trusted_proxies = []
+
+# Maximum request body size in bytes (1 MiB).
+# max_request_bytes = 1048576
+
+[auth]
+# A session expires after this much inactivity.
+# session_idle = "1h"
+
+# A session expires this long after login regardless of activity. Must be at
+# least session_idle.
+# session_absolute = "12h"
+
+# Upper limit of the exponential backoff applied after failed logins.
+# login_max_backoff = "15m"
+
+[jobs]
+# Concurrent filesystem workers per device.
+# workers_per_device = 1
+
+# Attempts before a job that keeps losing its worker fails.
+# max_attempts = 3
+
+# Length of the lease a worker holds on a running job, and how often it is
+# renewed (shorter than the lease).
+# lease = "30s"
+# lease_renew = "10s"
+
+# A single filesystem call running longer than this marks its source
+# unresponsive and lets a cancel request show at once.
+# call_watchdog = "30s"
+
+# Job events kept for reconnecting browsers: at most this many, none older
+# than this.
+# event_retention_rows = 10000
+# event_retention_age = "24h"
+
+[sources]
+# Folders the picker offers, and below which sources may be added: absolute
+# paths of existing directories. Empty means the platform defaults: on Linux
+# the service account's home, /media, /mnt, /run/media, and /srv, those that
+# exist.
+# allowed_roots = []
+
+[scan]
+# Most row changes one scan commits per write transaction (1 to 10000).
+# batch_size = 1000
+
+# Most directory entries one directory read returns (1 to 4096).
+# list_batch = 256

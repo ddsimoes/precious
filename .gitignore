@@ -1,0 +1,17 @@
+/precious
+/bin/
+/dist/
+*.db
+*.db-wal
+*.db-shm
+/state/
+*.test
+*.out
+.env*.local
+/web/ui/node_modules/
+# Browser suite outputs (make e2e).
+/web/ui/test-results/
+/web/ui/playwright-report/
+# web/dist is the built UI (make ui); only its placeholder is committed.
+/web/dist/*
+!/web/dist/.gitkeep

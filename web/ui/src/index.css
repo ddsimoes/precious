@@ -1,0 +1,109 @@
+@import 'tailwindcss';
+
+/* Design tokens for the vendored shadcn/ui components. Fonts are Tailwind's
+   default system stacks: nothing is loaded from another origin. */
+:root {
+  --background: oklch(0.985 0.002 247);
+  --foreground: oklch(0.21 0.015 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.015 255);
+  --primary: oklch(0.45 0.13 255);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.95 0.005 255);
+  --secondary-foreground: oklch(0.21 0.015 255);
+  --muted: oklch(0.95 0.005 255);
+  --muted-foreground: oklch(0.5 0.02 255);
+  --accent: oklch(0.94 0.01 255);
+  --accent-foreground: oklch(0.21 0.015 255);
+  --destructive: oklch(0.55 0.2 27);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.9 0.008 255);
+  --input: oklch(0.88 0.008 255);
+  --ring: oklch(0.55 0.13 255);
+  --radius: 0.5rem;
+}
+
+/* 3xl (1600 px) is the width from which the detail panel opens beside the
+   Map or Search instead of over them (design D23); DetailPanel.tsx matches
+   it as sideBySideQuery. */
+@theme {
+  --breakpoint-3xl: 100rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* Markdown rendered by the viewer (src/viewer/markdown.ts). */
+@layer components {
+  .markdown {
+    @apply grid gap-3 text-sm leading-relaxed;
+  }
+  .markdown h1 {
+    @apply text-2xl font-semibold;
+  }
+  .markdown h2 {
+    @apply text-xl font-semibold;
+  }
+  .markdown h3,
+  .markdown h4 {
+    @apply text-base font-semibold;
+  }
+  .markdown ul {
+    @apply list-disc pl-6;
+  }
+  .markdown ol {
+    @apply list-decimal pl-6;
+  }
+  .markdown a[href] {
+    @apply text-primary underline;
+  }
+  .markdown code {
+    @apply rounded bg-muted px-1 font-mono text-xs;
+  }
+  .markdown pre {
+    @apply overflow-auto rounded-md bg-muted p-3;
+  }
+  .markdown pre code {
+    @apply bg-transparent p-0;
+  }
+  .markdown blockquote {
+    @apply border-l-4 pl-3 text-muted-foreground;
+  }
+  .markdown table {
+    @apply border-collapse;
+  }
+  .markdown th,
+  .markdown td {
+    @apply border px-2 py-1;
+  }
+}

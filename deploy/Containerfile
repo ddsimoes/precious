@@ -1,0 +1,43 @@
+# precious container image (spec §12.3).
+#
+# Build from the repository root:
+#   docker build -f deploy/Containerfile --build-arg VERSION=v0.1.0 -t precious:v0.1.0 .
+#   podman build -f deploy/Containerfile --ignorefile deploy/Containerfile.dockerignore \
+#     --build-arg VERSION=v0.1.0 -t precious:v0.1.0 .
+#
+# The image contains only the static binary and an empty state directory. The
+# configuration file, the state volume, and the sources are supplied at run
+# time (see deploy/compose.yaml); nothing secret is baked in.
+
+# Builder: pinned to the go.mod toolchain. It runs on the build host's platform
+# and cross-compiles for the target, which CGO_ENABLED=0 makes trivial.
+FROM --platform=$BUILDPLATFORM golang:1.27.1 AS build
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+# GOTOOLCHAIN=local: build with exactly this image's Go and never download one.
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs=false \
+        -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/precious ./cmd/precious
+# Owner-only state directory. On first use Docker copies this directory's
+# owner and mode into an empty named volume mounted over it.
+RUN install -d -m 0700 /out/state
+
+# Runtime: distroless static, no shell or package manager, runs as nonroot
+# (UID/GID 65532).
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="precious" \
+      org.opencontainers.image.description="Precious: index and explore old disks, read-only" \
+      org.opencontainers.image.version="${VERSION}"
+COPY --from=build /out/precious /precious
+COPY --from=build --chown=65532:65532 --chmod=0700 /out/state /var/lib/precious
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/precious"]
+CMD ["serve", "--config", "/etc/precious/precious.toml"]
