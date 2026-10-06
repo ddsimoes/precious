@@ -2,7 +2,7 @@ import type { Copy, Coverage, Relation } from '@/api/content'
 import type { EntryDetail, EntryRow } from '@/api/entries'
 import type { Home } from '@/api/home'
 import type { JobEvent } from '@/api/jobs'
-import type { Card } from '@/api/opportunities'
+import type { Card, ReviewRow } from '@/api/opportunities'
 import type { Capabilities, PickerItem, Source } from '@/api/sources'
 
 // API responses in the shapes of the design's Interfaces section.
@@ -156,6 +156,27 @@ export function relationTo(other: EntryRow, overrides: Partial<Relation> = {}): 
     redundant_bytes: other.total_bytes,
     only_here: { files: 0, bytes: 0 },
     only_there: { files: 0, bytes: 0 },
+    ...overrides,
+  }
+}
+
+// reviewRow is a RowJSON of an entry row; its summary repeats the entry's
+// category, files, and bytes, with the years 2003 to 2004.
+export function reviewRow(id: string, entry: EntryRow | null, overrides: Partial<ReviewRow> = {}): ReviewRow {
+  return {
+    id,
+    bytes: entry?.total_bytes ?? 0,
+    files: entry?.total_files ?? 0,
+    entry,
+    relation: null,
+    copies: null,
+    summary: {
+      category: entry?.category ?? null,
+      years: [2003, 2004],
+      files: entry?.total_files ?? 0,
+      bytes: entry?.total_bytes ?? 0,
+      signals: [],
+    },
     ...overrides,
   }
 }

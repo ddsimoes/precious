@@ -1,7 +1,9 @@
 import { QueryClient } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { gemsQueryKey } from '@/api/gems'
 import { homeQueryKey, type Home } from '@/api/home'
+import { opportunitiesQueryKey, reviewQueryKey } from '@/api/opportunities'
 import { sourcesQueryKey, type SourcesResponse } from '@/api/sources'
 import { JobEventStream } from '@/app/events'
 import { sessionQueryKey } from '@/app/session'
@@ -175,5 +177,45 @@ describe('job event stream', () => {
     stream.stop()
     vi.advanceTimersByTime(60_000)
     expect(MockEventSource.instances).toHaveLength(2)
+  })
+
+  it('follows hashing progress on Home', () => {
+    const queryClient = seededClient()
+    stream = new JobEventStream(queryClient)
+    stream.start()
+    const source = MockEventSource.latest()
+    const progress = { phase: 2, candidate_bytes: 1000, checked_bytes: 250 }
+
+    source.emit('job', scanEvent({ job_id: '50', kind: 'hash', progress }), '7')
+    expect(queryClient.getQueryData<Home>(homeQueryKey(null))?.hashing).toEqual([
+      { source_id: 'fotos', job_id: '50', kind: 'hash', state: 'running', progress },
+    ])
+    expect(queryClient.getQueryData<Home>(homeQueryKey(null))?.scans).toEqual([])
+    expect(queryClient.getQueryData<Home>(homeQueryKey('old-disk'))?.hashing).toEqual([])
+    // A hashing job is no scan of the source.
+    expect(queryClient.getQueryData<SourcesResponse>(sourcesQueryKey)?.sources[0]?.active_job).toBeNull()
+
+    source.emit('job', scanEvent({ job_id: '50', kind: 'hash', progress: { ...progress, checked_bytes: 900 } }), '8')
+    expect(queryClient.getQueryData<Home>(homeQueryKey(null))?.hashing[0]?.progress.checked_bytes).toBe(900)
+  })
+
+  it.each(['hash', 'hash_now', 'relate'])('refreshes the duplicates screens when a %s job ends', (kind) => {
+    const queryClient = seededClient()
+    queryClient.setQueryData(opportunitiesQueryKey(null), { cards: [] })
+    queryClient.setQueryData(reviewQueryKey('system_junk', null, false), { pages: [], pageParams: [] })
+    queryClient.setQueryData(gemsQueryKey('unique', null), { pages: [], pageParams: [] })
+    stream = new JobEventStream(queryClient)
+    stream.start()
+    const source = MockEventSource.latest()
+    const event = scanEvent({ job_id: '60', kind, source_id: kind === 'relate' ? undefined : 'fotos' })
+
+    source.emit('job', event, '7')
+    expect(invalidated(queryClient, opportunitiesQueryKey(null))).toBe(false)
+
+    source.emit('job', { ...event, state: 'succeeded' }, '8')
+    expect(invalidated(queryClient, opportunitiesQueryKey(null))).toBe(true)
+    expect(invalidated(queryClient, reviewQueryKey('system_junk', null, false))).toBe(true)
+    expect(invalidated(queryClient, gemsQueryKey('unique', null))).toBe(true)
+    expect(invalidated(queryClient, homeQueryKey(null))).toBe(true)
   })
 })
