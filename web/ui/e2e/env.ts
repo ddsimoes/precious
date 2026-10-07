@@ -74,22 +74,22 @@ export interface TruthRelation {
   b_only: TruthPath[]
 }
 
-// TruthGem is an entry of a Gems section.
-export interface TruthGem extends TruthPath {
-  group?: TruthPath
-  relation?: number
-  copies: number
+// TruthRescue is a row of the rescue card: the owner's own file or folder
+// inside its outermost program or disposable group, by display path.
+export interface TruthRescue {
+  path: string
+  group: string
 }
 
 // GroundTruth is the corpus's ground_truth.json (internal/corpus): its
 // entries, duplicate groups, archive listings, declared relations (a lower
-// bound: relate may find more), and Gems sections, each in its order.
+// bound: relate may find more), and the rescue card's rows, each in its order.
 export interface GroundTruth {
   entries: TruthEntry[]
   duplicates: TruthDuplicate[]
   members: TruthArchive[]
   relations: TruthRelation[]
-  gems: { unique: TruthGem[]; rescue: TruthGem[]; only_in_copy: TruthGem[] }
+  rescue: TruthRescue[]
 }
 
 // groundTruth reads the ground truth of the corpus global-setup.ts wrote.

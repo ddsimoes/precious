@@ -68,7 +68,7 @@ Every folder SHALL carry its duplicated bytes, the bytes of the files in its sub
 - **THEN** the folder's percent duplicated is shown as final rather than "so far", and Home still counts that file as could not be read
 
 ### Requirement: Uniqueness claims state the checked share
-Every "no other copy" or "duplicate" claim SHALL be shown together with the share of the content that could have a copy that was checked, and a file not yet checked SHALL be shown as not checked, never as unique (I7, §11.7).
+Every "no other copy" or "duplicate" claim SHALL be shown together with the share of the content that could have a copy that was checked, and a file not yet checked SHALL be shown as not checked, never as unique (I7).
 
 #### Scenario: R2.7 No other copy names the checked share
 - **WHEN** hashing has checked 80% of the bytes that could have a copy, and the owner opens a photo whose size no other file shares
@@ -76,7 +76,7 @@ Every "no other copy" or "duplicate" claim SHALL be shown together with the shar
 
 #### Scenario: Not checked is not unique
 - **WHEN** a photo's size is shared and the photo has not been hashed yet
-- **THEN** it is shown as not checked yet, and Gems does not list it
+- **THEN** it is shown as not checked yet, and a search for files with no other copy does not list it
 
 ### Requirement: Two folders can be compared
 Compare SHALL take two folders or archives, where neither contains the other, and list their files in five groups: only on the left, only on the right, identical, same relative path with different content, and not checked yet. A file whose size does not occur on the other side SHALL count as only on its side without being read (§11.6). Compare opened without a chosen group SHALL open the first group that holds files, in this order: only on the left, only on the right, different content, not checked yet, identical.

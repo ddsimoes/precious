@@ -154,8 +154,8 @@ func TestSelectListSelectsTheOpenRows(t *testing.T) {
 	}
 }
 
-// select-list on every source and on a Gems section.
-func TestSelectListAllSourcesAndGems(t *testing.T) {
+// select-list on every source and on the rescue card.
+func TestSelectListAllSourcesAndRescue(t *testing.T) {
 	w := newCorpusWorld(t)
 	a := newAPI(t, w.world)
 	ids, err := Resolve(context.Background(), w.st.Reader(), ListCaches, "", 1000)
@@ -169,9 +169,9 @@ func TestSelectListAllSourcesAndGems(t *testing.T) {
 	if got := w.selected(body["selection_id"].(string)); !slices.Equal(got, ids) || len(ids) == 0 {
 		t.Fatalf("selection %v, want %v", got, ids)
 	}
-	status, body = a.post(t, CommandSelectList, `{"list":"gems_unique"}`)
-	if status != http.StatusCreated || body["count"] != float64(len(w.gt.Gems.Unique)) {
-		t.Fatalf("select-list gems_unique: %d %v, want %d entries", status, body, len(w.gt.Gems.Unique))
+	status, body = a.post(t, CommandSelectList, `{"list":"rescue"}`)
+	if status != http.StatusCreated || body["count"] != float64(len(w.gt.Rescue)) {
+		t.Fatalf("select-list rescue: %d %v, want %d entries", status, body, len(w.gt.Rescue))
 	}
 }
 
@@ -186,6 +186,7 @@ func TestSelectListRefusals(t *testing.T) {
 	}{
 		{`{"list":"duplicates"}`, http.StatusBadRequest, domain.CodeInvalidRequest},
 		{`{"list":"junk"}`, http.StatusBadRequest, domain.CodeInvalidRequest},
+		{`{"list":"gems_unique"}`, http.StatusBadRequest, domain.CodeInvalidRequest},
 		{`{}`, http.StatusBadRequest, domain.CodeInvalidRequest},
 		{`{"list":"caches","extra":1}`, http.StatusBadRequest, domain.CodeInvalidRequest},
 		{`{"list":"caches","source_id":"nowhere"}`, http.StatusNotFound, domain.CodeUnknownSource},

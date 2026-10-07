@@ -173,7 +173,7 @@ Classification and triage SHALL be suggestions only. A scan or rescan SHALL neve
 - **THEN** the folder's decision is still `keep`
 
 ### Requirement: Owner overrides take precedence over rules
-An entry's category and group flag SHALL come from the owner when the owner has set them, otherwise from the rules (§6.6: owner, then rule, then model). An owner category SHALL be one of the sixteen fixed categories. The family, triage suggestion, and veto SHALL follow from the effective category, exactly as for a rule category. A folder whose triage would be `discard` and whose subtree holds user-material indicators SHALL get `review` and `veto` true whoever set the category. Traits SHALL stay what the rules observe. Composition, notable entries, review lists, and Gems SHALL use the effective category and group flag.
+An entry's category and group flag SHALL come from the owner when the owner has set them, otherwise from the rules (§6.6: owner, then rule, then model). An owner category SHALL be one of the sixteen fixed categories. The family, triage suggestion, and veto SHALL follow from the effective category, exactly as for a rule category. A folder whose triage would be `discard` and whose subtree holds user-material indicators SHALL get `review` and `veto` true whoever set the category. Traits SHALL stay what the rules observe. Composition, notable entries, and review lists SHALL use the effective category and group flag.
 
 #### Scenario: The owner corrects a folder's category
 - **WHEN** the rules classify `Projetos/site_antigo` as `source_project` and the owner sets its category to `documents`

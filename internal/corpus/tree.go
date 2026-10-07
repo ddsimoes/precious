@@ -41,7 +41,7 @@ func buildCorpus() *Tree {
 	d.phone()
 	d.media()
 	d.private()
-	return d.finish(expectations, relationDecls, gemDeclarations)
+	return d.finish(expectations, relationDecls, rescueDeclarations)
 }
 
 // sized is a file name and its size.

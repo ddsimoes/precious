@@ -12,9 +12,10 @@
 //
 // The ground truth also holds what a complete hashing run must find (R2
 // design D19): each file's SHA-256, the members of each archive, the
-// duplicate groups, the folder and archive relations the corpus declares,
-// and the Gems sections. See truth.go. LargeFiles adds synthfs-only files
-// of at least 16 MiB for the hashing tests.
+// duplicate groups, and the folder and archive relations the corpus
+// declares; and the rows of the rescue card (r2c design D6). See truth.go.
+// LargeFiles adds synthfs-only files of at least 16 MiB for the hashing
+// tests.
 package corpus
 
 import (
@@ -39,8 +40,8 @@ type Tree struct {
 	expects   []expect
 	// relations are the declared relations, resolved by finish.
 	relations []relation
-	// gems are the Gems declarations (truth.go).
-	gems gemDecls
+	// rescue are the rescue card's declared rows (rescue.go).
+	rescue []rescueDecl
 }
 
 // item is one entry of a tree, in creation order: every folder comes before
@@ -127,7 +128,8 @@ type GroundTruth struct {
 	// Relations are the declared relations (a lower bound: relate may find
 	// more).
 	Relations []Relation `json:"relations"`
-	Gems      Gems       `json:"gems"`
+	// Rescue are the rows of the rescue card, in its order.
+	Rescue []Rescue `json:"rescue"`
 }
 
 // Entry is one ground-truth entry. Size is set for files only. Category,
@@ -194,7 +196,7 @@ items:
 		entries = append(entries, e)
 	}
 	return GroundTruth{Entries: entries, Duplicates: t.duplicates(), Members: t.members(),
-		Relations: t.relationTruth(), Gems: t.gemTruth()}
+		Relations: t.relationTruth(), Rescue: t.rescueTruth()}
 }
 
 // WriteFile writes the ground truth as indented JSON.
@@ -312,9 +314,9 @@ func (d *def) data(p string) []byte {
 
 // finish gives every folder without its own modification time the newest
 // modification time among its contents, checks the assertions against the
-// entries, resolves the declared relations, checks the Gems declarations,
+// entries, resolves the declared relations, checks the rescue declarations,
 // and returns the tree.
-func (d *def) finish(expects []expect, rels []relationDecl, gems gemDecls) *Tree {
+func (d *def) finish(expects []expect, rels []relationDecl, rescue []rescueDecl) *Tree {
 	t := &Tree{items: d.items, expects: expects}
 	explicit := make([]bool, len(d.items))
 	for i, it := range d.items {
@@ -347,6 +349,6 @@ func (d *def) finish(expects []expect, rels []relationDecl, gems gemDecls) *Tree
 		}
 	}
 	t.relations = t.resolve(rels)
-	t.gems = t.checkGems(gems)
+	t.rescue = t.checkRescue(rescue)
 	return t
 }

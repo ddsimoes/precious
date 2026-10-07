@@ -136,6 +136,22 @@ describe('Map keys', () => {
     await waitFor(() => expect(panel).toHaveFocus())
   })
 
+  it('leaves the focus on the row the keys left when the address arrives before the next row takes it', async () => {
+    vi.stubGlobal('matchMedia', (media: string) => ({ media, matches: false }))
+    stubApi(routes())
+    const { router } = renderApp('/map/1')
+    await screen.findByRole('table', { name: 'Contents of Fotos' })
+
+    // Arrows pressed right after Back: the address of the row they chose
+    // renders while the row they left still holds the focus.
+    rowOf('Ferias').focus()
+    await act(() => router.navigate('/map/1?entry=4'))
+    const panel = await screen.findByRole('complementary', { name: 'NATAL.JPG' })
+    expect(panel).not.toHaveFocus()
+    await userEvent.keyboard('{ArrowDown}')
+    await waitFor(() => expect(router.state.location.search).toBe('?entry=3'))
+  })
+
   it('opens a file in the viewer with Enter, and gives the focus back to its row', async () => {
     stubApi(routes())
     renderApp('/map/1?entry=4')

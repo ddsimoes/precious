@@ -34,7 +34,7 @@ Precious is built around a handful of questions:
 - **Find anything.** Search by name, with or without accents, by extension, file type, size, year, category, suggestion, decision, tag, folder, or whether a file has a copy, anywhere in the index, including inside installed programs and copied drives.
 - **Find every copy.** Precious reads file content in the background and finds copies by their SHA-256, never by name: duplicate files, folders that hold the same files under other names, and zip or tar archives next to their unpacked folders. It only reads files that could have a copy, never reads an unchanged file twice, and always says how much of the content it has checked, so "no other copy" is never a guess.
 - **Compare two folders.** Side by side: what is only on the left, only on the right, identical, or the same name with different content, such as the one edited photo that exists only in the copy. A list of similar folders shows which ones share most of their content.
-- **What to look at first, and what is valuable.** Opportunity cards (duplicate folders and files, archives already unpacked, system junk, old installers, program copies, caches, leftovers) open review lists you can work through with the keyboard. Gems lists your personal photos and documents with no other copy, and your own files buried inside programs.
+- **What to look at first, and what to rescue.** Opportunity cards (duplicate folders and files, archives already unpacked, system junk, old installers, program copies, caches, leftovers) open review lists you can work through with the keyboard. One card comes first while it lists anything: your own documents, photos, and saved games found inside programs and disposable folders, to rescue before you clean those folders.
 - **Inside archives.** Browse zip and tar archives in the Map and open their photos and documents in the viewer, read in memory without unpacking anything to disk.
 - **Look without risk.** Preview photos, video, audio, PDF, text, source code, and Markdown right in the detail panel. File types come from Precious's own table, never from the content. HTML and SVG from your disk never run, and Markdown is sanitized with no remote content.
 - **Decide, safely.** Mark folders and files keep, discard, or later; a decision on a folder applies to everything inside it. Bulk decisions never override something you kept, and they report exactly what they skipped. Free-form tags are inherited the same way. Duplicates never decide anything for you: each copy is yours to decide.
@@ -64,13 +64,14 @@ The screenshots show the built-in regression corpus, a generated copy of a typic
 
 ## Status and roadmap
 
-Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so is R2b, the short step after R2, accepted on 2026-10-07. There are no tagged releases yet, and things may change incompatibly until 1.0.
+Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so are R2b and R2c, the short steps after R2, accepted on 2026-10-07. There are no tagged releases yet, and things may change incompatibly until 1.0.
 
 | Milestone | Scope | Status |
 |---|---|---|
 | **R1** Full index and explorer | Scanning and rescans, folder sizes and composition, classification rules, Home, Map, Search, detail panel, viewer, decisions and tags, sources with volume identity | ✅ Done |
-| **R2** Duplicates and gems | Content hashing, duplicate files and folders, a zip against its unpacked folder and browsing inside archives, folder comparison with the files unique to each side, opportunities, files with no other copy | ✅ Done |
+| **R2** Duplicates and opportunities | Content hashing, duplicate files and folders, a zip against its unpacked folder and browsing inside archives, folder comparison with the files unique to each side, opportunities, files with no other copy | ✅ Done |
 | **R2b** Your corrections and polish | Your own categories and group marks, scheduled rescans, search without accents, Map keyboard, both paths and extra copies in Compare, similar folders | ✅ Done |
+| **R2c** Gems removed | Gems could not tell what is valuable and is gone ([ADR 0009](docs/adr/0009-remove-gems.md)); its list of your files inside programs is now an opportunity card | ✅ Done |
 | **R3** Organizing | Moves and renames with undo, through one journaled, no-overwrite executor | Planned |
 | **R4** Cleanup | Cleanup plans, a reversible quarantine, a pre-delete check that every file has a verified copy, and purge | Planned |
 | **R5** Media dates | Photo and video dates from metadata, corrections, and organizing by date | Planned |

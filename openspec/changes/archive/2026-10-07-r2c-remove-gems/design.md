@@ -1,0 +1,142 @@
+# Design
+
+## Context
+
+See proposal.md for why. Gems is three `review_rows` lists, written by `review.Refresh` (the relate job's after hook) and read through `GET /api/gems`:
+- `gems_unique` and `gems_only_in_copy` are removed with Gems;
+- `gems_rescue` becomes the eighth card.
+
+`review_rows.list` has a `CHECK` that names every list (`0002_content.sql`). `review_row_sources` references `review_rows(id)` with `ON DELETE CASCADE`. Connections run with `foreign_keys` on.
+
+## Decisions
+
+### D1. The list is renamed `rescue`, through a table rebuild (§11.4)
+
+`0005_rescue.sql` gives `review_rows` a `CHECK` without the Gems lists and with `rescue`. A `CHECK` cannot be altered in place, so the migration:
+1. creates `review_rows_v5` and `review_row_sources_v5`, the latter referencing `review_rows_v5`;
+2. copies every row except `gems_unique` and `gems_only_in_copy`, mapping `gems_rescue` to `rescue`, and copies the source rows of the rows kept;
+3. drops `review_row_sources`, then `review_rows`. With the dependent table gone first, no cascade fires;
+4. renames `review_rows_v5` to `review_rows` (SQLite rewrites the reference in `review_row_sources_v5`), then `review_row_sources_v5` to `review_row_sources`;
+5. recreates the seven indexes.
+
+The copied rows are the current generation, so the cards read as before at once, minus Gems. `review_state.dirty` is set, so the relate job that startup enqueues rewrites them under r2c's rules (B2). This is schema version 5. The r2b binary refuses it (Q8), and the upgrade notes say so.
+
+Rejected alternatives:
+- Keeping `gems_rescue` as the stored name, with an API alias `rescue`, keeps a dead name and two spellings of one list.
+- Leaving the `CHECK` as it is keeps values that nothing may write.
+- Emptying the tables and marking `review_state.dirty` is simpler SQL. But the cards would read empty until the relate job finished (about 64 s on the reference server).
+
+### D2. The open rule for rescue rows (spec "Decided rows leave the list")
+
+A rescue row is open while `e.eff_decision <> 'keep' AND coalesce(e.decision, 'undecided') = 'undecided'`:
+
+| File's own decision | Effective decision | Row |
+|---|---|---|
+| none | undecided | open |
+| none | discard or later, inherited | open |
+| none | keep, inherited | closed |
+| own keep, discard, or later | (its own) | closed |
+| own `undecided` | undecided | open |
+
+`openSQL` gets one more `WHEN` arm, so `Cards` and `Rows` share it, and R2.5 holds for the card.
+
+Rejected alternatives:
+- The common rule (open while undecided) closes the row when the owner discards the program folder around the file, which is exactly the danger this card names.
+- "Always listed", as Gems did, cannot let the card reach "Nothing left to review".
+
+### D3. Card order and headline (spec "Opportunity cards")
+
+`review.Cards` sorts the rescue card first while it has open rows. Otherwise all cards rank by open bytes, with `CardLists` order as the tie break; `CardLists` lists `rescue` first. The UI leads the rescue card with its row count, the way it leads a card whose open rows hold no bytes. The card's basis is `rules`.
+
+Rejected: ranking it by bytes. A few KiB of files would put it last, buried as Gems' rescue section was.
+
+### D4. Row order and the group of a row
+
+A rescue row's `sort_key` is the file's bytes, and the list pages largest first, as every card does. Each row carries its outermost group, as `review_rows.group_id` already does. The review list shows "inside <group path>", with a link to that folder on the Map.
+
+Rejected: ordering by group, as Gems did (groups largest first, then path, ascending). That would keep an ascending paging case for this list alone.
+
+### D5. What is removed, and what stays
+
+Removed:
+- `GET /api/gems`. With no route, it is a 404 like any unknown API path, with no redirect or alias;
+- `review.GemLists`, `IsGems`, `ListGemsUnique`, `ListGemsOnlyInCopy`, `uniqueGems`, `onlyInCopyGems`, `gemKinds`, and the ascending Gems paging;
+- the UI's `gems/` module, `api/gems.ts`, the `/gems` route and menu entry, and the `gems` query root and i18n keys. An old `/gems` link lands on the app's not-found page;
+- in the ground truth, the Gems sections and the `personal` declarations that only "unique" used.
+
+Stays:
+- the panel's "No other copy" with its checked share (R2.7);
+- Search's `dup=unique`;
+- Compare and Similar folders;
+- `rescueGems`, renamed `rescueRows`.
+
+### D6. Ground truth shape
+
+`ground_truth.json` replaces `gems: {unique, rescue, only_in_copy}` with a top-level `rescue: [{path, group}]`, in the card's order (file bytes descending, then path). The e2e `env.ts` follows.
+
+## Interfaces
+
+- `internal/review`:
+  - `ListRescue List = "rescue"`;
+  - `CardLists = []List{ListRescue, ListDuplicates, …, ListLeftovers}`;
+  - `List.Valid() == List.IsCard()`;
+  - `Cards(ctx, q, src) ([]Card, error)` returns eight cards, ordered per D3;
+  - `Row.Group` is set for rescue rows, as well as for unpacked-archive rows.
+- **`GET /api/opportunities`:** `cards[]` gains `{"list":"rescue", …}` with the same fields as every card (`bytes`, `rows`, `decided_rows`, `decided_bytes`, `basis:"rules"`).
+- **`GET /api/opportunities/rescue?source=&cursor=&limit=&decided=`:**
+  - pages as every card does;
+  - each item gains `group`, the group's entry row. `group` is `null` on the other lists' items;
+  - errors are unchanged: 404 `not_found` for an unknown list or source, 400 `invalid_request` for a bad cursor or limit.
+- **`GET /api/gems`:** 404.
+- **Bulk decisions:** "select all" on the rescue list uses the existing selection path for card lists (`selection_id` of the list's open rows). Rows are files; no member can be a rescue row.
+- **Ground truth:** `rescue: [{"path": string, "group": string}]`.
+
+## Concurrency
+
+- **Refresh:** it writes a new generation in its own transaction and flips `review_state.gen` after, as today. Only the list name of the rescue rows changes.
+- **Open rule:** it is evaluated at read time against live decisions. A decision committed just before a read shows in it; one committed just after shows in the next read, as for every card.
+- **Migration:** it runs at startup, before the job runner starts, so no refresh overlaps it.
+
+## Risks / Trade-offs
+
+- [Schema 5 is one-way] → The deploy takes a `precious backup` first, as for 0003. The upgrade notes say so.
+- [Table rebuild with foreign keys on] → The migration test upgrades a v4 database that holds duplicates rows with source rows, rescue rows, and Gems rows. It checks:
+  - the row counts and the renamed list;
+  - that `PRAGMA foreign_key_check` is empty;
+  - that the indexes exist.
+- [Owner bookmarks of `/gems`] → They land on not-found; there is one owner, who chose the removal.
+
+## Addendum: decisions made during implementation
+
+- **U1.** `CardList` (Home and Opportunities) keeps ranking the cards itself, as D3 does: the rescue card first while it has open rows, then by open bytes. The server's order and the UI's agree, and the UI test still feeds the cards unordered.
+- **U2.** The rescue card heads with "1 item" / "N items" through the zero-bytes path, since a row can be a saves folder. Like those cards, it shows no rows line and no open bytes. Its decided line keeps its bytes.
+- **U3.** "Inside <group path>" links to `/map/<group>?entry=<group>`, the folder's place on the Map with its details, as the panel's "Show in Map" does for a folder. The row's own path still opens the detail panel in place.
+- **U4.** The e2e R2.7 test read a file with no other copy from the Gems truth. It now picks a file of `Documentos` that no duplicate group of the ground truth holds.
+- **B1. Migrated rescue rows take their bytes as sort key.** `0005_rescue` sets `sort_key = bytes` on the `gems_rescue` rows it keeps, so they page per D4 before the next refresh rewrites them.
+- **B2. Only outermost indicators are rows.** `rescueRows` drops an indicator that lies inside another listed indicator, as every card keeps only its outermost matches ("A row SHALL be the outermost entry that matches its card"; "No byte SHALL be counted twice in one card"). On the corpus the folder `Jogos/Need for Speed Underground 2/save` is a row and `save/Joao/profile.sav` inside it is not; the ground truth lists 2 rows from its 3 declarations. A row can therefore be a folder. 0005 copies existing rows as they are and sets `review_state.dirty`, so the relate job that startup enqueues rewrites them; the 5.3 smoke found an R2b database's copied rows still holding `profile.sav` until that pass. Rejected: listing nested indicators, as `rescueGems` did, which counts the bytes inside a listed folder twice.
+- **B3. Ties in bytes page by path.** `rescueRows` writes its rows in reverse card order, so among rows of equal bytes the higher ID, which pages first, has the smaller path. The list then pages exactly in the ground truth's order (bytes descending, then path).
+- **B4. Ground-truth paths are display paths.** `rescue: [{path, group}]` holds the display form of each path (as `Entry.path`), with no base64; every rescue path in the corpus is valid UTF-8.
+- **B5. `group` only on rescue rows.** `Row.Group` is still set on `unpacked_archives` rows (the folder the archive was unpacked into, used for their relation), but the review row JSON serves `group` only for `rescue` rows and `null` elsewhere, per the Interfaces.
+- **V1. Verification (task 5.2)** on the integration branch:
+  - gofmt is clean; both vet runs pass; `go test -race ./...` passes;
+  - `make cross` builds all six targets;
+  - UI lint, Vitest (225 tests), and build pass; Playwright passes 36 tests; `scripts/e2e-docker.sh` passes; `openspec validate --strict` passes.
+
+  `make test-slow` passed everything but `TestReviewPagesStayFastAt2MillionEntries`, whose cards p95 read 1.05, 1.15, 1.36, and 1.09 s against the 1 s target. Other processes held three to five cores at the time, and the r2b binary's own test (`e4e0f1f`), run under the same load, read 1.44 s. So r2c, whose cards no longer read Gems' 780,000 rows, is faster than r2b, and the miss is the load. The test's pages stayed under 1 ms at p95. On 2026-10-07 the owner accepted 5.2 on this comparison rather than a run on a quiet machine: the 1 s cards target was not measured for r2c.
+- **V2. Deploy on the reference server (task 5.4)**, binary `r2c-smoke-cc64e49`.
+  - **Before:** the r2b database was copied with `precious backup` (51 s, `backups/r2b-before-r2c.db`).
+  - **Upgrade:** `0005` ran at startup, and the server answered within 3 s. The relate pass that startup enqueued finished 48 s later. It took the rescue rows from Gems' 6 to the card's 5, `save/Joao/profile.sav` going as an inner item (B2).
+  - **Owner data:** his decisions and his tag read as before. Every other card is unchanged.
+  - **Results:** the rescue card comes first, with 3 of his documents inside one of his folders that the rules treat as a group, and the corpus's 2. `GET /api/gems` is 404. `GET /api/opportunities` answers in 0.22–0.39 s.
+- **V3. 5.3 smoke:** an r2b database built by the r2b binary (98 Gems rows, 3 rescue) opened by r2c:
+  - schema 5, no Gems rows, `foreign_key_check` empty, eight cards with rescue first;
+  - the spreadsheet inside `Microsoft Office`, and `GET /api/gems` 404;
+  - after the startup refresh, 2 rescue rows;
+  - a backup whose `integrity_check` is `ok`.
+- **V4. Owner sign-off (task 5.4).** On 2026-10-07 the owner looked at Opportunities on the reference server and signed off ("ok"), with no findings.
+- **E1. The drawer leaves the focus on any table row (an r2b fix that CI found).** The pull request's CI failed twice in r2b's Map keys e2e test, once on a rerun as well. After Back, three quick arrows selected the second row, not the third. The page snapshot shows the cause:
+  - the first arrow's address rendered while the row the keys had left still held the focus;
+  - r2b E1 let only the selected entry's own row keep it, so the drawer took the focus;
+  - the next arrow came from inside the panel, where the keys are ignored.
+
+  The drawer now leaves the focus on any table row. A row the keys left is about to hand the focus to the row they chose. A link inside a row is not the row, so a link still opens the drawer with the focus (layout.spec's drawer test). `keys.test.tsx` covers the race: the focus on another row when the address arrives, then an arrow that still walks. It fails without the fix.

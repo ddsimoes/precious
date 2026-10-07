@@ -18,8 +18,8 @@ import (
 	"precious/internal/search"
 )
 
-// Opportunities, review lists, Gems, and Compare (R2 design D11–D14 and the
-// Interfaces' read endpoints).
+// Opportunities, review lists, and Compare (R2 design D11–D13, r2c design
+// D3–D4, and the Interfaces' read endpoints).
 
 type opportunitiesBody struct {
 	Cards      []cardJSON   `json:"cards"`
@@ -27,10 +27,11 @@ type opportunitiesBody struct {
 	ComputedAt *time.Time   `json:"computed_at"`
 }
 
-// opportunities serves GET /api/opportunities[?source=ID]: the seven cards
-// of the source (every source without one), largest first, the global
-// coverage, and when the visible review rows were computed (null before
-// the first relate pass). An unknown source is not_found.
+// opportunities serves GET /api/opportunities[?source=ID]: the eight cards
+// of the source (every source without one), the rescue card first while it
+// has open rows, then largest first; the global coverage; and when the
+// visible review rows were computed (null before the first relate pass). An
+// unknown source is not_found.
 func (h *handler) opportunities(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if err := checkParams(q, "source"); err != nil {
@@ -77,12 +78,14 @@ func sourceExists(ctx context.Context, tx *sql.Tx, src domain.SourceID) error {
 	return err
 }
 
-// reviewRowJSON is RowJSON.
+// reviewRowJSON is RowJSON. Group is the outermost programs or disposable
+// group holding a rescue row's entry, null on every other list's rows.
 type reviewRowJSON struct {
 	ID       string        `json:"id"`
 	Bytes    int64         `json:"bytes"`
 	Files    int64         `json:"files"`
 	Entry    *entryRow     `json:"entry"`
+	Group    *entryRow     `json:"group"`
 	Relation *relationJSON `json:"relation"`
 	Copies   []copyJSON    `json:"copies"`
 	Summary  summaryJSON   `json:"summary"`
@@ -106,10 +109,11 @@ type reviewPageBody struct {
 
 // reviewList serves GET /api/opportunities/{list}?source=&decided=0|1&
 // cursor=&limit=: a page of a card's open rows (decided=1: the rows no
-// longer open), with the card. An entry row has its entry; a duplicates
-// row is a relation, whose entry is side a and whose relation's other is
-// side b, or a group of copies of one content, which lists its copies. An
-// unknown list, or a Gems section, is not_found; so is an unknown source.
+// longer open), with the card. An entry row has its entry, and a rescue row
+// its group; a duplicates row is a relation, whose entry is side a and
+// whose relation's other is side b, or a group of copies of one content,
+// which lists its copies. An unknown list is not_found; so is an unknown
+// source.
 func (h *handler) reviewList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	list := review.List(r.PathValue("list"))
@@ -172,7 +176,7 @@ const groupCopies = 100
 
 // reviewRows renders review rows as RowJSON. An unpacked_archives row
 // carries its archive's relation with the folder it was unpacked into,
-// seen from the archive (side a).
+// seen from the archive (side a); a rescue row carries its group.
 func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row) ([]reviewRowJSON, error) {
 	var relIDs []int64
 	unpacked := map[int64]int64{} // review row ID → relation ID
@@ -207,6 +211,9 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 		switch {
 		case it.Entry != 0:
 			refs = append(refs, domain.Ref{Entry: it.Entry})
+			if it.List == review.ListRescue && it.Group != 0 {
+				refs = append(refs, domain.Ref{Entry: it.Group})
+			}
 		case it.Relation != 0:
 			if rel, ok := rels[it.Relation]; ok {
 				refs = append(refs, rel.A)
@@ -236,6 +243,10 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 				if j.Relation, err = relJSON(rel); err != nil {
 					return nil, err
 				}
+			}
+			if g, ok := rows.get(domain.Ref{Entry: it.Group}); ok && it.List == review.ListRescue {
+				gj := rowJSON(g)
+				j.Group = &gj
 			}
 		case it.Relation != 0:
 			rel, ok := rels[it.Relation]
@@ -439,116 +450,6 @@ func selfCopy(ctx context.Context, tx *sql.Tx, ref domain.Ref) (content.Copy, er
 	}
 	c.SourceID, c.EffDecision = domain.SourceID(src), domain.Decision(eff)
 	return c, nil
-}
-
-// gemSections maps the sections of GET /api/gems to their review lists.
-var gemSections = map[string]review.List{
-	"unique":       review.ListGemsUnique,
-	"rescue":       review.ListGemsRescue,
-	"only_in_copy": review.ListGemsOnlyInCopy,
-}
-
-type gemJSON struct {
-	Entry    entryRow      `json:"entry"`
-	Group    *entryRow     `json:"group"`
-	Relation *relationJSON `json:"relation"`
-}
-
-type gemsBody struct {
-	Section    string       `json:"section"`
-	Items      []gemJSON    `json:"items"`
-	NextCursor *string      `json:"next_cursor"`
-	Coverage   coverageJSON `json:"coverage"`
-}
-
-// gems serves GET /api/gems?section=unique|rescue|only_in_copy&source=&
-// cursor=&limit=: a page of a Gems section (design D14) with the global
-// coverage its claims carry. A rescue item names its group; an only-in-copy
-// item names the overlap side holding it (group) and the relation, seen
-// from that side. A missing or unknown section is invalid_request; an
-// unknown source is not_found.
-func (h *handler) gems(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	err := checkParams(q, "section", "source", "cursor", "limit")
-	section := q.Get("section")
-	list, ok := gemSections[section]
-	if err == nil && !ok {
-		err = domain.Errorf(domain.CodeInvalidRequest, "section must be unique, rescue, or only_in_copy, not %q", section)
-	}
-	var limit int
-	if err == nil {
-		limit, err = parseLimit(q.Get("limit"))
-	}
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	src := domain.SourceID(q.Get("source"))
-	h.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		if err := sourceExists(ctx, tx, src); err != nil {
-			return nil, err
-		}
-		page, err := review.Rows(ctx, tx, list, src, false, q.Get("cursor"), limit)
-		if err != nil {
-			return nil, err
-		}
-		body := gemsBody{Section: section, Items: make([]gemJSON, 0, len(page.Items))}
-		if body.Coverage, err = readCoverage(ctx, tx, ""); err != nil {
-			return nil, err
-		}
-		var (
-			refs   []domain.Ref
-			relIDs []int64
-		)
-		for _, it := range page.Items {
-			refs = append(refs, domain.Ref{Entry: it.Entry})
-			if it.Group != 0 {
-				refs = append(refs, domain.Ref{Entry: it.Group})
-			}
-			if list == review.ListGemsOnlyInCopy && it.Relation != 0 {
-				relIDs = append(relIDs, it.Relation)
-			}
-		}
-		rows, err := h.loadRows(ctx, tx, refs)
-		if err != nil {
-			return nil, err
-		}
-		rels, err := relationsByID(ctx, tx, relIDs)
-		if err != nil {
-			return nil, err
-		}
-		for _, it := range page.Items {
-			e, ok := rows.get(domain.Ref{Entry: it.Entry})
-			if !ok {
-				continue
-			}
-			g := gemJSON{Entry: rowJSON(e)}
-			if gr, ok := rows.get(domain.Ref{Entry: it.Group}); ok && it.Group != 0 {
-				j := rowJSON(gr)
-				g.Group = &j
-			}
-			if rel, ok := rels[it.Relation]; ok && list == review.ListGemsOnlyInCopy {
-				side := domain.Ref{Entry: it.Group}
-				rj, err := h.relationsJSON(ctx, tx, []relations.Relation{rel}, func(r relations.Relation) string {
-					if sameSide(r.A, side) {
-						return "a"
-					}
-					return "b"
-				})
-				if err != nil {
-					return nil, err
-				}
-				if len(rj) > 0 {
-					g.Relation = &rj[0]
-				}
-			}
-			body.Items = append(body.Items, g)
-		}
-		if page.NextCursor != "" {
-			body.NextCursor = &page.NextCursor
-		}
-		return body, nil
-	})
 }
 
 // compareItemJSON is one item of a Compare bucket. left_path and

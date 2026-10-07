@@ -1,7 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { gemsQueryKey } from '@/api/gems'
 import { homeQueryKey, type Home } from '@/api/home'
 import { opportunitiesQueryKey, reviewQueryKey } from '@/api/opportunities'
 import { sourcesQueryKey, type SourcesResponse } from '@/api/sources'
@@ -238,7 +237,6 @@ describe('job event stream', () => {
     const queryClient = seededClient()
     queryClient.setQueryData(opportunitiesQueryKey(null), { cards: [] })
     queryClient.setQueryData(reviewQueryKey('system_junk', null, false), { pages: [], pageParams: [] })
-    queryClient.setQueryData(gemsQueryKey('unique', null), { pages: [], pageParams: [] })
     stream = new JobEventStream(queryClient)
     stream.start()
     const source = MockEventSource.latest()
@@ -250,7 +248,6 @@ describe('job event stream', () => {
     source.emit('job', { ...event, state: 'succeeded' }, '8')
     expect(invalidated(queryClient, opportunitiesQueryKey(null))).toBe(true)
     expect(invalidated(queryClient, reviewQueryKey('system_junk', null, false))).toBe(true)
-    expect(invalidated(queryClient, gemsQueryKey('unique', null))).toBe(true)
     expect(invalidated(queryClient, homeQueryKey(null))).toBe(true)
   })
 })

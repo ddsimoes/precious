@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 
-// The source the owner last chose on Home, Opportunities, Gems, Search, or the
+// The source the owner last chose on Home, Opportunities, Search, or the
 // Map (r2b design D9), used by those screens and by the Map's start until the
 // owner chooses another one or all sources (null). It lives in the browser's
 // local storage, so it outlasts the tab; a source in the address wins.

@@ -26,5 +26,5 @@ func buildFAT() *Tree {
 	d.file("Documentos/Relatorio.doc", at(2008, 11, 3, 18, 21).Add(36*time.Second), ole("FAT Relatorio", 19_456))
 	d.file("AUTORUN.INF", at(2008, 8, 8, 8, 8).Add(8*time.Second), []byte("[autorun]\r\nicon=cartao.ico\r\n"))
 	d.file("System Volume Information/IndexerVolumeGuid", at(2008, 8, 8, 8, 10), random("FAT guid", 76))
-	return d.finish(nil, nil, gemDecls{})
+	return d.finish(nil, nil, nil)
 }
