@@ -486,7 +486,10 @@ test('R2.3: the pendrive zip is the same as its unpacked folder, in the panel an
     .getByRole('list', { name: 'Folders related to this one' })
     .getByRole('listitem')
     .filter({ hasText: `Same content as ${pendrive}` })
-  await expect(same).toContainText('only here: 0 files (0 B) · only there: 0 files (0 B)')
+  // The row names the bytes in common; Compare counts what is only on one
+  // side (r2d design D3).
+  await expect(same).toContainText(`${bytes(files.reduce((sum, m) => sum + (m.size ?? 0), 0))} in common`)
+  await expect(same).not.toContainText(/\bonly\b/i)
   await same.getByRole('link', { name: 'Compare', exact: true }).click()
 
   const sides = page.getByRole('region', { name: 'Folders compared' }).locator(':scope > div')
