@@ -138,4 +138,4 @@
   - a backup with integrity checked.
 
   Verify that it reports success, then delete the script.
-- [ ] 7.4 When the reference server is on again, deploy over its database, and have the owner smoke-test overrides, groups, a schedule, Search, the Map keyboard, Compare, and similar folders on his dataset. Verify with his sign-off, with findings in the design addendum.
+- [x] 7.4 When the reference server is on again, deploy over its database, and have the owner smoke-test overrides, groups, a schedule, Search, the Map keyboard, Compare, and similar folders on his dataset. Verify with his sign-off, with findings in the design addendum.
