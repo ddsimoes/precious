@@ -48,17 +48,17 @@
 
 ## 3. Scheduled rescans
 
-- [ ] 3.1 Implement `RunDue` and its one-minute loop in `serve` (D6). Verify with fake-time tests:
+- [x] 3.1 Implement `RunDue` and its one-minute loop in `serve` (D6). Verify with fake-time tests:
   - a due online source starts a scan;
   - an offline one records a skip;
   - a due scan coalesces into an active scan;
   - downtime gives one catch-up;
   - off never runs;
   - `next_scan_at` advances past now.
-- [ ] 3.2 Add `set-source-schedule`, the `sourceJSON` fields `schedule`, `next_scan_at`, and `schedule_skipped`, and the audit event. Verify with the source-registry scenarios as tests (200 with next scan, off, 400 for a bad time, 404 for an unknown source), and update the `sourceKeys` test.
-- [ ] 3.3 Import `time/tzdata` in `cmd/precious`. Verify with `make cross`, and a test that resolves `America/Sao_Paulo` with `ZONEINFO` empty.
-- [ ] 3.4 Show the schedule and next scan on each source card, with a form (off, daily, weekly, time) that sends the browser's zone, and the last skip when there is one. Verify with Vitest.
-- [ ] 3.5 Document scheduled rescans in `docs/operator.md` (Sources, Scanning). Verify with the docs tests.
+- [x] 3.2 Add `set-source-schedule`, the `sourceJSON` fields `schedule`, `next_scan_at`, and `schedule_skipped`, and the audit event. Verify with the source-registry scenarios as tests (200 with next scan, off, 400 for a bad time, 404 for an unknown source), and update the `sourceKeys` test.
+- [x] 3.3 Import `time/tzdata` in `cmd/precious`. Verify with `make cross`, and a test that resolves `America/Sao_Paulo` with `ZONEINFO` empty.
+- [x] 3.4 Show the schedule and next scan on each source card, with a form (off, daily, weekly, time) that sends the browser's zone, and the last skip when there is one. Verify with Vitest.
+- [x] 3.5 Document scheduled rescans in `docs/operator.md` (Sources, Scanning). Verify with the docs tests.
 
 ## 4. Search
 
