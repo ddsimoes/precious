@@ -223,7 +223,7 @@ The owner SHALL set an entry's category with `set-category` and a folder's group
   - `set-group` takes `true`, `false`, or `rules`. `set-group` on a file is HTTP 400 `invalid_request`.
 - **Members.** Archive members cannot be targets (HTTP 400 `invalid_request`): they are decided and described with their archive.
 - **Survival.** A rescan, a rules change, and a model result SHALL never change an override or a mark. An entry that goes missing and returns keeps them (I4).
-- **Effect.** The entry itself SHALL read its new category or group flag at once. Folder figures, notable entries, review lists, and Gems SHALL follow after the scan of its source that the command starts, or after the next scan when one is already running.
+- **Effect.** The entry itself SHALL read its new category or group flag at once. Folder figures, notable entries, and review lists SHALL follow after the scan of its source that the command starts, or after the next scan when one is already running.
 - **Controls.** The detail panel SHALL offer both controls, and SHALL show which values the owner set.
 
 #### Scenario: Override survives a rescan and a rules change

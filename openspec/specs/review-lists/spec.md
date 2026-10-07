@@ -7,6 +7,7 @@ Turns the index, the rules, and the duplicates into focused lists that answer "w
 
 ### Requirement: Opportunity cards
 Precious SHALL offer these opportunity cards, for one source or all sources (§11.4):
+- the owner's own files inside program or disposable groups (rescue);
 - exact duplicate folders and files;
 - archives already unpacked elsewhere;
 - system junk;
@@ -15,11 +16,11 @@ Precious SHALL offer these opportunity cards, for one source or all sources (§1
 - caches, temporary data, and generated artifacts;
 - partial downloads, empty folders, and zero-byte files.
 
-Each card SHALL show its bytes, its row count, and its basis (rules or same content), ranked by bytes. A card whose open rows hold no bytes SHALL lead with its row count instead of its bytes.
+Each card SHALL show its bytes, its row count, and its basis (rules or same content), ranked by bytes, except that the rescue card SHALL come first while it has open rows. A card whose open rows hold no bytes, and the rescue card, SHALL lead with its row count instead of its bytes.
 
 #### Scenario: Cards on the corpus
 - **WHEN** the corpus is scanned and hashed to completion and the owner opens Opportunities
-- **THEN** the seven cards are listed largest first, and the system junk card is based on rules while the duplicates card is based on same content
+- **THEN** the eight cards are listed with the rescue card first and the others largest first, and the system junk card is based on rules while the duplicates card is based on same content
 
 #### Scenario: One source
 - **WHEN** the owner switches Opportunities to one source
@@ -28,6 +29,14 @@ Each card SHALL show its bytes, its row count, and its basis (rules or same cont
 #### Scenario: A card of empty files and folders
 - **WHEN** every open row of the partial downloads, empty folders, and zero-byte files card holds no bytes
 - **THEN** the card leads with its count of items, not with "0 B"
+
+#### Scenario: The rescue card leads with its files
+- **WHEN** the rescue card has one open row of 20 KiB
+- **THEN** it is the first card and leads with "1 item", not with its bytes
+
+#### Scenario: A rescue card with nothing open
+- **WHEN** every row of the rescue card is decided
+- **THEN** it is ranked by its bytes like the other cards, and reads "Nothing left to review"
 
 ### Requirement: A card's bytes equal its review list
 Each card SHALL open a review list whose rows are the card's open rows, and the card's bytes SHALL equal the sum of the bytes of those rows. No byte SHALL be counted twice in one card (§11.4).
@@ -56,7 +65,7 @@ A row SHALL be the outermost entry that matches its card: a group, a folder, an 
 - **THEN** the row for `Downloads/eMule0.47c-Installer.zip` names `Downloads/emule-0.47c`, and its Compare link opens Compare on the zip and that folder
 
 ### Requirement: Decided rows leave the list
-A row SHALL be open while its entry's effective decision is undecided. A duplicates row SHALL be open while at least two of its copies are undecided. The list SHALL let the owner also show the rows that are no longer open.
+A row SHALL be open while its entry's effective decision is undecided. A rescue row SHALL instead be open until the owner sets a decision on the file itself, or its effective decision is keep, so that a decision inherited from the group around it does not hide it. A duplicates row SHALL be open while at least two of its copies are undecided. The list SHALL let the owner also show the rows that are no longer open.
 
 #### Scenario: Deciding a row shrinks the card
 - **WHEN** the owner discards one row of the system junk list
@@ -65,6 +74,14 @@ A row SHALL be open while its entry's effective decision is undecided. A duplica
 #### Scenario: Showing decided rows
 - **WHEN** the owner chooses to show decided rows
 - **THEN** the discarded row is listed again with its decision
+
+#### Scenario: Discarding a program does not hide the owner's file
+- **WHEN** the owner discards `Backup_PC_2004/C/Arquivos de programas/Microsoft Office`
+- **THEN** `OFFICE11/Meu orcamento casamento.xls` stays open on the rescue card, and reads an inherited discard
+
+#### Scenario: Keeping the owner's file closes its row
+- **WHEN** the owner keeps `OFFICE11/Meu orcamento casamento.xls`
+- **THEN** its row leaves the rescue card's open rows, whatever the decision on `Microsoft Office`
 
 ### Requirement: Review lists work from the keyboard
 A review list SHALL let the owner keep, discard, or set later the selected row, and move to the next or previous row, from the keyboard alone, and SHALL ignore those keys while typing in a field or inside a dialog (§11.5). When a decision makes the selected row leave the list, the row that takes its place SHALL be selected. Moving to the next row past the last loaded row SHALL load the next page and select its first row.
@@ -88,24 +105,6 @@ Every review list except duplicates SHALL let the owner select all of its open r
 - **WHEN** the owner opens the duplicates list
 - **THEN** there is no control to select all rows, and copies are decided one by one or by choosing them
 
-### Requirement: Gems
-Gems SHALL list, for one source or all (§11.7):
-- personal media and documents with no other copy, oldest first, outside any program or disposable group;
-- user material found inside program or disposable groups;
-- files with no other copy that sit only on one side of an `overlap` relation.
-
-A file not yet checked SHALL NOT be listed as having no other copy, and each section SHALL state the checked share (I7).
-
-#### Scenario: R2.6 Gems lists the corpus's unique personal files
-- **WHEN** the corpus is scanned and hashed to completion and the owner opens Gems
-- **THEN** the first section lists the unique personal photos and documents of the corpus's ground truth, including the phone backup's photos, oldest first
-- **AND** the second section lists `Backup_PC_2004/C/Arquivos de programas/Microsoft Office/OFFICE11/Meu orcamento casamento.xls`
-- **AND** the third section lists `Fotos - Copia/2006/Praia/DSC_editada.JPG`
-
-#### Scenario: A copied photo is not a gem
-- **WHEN** a photo has a copy in another folder
-- **THEN** it is not listed in the first section
-
 ### Requirement: Similar folders are listed
 Opportunities SHALL offer a list of the folders and archives related as `overlap`.
 - **Row content.** Each row SHALL show both sides, the bytes they have in common, and the files and bytes found only on each side, with a link that opens Compare on the two.
@@ -122,3 +121,14 @@ Each opportunity card and review list header SHALL show, besides its open rows, 
 #### Scenario: Progress after deciding
 - **WHEN** the owner discards 20 rows of the partial downloads, empty folders, and zero-byte files list, holding 4.4 GB
 - **THEN** the card shows the open rows left, and that 20 rows holding 4.4 GB were decided
+
+### Requirement: Your files inside programs
+The rescue card SHALL list the owner's own material (user-material indicators: a file, or a folder such as saved games) found inside program or disposable groups, one row per item, for one source or all. Each row SHALL name the outermost such group that holds the item and link to it. Its basis SHALL be rules (§11.4; ADR 0009 moves this list here from §11.7).
+
+#### Scenario: R2.6 The spreadsheet inside Microsoft Office
+- **WHEN** the corpus is scanned and hashed to completion and the owner opens the rescue card
+- **THEN** it lists `Backup_PC_2004/C/Arquivos de programas/Microsoft Office/OFFICE11/Meu orcamento casamento.xls`, inside `Backup_PC_2004/C/Arquivos de programas/Microsoft Office`
+
+#### Scenario: A file outside every group is not listed
+- **WHEN** a spreadsheet sits in `Documentos`, outside any program or disposable group
+- **THEN** the rescue card does not list it

@@ -40,11 +40,11 @@ All scripts and styles SHALL be embedded in the binary and served from the appli
 - **THEN** the complete interface is served and works
 
 ### Requirement: Read-only workflow without models
-The complete R2 workflow SHALL work with every source mounted read-only and no network egress: logging in, adding a source, scanning, hashing, following progress, Home, Map, Search, the detail panel, the viewer, decisions, tags, Opportunities and review lists, Compare, and Gems.
+The complete R2 workflow SHALL work with every source mounted read-only and no network egress: logging in, adding a source, scanning, hashing, following progress, Home, Map, Search, the detail panel, the viewer, decisions, tags, Opportunities and review lists, and Compare.
 
 #### Scenario: A20 read-only and cloud disabled
 - **WHEN** the only source is on a read-only mount and the server has no network egress
-- **THEN** the owner can log in, add the source, scan and hash it, follow its progress, use Home, Map, Search, Opportunities, Compare, and Gems, open the detail panel and the viewer, and set decisions and tags, and no write to the source or outbound request is attempted
+- **THEN** the owner can log in, add the source, scan and hash it, follow its progress, use Home, Map, Search, Opportunities, and Compare, open the detail panel and the viewer, and set decisions and tags, and no write to the source or outbound request is attempted
 
 ### Requirement: Home screen
 The Home screen SHALL show, for one chosen source or for all sources together: total bytes, files, and folders; bytes by category family, by file kind, and by modification year; decision totals as bytes and files for undecided, keep, discard, and later; hashing coverage; the opportunity cards with their bytes; and each active scan and hashing job with its live progress. When any part of a counted tree could not be read, Home SHALL say its figures are partial (§11.1).
@@ -105,7 +105,7 @@ The Map table SHALL list a folder's children, sorted by size, file count, newest
 - **THEN** the `Fotos - Copia` row shows its percent duplicated, and a file with no other copy shows 0%
 
 ### Requirement: Index read API
-The server SHALL provide `GET /api/sources`, `GET /api/picker`, `GET /api/home`, `GET /api/entries/{id}`, `GET /api/entries/{id}/children`, `GET /api/entries/{id}/treemap`, `GET /api/search`, `GET /api/tags`, `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text`, `GET /api/opportunities`, `GET /api/opportunities/{card}`, `GET /api/gems`, `GET /api/compare`, `GET /api/jobs/{id}`, and `GET /api/events`. Entry names and paths SHALL be returned both as an escaped display string and as the base64-encoded raw bytes.
+The server SHALL provide `GET /api/sources`, `GET /api/picker`, `GET /api/home`, `GET /api/entries/{id}`, `GET /api/entries/{id}/children`, `GET /api/entries/{id}/treemap`, `GET /api/search`, `GET /api/tags`, `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text`, `GET /api/opportunities`, `GET /api/opportunities/{card}`, `GET /api/compare`, `GET /api/jobs/{id}`, and `GET /api/events`. Entry names and paths SHALL be returned both as an escaped display string and as the base64-encoded raw bytes.
 
 #### Scenario: A17 lossless name in API
 - **WHEN** a client fetches an entry whose name contains invalid UTF-8 bytes
@@ -130,6 +130,10 @@ The server SHALL provide `GET /api/sources`, `GET /api/picker`, `GET /api/home`,
 #### Scenario: Unknown card
 - **WHEN** a client requests `GET /api/opportunities/colors`
 - **THEN** the response is HTTP 404 with code `not_found`
+
+#### Scenario: Gems is gone
+- **WHEN** a client requests `GET /api/gems?section=unique`
+- **THEN** the response is HTTP 404
 
 ### Requirement: Treemap
 The Map SHALL show a treemap of the same folder as its table, one level per request: the 300 largest children by bytes plus one "other" area holding the count and bytes of the rest. The owner SHALL be able to color it by category family, file kind, age, decision, tag, or duplication; coloring by family SHALL use each entry's dominant composition family. Clicking a folder or a completely read archive SHALL drill into it, and the table SHALL follow.
@@ -265,7 +269,7 @@ At a window of 1366×768 or larger, every screen SHALL keep its content inside i
 - **THEN** no filter control overlaps another or its label
 
 #### Scenario: New screens at 1366×768
-- **WHEN** the owner opens Opportunities, a review list, Compare, and Gems in a 1366×768 window
+- **WHEN** the owner opens Opportunities, a review list, and Compare in a 1366×768 window
 - **THEN** nothing spills past its card or the window, and no two controls overlap
 
 ### Requirement: Sources screen
@@ -324,8 +328,8 @@ Every user-facing string SHALL come from the translation catalog, which ships En
 - **WHEN** a folder holds 1234567 files and the locale is English
 - **THEN** the count is shown as `1,234,567`, its size in human units, and its dates in the locale's date format
 
-### Requirement: Opportunities, Gems, and Compare screens
-The interface SHALL offer Opportunities and Gems in its main navigation. Each opportunity card SHALL open its review list. Compare SHALL open from a relation in the detail panel or in a review list, and from a folder's detail panel by choosing a second folder or archive, with the two sides named in the address so it can be bookmarked (§11.4, §11.6, §11.7).
+### Requirement: Opportunities and Compare screens
+The interface SHALL offer Opportunities in its main navigation, and SHALL NOT offer Gems. Each opportunity card SHALL open its review list. Compare SHALL open from a relation in the detail panel or in a review list, and from a folder's detail panel by choosing a second folder or archive, with the two sides named in the address so it can be bookmarked (§11.4, §11.6).
 
 #### Scenario: From a card to its list
 - **WHEN** the owner chooses the system junk card on Home
@@ -338,6 +342,10 @@ The interface SHALL offer Opportunities and Gems in its main navigation. Each op
 #### Scenario: Deciding from Compare
 - **WHEN** the owner sets discard on a file listed only on the right in Compare
 - **THEN** the file's decision is discard, and the list shows it
+
+#### Scenario: No Gems
+- **WHEN** the owner looks at the main navigation
+- **THEN** it has no Gems entry
 
 ### Requirement: Browsing inside archives
 The Map SHALL let the owner drill into a completely read archive as into a folder, with the table and the treemap showing its members, and open a member in the detail panel and the viewer. A member's detail panel SHALL show the archive's effective decision as the one that applies, with a link to the archive, and no decision or tag controls (§11.2, §6.4).
@@ -384,11 +392,11 @@ The Map's folder path SHALL show a chain of folders that each hold nothing but t
 - **THEN** opening the source in the Map shows the contents of `home`, and the path shows the source, then `old-disk/home` as one step
 
 ### Requirement: The chosen source is remembered
-The source the owner last chose on Home, Opportunities, Gems, Search, or the Map SHALL be used by those screens, and by the Map's starting folder, until the owner chooses another source or all sources. It SHALL be remembered per browser.
+The source the owner last chose on Home, Opportunities, Search, or the Map SHALL be used by those screens, and by the Map's starting folder, until the owner chooses another source or all sources. It SHALL be remembered per browser.
 
 #### Scenario: Home's choice carries to the Map
 - **WHEN** the owner chooses the source `archive` on Home and then opens the Map from the main menu
-- **THEN** the Map starts on `archive`, and Opportunities and Gems show `archive` too
+- **THEN** the Map starts on `archive`, and Opportunities shows `archive` too
 
 ### Requirement: Dialogs return focus
 Closing the viewer or any confirmation dialog SHALL return the keyboard focus to the control that opened it.
