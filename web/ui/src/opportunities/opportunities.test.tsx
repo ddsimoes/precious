@@ -160,7 +160,7 @@ describe('Opportunities', () => {
     expect(cards[2]).not.toHaveTextContent(/decided|0\sB/)
   })
 
-  it('puts the rescue card first while it has open rows, headed by its file count', async () => {
+  it('puts the rescue card first while it has open rows, headed by its item count', async () => {
     stubApi({
       ...base,
       'GET /api/opportunities': (request) =>
@@ -190,7 +190,7 @@ describe('Opportunities', () => {
       'Caches, temporary files, and build output',
       'Old installers, disk images, and downloads',
     ])
-    expect(cards[0]).toHaveTextContent(/^Your files inside programs1 fileYour own documents, photos, and saves/)
+    expect(cards[0]).toHaveTextContent(/^Your files inside programs1 itemYour own documents, photos, and saves/)
     expect(cards[0]).not.toHaveTextContent('20 KiB')
     expect(cards[0]).toHaveTextContent('Based on the rules')
     expect(within(cards[0]!).getByRole('link')).toHaveAttribute('href', '/opportunities/rescue')
@@ -369,8 +369,8 @@ describe('Review list', () => {
     expect(row).toHaveTextContent('Decision: Discard')
     const decision = within(within(row).getByRole('group', { name: 'Decision for Meu orcamento casamento.xls' }))
     expect(decision.getByRole('button', { name: 'Follow folder' })).toHaveAttribute('aria-pressed', 'true')
-    // The card's file count heads the list.
-    expect(screen.getByText(/Based on the rules/)).toHaveTextContent('3 files Based on the rules')
+    // The card's item count heads the list.
+    expect(screen.getByText(/Based on the rules/)).toHaveTextContent('3 items Based on the rules')
 
     await user.click(screen.getByRole('button', { name: 'Select all rows' }))
     expect(await screen.findByRole('alertdialog', { name: 'Select every row of this list?' })).toBeInTheDocument()
