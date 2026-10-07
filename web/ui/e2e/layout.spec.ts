@@ -166,7 +166,7 @@ for (const viewport of viewports) {
   test(`Opportunities, a review list, and Compare fit at ${size}`, async () => {
     await page.setViewportSize(viewport)
     await page.goto('/opportunities')
-    await expect(page.getByRole('list', { name: 'Opportunity cards' }).getByRole('listitem')).toHaveCount(7)
+    await expect(page.getByRole('list', { name: 'Opportunity cards' }).getByRole('listitem')).toHaveCount(8)
     await checkLayout(`opportunities-${size}`)
 
     // A duplicates list with a group's copies and a relation's sides shown.

@@ -670,9 +670,9 @@ test('R2.5: every card’s bytes equal the sum of its review list over all pages
 
   for (const card of opportunities.cards) {
     const label = en.opportunities.list[card.list]
-    // A card whose rows hold no bytes heads with its item count instead,
-    // and one with no open row left says so.
-    const countFirst = card.bytes === 0 && card.rows > 0
+    // A card whose rows hold no bytes, and the rescue card, head with their
+    // item count instead, and one with no open row left says so.
+    const countFirst = card.rows > 0 && (card.bytes === 0 || card.list === 'rescue')
     const items = `${count(card.rows)} ${card.rows === 1 ? 'item' : 'items'}`
     const headline = card.rows === 0 ? 'Nothing left to review' : countFirst ? items : bytes(card.bytes)
     const rowsText = countFirst || card.rows === 0 ? null : `${items} to review`
@@ -711,6 +711,54 @@ test('R2.5: every card’s bytes equal the sum of its review list over all pages
     }
     await expect(list.locator(':scope > li'), label).toHaveCount(card.rows)
   }
+})
+
+test('R2.6: the rescue card comes first and lists your files inside programs, and deciding a program does not hide them', async () => {
+  const rescue = corpus.rescue
+  const sheet = 'Backup_PC_2004/C/Arquivos de programas/Microsoft Office/OFFICE11/Meu orcamento casamento.xls'
+  const office = rescue.find((r) => r.path === sheet)?.group
+  expect(office).toBe('Backup_PC_2004/C/Arquivos de programas/Microsoft Office')
+  const label = en.opportunities.list.rescue
+  const items = `${count(rescue.length)} ${rescue.length === 1 ? 'item' : 'items'}`
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Opportunities' }).click()
+  const first = page.getByRole('list', { name: 'Opportunity cards' }).getByRole('listitem').first()
+  await expect(first.getByRole('link', { name: label, exact: true })).toBeVisible()
+  await expect(first).toContainText(items)
+  await first.getByRole('link', { name: label, exact: true }).click()
+
+  const rows = page.getByRole('list', { name: `Rows of ${label}` })
+  const row = (path: string) =>
+    rows.locator(':scope > li').filter({ has: page.getByRole('link', { name: path, exact: true }) })
+  await expect(rows.locator(':scope > li')).toHaveCount(rescue.length)
+  for (const r of rescue) {
+    await expect(row(r.path), r.path).toContainText(`Inside ${r.group}`)
+    const groupId = await entryId(r.group)
+    await expect(row(r.path).getByRole('link', { name: r.group, exact: true })).toHaveAttribute(
+      'href',
+      `/map/${groupId}?entry=${groupId}`,
+    )
+  }
+
+  // Discarding the program around the spreadsheet leaves it on the card,
+  // reading the inherited discard; keeping the spreadsheet closes its row.
+  const officeId = await entryId(office ?? '')
+  const sheetId = await entryId(sheet)
+  expect((await command('set-decision', { entry_id: officeId, decision: 'discard' })).status).toBe(200)
+  await page.reload()
+  await expect(rows.locator(':scope > li')).toHaveCount(rescue.length)
+  await expect(row(sheet)).toContainText('Decision: Discard')
+  expect((await command('set-decision', { entry_id: sheetId, decision: 'keep' })).status).toBe(200)
+  await page.reload()
+  await expect(rows.locator(':scope > li')).toHaveCount(rescue.length - 1)
+  await expect(row(sheet)).toHaveCount(0)
+
+  // Both decisions are undone, as later tests expect the corpus undecided.
+  for (const id of [sheetId, officeId]) {
+    expect((await command('set-decision', { entry_id: id, decision: 'inherit' })).status).toBe(200)
+  }
+  await page.reload()
+  await expect(rows.locator(':scope > li')).toHaveCount(rescue.length)
 })
 
 test('review keys decide and move through the system junk list', async () => {
