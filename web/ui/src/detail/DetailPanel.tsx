@@ -57,14 +57,16 @@ export function DetailPanel() {
   })
 
   // Opened as a drawer, the panel takes the focus, and gives it back to
-  // where it was when it closes. The entry's own table row keeps the focus,
-  // so that the Map keys go on walking the rows (r2b E1).
+  // where it was when it closes. A table row keeps the focus, so that the
+  // Map keys go on walking the rows (r2b E1): the row the keys chose may not
+  // hold it yet when the address arrives, while the row they left still does
+  // (r2c E1).
   useEffect(() => {
     if (entryId === null || typeof window.matchMedia !== 'function' || window.matchMedia(sideBySideQuery).matches) {
       return
     }
     const previous = document.activeElement
-    if (previous instanceof HTMLElement && previous.dataset.rowId === entryId) {
+    if (previous instanceof HTMLElement && previous.dataset.rowId !== undefined) {
       return
     }
     panelRef.current?.focus()

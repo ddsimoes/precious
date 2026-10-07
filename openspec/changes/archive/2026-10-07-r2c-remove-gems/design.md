@@ -134,3 +134,9 @@ Stays:
   - after the startup refresh, 2 rescue rows;
   - a backup whose `integrity_check` is `ok`.
 - **V4. Owner sign-off (task 5.4).** On 2026-10-07 the owner looked at Opportunities on the reference server and signed off ("ok"), with no findings.
+- **E1. The drawer leaves the focus on any table row (an r2b fix that CI found).** The pull request's CI failed twice in r2b's Map keys e2e test, once on a rerun as well. After Back, three quick arrows selected the second row, not the third. The page snapshot shows the cause:
+  - the first arrow's address rendered while the row the keys had left still held the focus;
+  - r2b E1 let only the selected entry's own row keep it, so the drawer took the focus;
+  - the next arrow came from inside the panel, where the keys are ignored.
+
+  The drawer now leaves the focus on any table row. A row the keys left is about to hand the focus to the row they chose. A link inside a row is not the row, so a link still opens the drawer with the focus (layout.spec's drawer test). `keys.test.tsx` covers the race: the focus on another row when the address arrives, then an arrow that still walks. It fails without the fix.
