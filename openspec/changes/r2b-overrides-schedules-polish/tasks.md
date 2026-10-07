@@ -82,18 +82,18 @@
 
 ## 5. Map, detail panel, and archives
 
-- [ ] 5.1 Add the Map keyboard: arrows, Enter, Escape, and ignored inside fields and dialogs. Verify with Vitest, including the inventory-explorer scenario.
+- [x] 5.1 Add the Map keyboard: arrows, Enter, Escape, and ignored inside fields and dialogs. Verify with Vitest, including the inventory-explorer scenario.
 - [ ] 5.2 Map cells:
   - Decision hides before Duplicated;
   - the quieter Decision cell;
   - unreadable rows read "Could not be read" with "—" figures.
 
   Verify with Vitest (the narrow-card tests updated).
-- [ ] 5.3 Add `only_child` on ancestors and `only_folder` on the entry detail, the merged path steps, and the Map's start descending through a chain. Verify with API tests and Vitest (the `old-disk/home` scenario).
-- [ ] 5.4 Add `archive_note` (D10), the panel's wording for each reason, and "Open as a folder" as the main action of a complete archive. Verify with API tests (unsupported, nested, not listed) and Vitest.
-- [ ] 5.5 Make `Dialog` give focus back, and limit the event stream's first-open refresh to older queries (D9). Verify with Vitest: the viewer Escape scenario, and fresh queries left alone on a first open.
-- [ ] 5.6 Reword the treemap's remainder block and make it focus the table sorted by size. Verify with Vitest.
-- [ ] 5.7 Update the Map and detail panel sections of `docs/operator.md`. Verify with the docs tests.
+- [x] 5.3 Add `only_child` on ancestors and `only_folder` on the entry detail, the merged path steps, and the Map's start descending through a chain. Verify with API tests and Vitest (the `old-disk/home` scenario).
+- [x] 5.4 Add `archive_note` (D10), the panel's wording for each reason, and "Open as a folder" as the main action of a complete archive. Verify with API tests (unsupported, nested, not listed) and Vitest.
+- [x] 5.5 Make `Dialog` give focus back, and limit the event stream's first-open refresh to older queries (D9). Verify with Vitest: the viewer Escape scenario, and fresh queries left alone on a first open.
+- [x] 5.6 Reword the treemap's remainder block and make it focus the table sorted by size. Verify with Vitest.
+- [x] 5.7 Update the Map and detail panel sections of `docs/operator.md`. Verify with the docs tests.
 
 ## 6. Compare and Opportunities
 
