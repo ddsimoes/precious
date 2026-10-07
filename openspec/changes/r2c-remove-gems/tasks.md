@@ -76,7 +76,7 @@
   - `openspec validate --strict`.
 
   Verify that every step passes.
-- [ ] 5.3 Smoke-check the built binary on a copy of an r2b (v4) database with a throwaway script:
+- [x] 5.3 Smoke-check the built binary on a copy of an r2b (v4) database with a throwaway script:
   - the 0005 upgrade;
   - Opportunities with the rescue card first;
   - `GET /api/gems` is 404;
