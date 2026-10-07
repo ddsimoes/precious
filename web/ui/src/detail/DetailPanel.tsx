@@ -15,7 +15,7 @@ import { useSources } from '@/api/sources'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { CompareWith } from '@/compare/CompareWith'
 import { Button } from '@/components/ui/button'
-import { ArchiveSection, CopiesSection, RelationsSection } from '@/detail/ContentSections'
+import { ArchiveNoteSection, ArchiveSection, CopiesSection, RelationsSection } from '@/detail/ContentSections'
 import { DecisionControls } from '@/detail/DecisionControls'
 import { InsideList } from '@/detail/InsideList'
 import { Preview } from '@/detail/Preview'
@@ -120,6 +120,7 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
   const folder = entry.kind === 'directory'
   const drillable = isDrillable(entry)
   const member = isMember(entry)
+  const listed = detail.archive?.state === 'complete'
   const rootLabel = sources.data?.sources.find((s) => s.id === entry.source_id)?.label ?? t('entry.root')
   const parent = ancestors.at(-1)
   const archiveName = ancestors.find((a) => a.id === entry.archive_id)?.name ?? entry.archive_id ?? ''
@@ -164,15 +165,22 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       </nav>
 
       <div className="flex flex-wrap gap-2">
+        {/* A complete archive opens as a folder first (r2b design D10);
+            the viewer only offers it for download. */}
+        {listed && (
+          <Button asChild size="sm">
+            <Link to={`/map/${entry.id}`}>{t('detail.openArchive')}</Link>
+          </Button>
+        )}
         {entry.kind === 'file' && (
-          <Button size="sm" onClick={() => setViewing(true)}>
+          <Button size="sm" variant={listed ? 'outline' : 'default'} onClick={() => setViewing(true)}>
             {t('detail.open')}
           </Button>
         )}
         <Button asChild size="sm" variant="outline">
           <Link
             to={
-              drillable || parent === undefined
+              folder || parent === undefined
                 ? { pathname: `/map/${entry.id}`, search: `?entry=${entry.id}` }
                 : { pathname: `/map/${parent.id}`, search: `?entry=${entry.id}` }
             }
@@ -249,7 +257,12 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       )}
       {detail.archive !== null && (
         <Section title={t('detail.archive')}>
-          <ArchiveSection entry={entry} archive={detail.archive} />
+          <ArchiveSection archive={detail.archive} />
+        </Section>
+      )}
+      {detail.archive_note !== null && (
+        <Section title={t('detail.archive')}>
+          <ArchiveNoteSection entry={entry} note={detail.archive_note} />
         </Section>
       )}
       {drillable && (

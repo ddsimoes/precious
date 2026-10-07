@@ -8,6 +8,7 @@ import {
   fetchCopies,
   type ArchiveFormat,
   type ArchiveInfo,
+  type ArchiveNote,
   type Copy,
   type Coverage,
   type EntryContent,
@@ -193,7 +194,10 @@ export function RelationsSection({
   )
 }
 
-export function ArchiveSection({ entry, archive }: { entry: EntryRow; archive: ArchiveInfo }) {
+// ArchiveSection describes the archive of an archive file Precious opened.
+// Opening a complete one as a folder is the panel's main action
+// (DetailPanel); any other outcome left what is inside unchecked.
+export function ArchiveSection({ archive }: { archive: ArchiveInfo }) {
   const { t } = useTranslation()
   const fmt = useFormat()
   return (
@@ -212,13 +216,16 @@ export function ArchiveSection({ entry, archive }: { entry: EntryRow; archive: A
           </>
         )}
       </dl>
-      {archive.state === 'complete' && (
-        <div>
-          <Button asChild size="sm" variant="outline">
-            <Link to={`/map/${entry.id}`}>{t('detail.openArchive')}</Link>
-          </Button>
-        </div>
-      )}
+      {archive.state !== 'complete' && <p className="text-sm">{t('detail.archiveUnchecked')}</p>}
     </>
   )
+}
+
+// ArchiveNoteSection says why an archive file was not opened (r2b design
+// D10), and so that what is inside is not checked for copies.
+export function ArchiveNoteSection({ entry, note }: { entry: EntryRow; note: ArchiveNote }) {
+  const { t } = useTranslation()
+  const dot = entry.name.lastIndexOf('.')
+  const format = dot > 0 ? entry.name.slice(dot + 1).toLowerCase() : entry.name
+  return <p className="text-sm">{t(`detail.archiveNote.${note}`, { format })}</p>
 }
