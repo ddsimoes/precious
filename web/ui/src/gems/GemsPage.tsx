@@ -130,7 +130,7 @@ function GemRow({ gem }: { gem: Gem }) {
         <span className="font-semibold">{fmt.bytes(entry.size)}</span>
       </div>
       <p className="text-xs text-muted-foreground">
-        {[sourceLabel(entry.source_id), ...(time === null ? [] : [fmt.date(time)])].join(' · ')}
+        {sourceLabel(entry.source_id)} · {time === null ? t('entry.unknownDate') : fmt.date(time)}
       </p>
       {group !== null && (
         <p className="text-muted-foreground">

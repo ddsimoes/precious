@@ -1,9 +1,17 @@
 import { useInfiniteQuery, useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useSearchParams } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 
-import { buckets, compareQueryKey, fetchCompare, isBucket, type Bucket, type CompareItem } from '@/api/compare'
+import {
+  buckets,
+  compareQueryKey,
+  fetchCompare,
+  firstBucket,
+  isBucket,
+  type Bucket,
+  type CompareItem,
+} from '@/api/compare'
 import { checkNow } from '@/api/content'
 import { isMember, type EntryRow } from '@/api/entries'
 import { ErrorBanner } from '@/app/ErrorBanner'
@@ -20,14 +28,15 @@ import { cn } from '@/lib/utils'
 // ComparePage answers "which copy do I keep?" (spec §11.6, R2 design D11):
 // two folders or archives side by side, named in the address
 // (/compare?left=&right=&bucket=) so a comparison can be bookmarked, their
-// files in five groups, each decided with the usual controls.
+// files in five groups, each decided with the usual controls. Without a
+// group in the address, it opens on the first group that holds files.
 export function ComparePage() {
   const { t } = useTranslation()
   const [params] = useSearchParams()
   const left = params.get('left') ?? ''
   const right = params.get('right') ?? ''
   const bucketParam = params.get('bucket')
-  const bucket: Bucket = isBucket(bucketParam) ? bucketParam : 'only_left'
+  const bucket = isBucket(bucketParam) ? bucketParam : null
 
   if (left === '' || right === '') {
     return (
@@ -40,10 +49,11 @@ export function ComparePage() {
   return <Comparison key={`${left} ${right}`} left={left} right={right} bucket={bucket} />
 }
 
-function Comparison({ left, right, bucket }: { left: string; right: string; bucket: Bucket }) {
+function Comparison({ left, right, bucket }: { left: string; right: string; bucket: Bucket | null }) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const csrfToken = useCsrfToken()
+  const navigate = useNavigate()
   const [params] = useSearchParams()
   const [checkStarted, setCheckStarted] = useState(false)
 
@@ -67,6 +77,16 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
     return `?${next}`
   }
 
+  // The summary alone came: the address names the group to open.
+  const opening = bucket === null ? first?.summary : undefined
+  useEffect(() => {
+    if (opening !== undefined) {
+      const next = new URLSearchParams(params)
+      next.set('bucket', firstBucket(opening))
+      void navigate({ search: `?${next}` }, { replace: true })
+    }
+  }, [opening, params, navigate])
+
   return (
     <div className={cn('grid items-start gap-4', params.has('entry') && '3xl:grid-cols-[minmax(0,1fr)_26rem]')}>
       <div className="grid min-w-0 gap-4">
@@ -78,12 +98,12 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
             onRetry={() => void pages.refetch()}
           />
         )}
-        {pages.isPending && (
+        {(pages.isPending || opening !== undefined) && (
           <p role="status" className="text-sm text-muted-foreground">
             {t('app.loading')}
           </p>
         )}
-        {first !== undefined && (
+        {first !== undefined && bucket !== null && (
           <>
             <section aria-label={t('compare.sides')} className="grid gap-3 md:grid-cols-2">
               <Side label={t('compare.left')} row={first.left} />

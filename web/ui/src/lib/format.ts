@@ -41,6 +41,11 @@ export function formatList(items: string[], locale: string): string {
   return new Intl.ListFormat(locale, { style: 'short', type: 'unit' }).format(items)
 }
 
+// formatConjunction joins items in a sentence: "a, b, and c".
+export function formatConjunction(items: string[], locale: string): string {
+  return new Intl.ListFormat(locale, { style: 'long', type: 'conjunction' }).format(items)
+}
+
 // formatDate formats an RFC 3339 time as a date; formatDateTime adds the
 // time of day. Both use the browser's time zone.
 export function formatDate(time: string, locale: string): string {
@@ -51,6 +56,17 @@ export function formatDateTime(time: string, locale: string): string {
   return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(
     new Date(time),
   )
+}
+
+// formatDateSpan formats the dates from oldest to newest: one date when both
+// fall on the same day or only one is known, and null when neither is.
+export function formatDateSpan(oldest: string | null, newest: string | null, locale: string): string | null {
+  const from = oldest === null ? null : formatDate(oldest, locale)
+  const to = newest === null ? null : formatDate(newest, locale)
+  if (from !== null && to !== null && from !== to) {
+    return `${from} – ${to}`
+  }
+  return to ?? from
 }
 
 const precisionUnits = [
@@ -73,8 +89,10 @@ export interface Formatters {
   count: (count: number) => string
   percent: (fraction: number) => string
   list: (items: string[]) => string
+  conjunction: (items: string[]) => string
   date: (time: string) => string
   dateTime: (time: string) => string
+  dateSpan: (oldest: string | null, newest: string | null) => string | null
   timePrecision: (ns: number) => string
 }
 
@@ -88,8 +106,10 @@ export function useFormat(): Formatters {
       count: (count) => formatCount(count, locale),
       percent: (fraction) => formatPercent(fraction, locale),
       list: (items) => formatList(items, locale),
+      conjunction: (items) => formatConjunction(items, locale),
       date: (time) => formatDate(time, locale),
       dateTime: (time) => formatDateTime(time, locale),
+      dateSpan: (oldest, newest) => formatDateSpan(oldest, newest, locale),
       timePrecision: (ns) => formatTimePrecision(ns, locale),
     }),
     [locale],

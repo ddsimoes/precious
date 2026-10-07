@@ -44,15 +44,16 @@ describe('Home screen', () => {
       'Disposable5 GiB · 15,000 files',
       'Containers10 GiB · 5,000 files',
     ])
-    // File kinds from the largest down; years in order.
+    // File kinds from the largest down; years in order, the unknown date last.
     expect(rows('Size by file type')).toEqual([
       'Videos60 GiB · 2,000 files',
       'Images40 GiB · 200,000 files',
       'Other20 GiB · 208,000 files',
     ])
     expect(rows('Size by year of last change')).toEqual([
-      '200450 GiB · 110,000 files',
+      '200445 GiB · 109,000 files',
       '202470 GiB · 300,000 files',
+      'Unknown date5 GiB · 1,000 files',
     ])
     expect(rows('Decisions')).toEqual([
       'Keep25 GiB · 60,000 files',

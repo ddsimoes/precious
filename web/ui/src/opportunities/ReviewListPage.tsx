@@ -1,11 +1,11 @@
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { useEffect, useEffectEvent, useId, useMemo, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import type { Copy } from '@/api/content'
 import { useDecide } from '@/api/decisions'
-import { isMember, lastChange, type EntryRow } from '@/api/entries'
+import { changeDates, isMember, type EntryRow } from '@/api/entries'
 import type { Decision } from '@/api/home'
 import {
   fetchReviewPage,
@@ -23,10 +23,11 @@ import { SourceFilter } from '@/components/SourceFilter'
 import { Button } from '@/components/ui/button'
 import { DetailPanel } from '@/detail/DetailPanel'
 import { useEntryLink } from '@/detail/useEntryLink'
-import { useFormat, type Formatters } from '@/lib/format'
+import { useFormat } from '@/lib/format'
 import { useSourceLabel, useSourceParam } from '@/lib/sourceParams'
 import { cn } from '@/lib/utils'
 import { ListSelectAll } from '@/opportunities/ListSelectAll'
+import { cardFigures } from '@/opportunities/cardFigures'
 import { summaryLine } from '@/opportunities/summary'
 
 // ReviewListPage is the review list of one opportunity card (spec §11.5, R2
@@ -48,8 +49,8 @@ interface CopyItem {
   sourceId: string
   path: string
   effDecision: Decision
-  // own is the own decision when known (a relation's sides report it).
-  own?: Decision | null
+  // own is the copy's own decision (null: it follows its folder).
+  own: Decision | null
   member: boolean
   hardLink: boolean
   offline: boolean
@@ -61,6 +62,7 @@ function fromCopy(copy: Copy): CopyItem {
     sourceId: copy.source_id,
     path: copy.path,
     effDecision: copy.eff_decision,
+    own: copy.decision,
     member: copy.archive_id !== null,
     hardLink: copy.hard_link,
     offline: copy.offline,
@@ -92,21 +94,29 @@ function copyItems(row: ReviewRow): CopyItem[] {
   return []
 }
 
+// Section is a part of the list: its open rows, or its decided ones.
+type Section = 'open' | 'decided'
+
 // Target is what the keyboard moves through: a row, or a copy of an
-// expanded duplicates row. entryId is what K, D, and L decide (null: the
-// target has no decision of its own); open is what Enter does.
+// expanded duplicates row, in a section. row is the key of its row;
+// entryId is what K, D, and L decide (null: the target has no decision of
+// its own); open is what Enter does.
 interface Target {
   key: string
+  row: string
+  section: Section
   entryId: string | null
   open: () => void
 }
 
-function rowKey(row: ReviewRow) {
-  return `row:${row.id}`
+// A row's key names its section: a row decided from the open rows leaves
+// them, even when it shows again among the decided ones.
+function rowKey(section: Section, row: ReviewRow) {
+  return `${section}:row:${row.id}`
 }
 
-function copyKey(row: ReviewRow, item: CopyItem) {
-  return `copy:${row.id}:${item.ref}`
+function copyKey(section: Section, row: ReviewRow, item: CopyItem) {
+  return `${section}:copy:${row.id}:${item.ref}`
 }
 
 const keyChoices: Record<string, 'keep' | 'discard' | 'later'> = { k: 'keep', d: 'discard', l: 'later' }
@@ -121,10 +131,14 @@ function ReviewList({ list }: { list: ReviewListName }) {
   const decidedId = useId()
   const listRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  // cursor is the selected target, with its index when it was selected: a
-  // decided row leaves the list, and the row that took its place is next.
-  const [cursor, setCursor] = useState<{ key: string; index: number } | null>(null)
-  const focusCursor = useRef(false)
+  // cursor is the selected target, its row's key, and its index when it was
+  // selected: when a decided row leaves the list, the row that took its
+  // place is selected, and a hidden copy hands the selection to its row.
+  // focus is set when the keyboard selected it.
+  const [cursor, setCursor] = useState<{ key: string; row: string; index: number; focus: boolean } | null>(null)
+  // awaiting is the last loaded row of a section that J moved past while the
+  // section's next page loads; the page's first row is selected when it comes.
+  const [awaiting, setAwaiting] = useState<{ key: string; section: Section; count: number } | null>(null)
   const decide = useDecide()
   const duplicates = list === 'duplicates'
 
@@ -147,6 +161,10 @@ function ReviewList({ list }: { list: ReviewListName }) {
     [showDecided, decidedRows.data],
   )
   const card = openRows.data?.pages[0]?.card
+  const sections = {
+    open: { rows, pages: openRows },
+    decided: { rows: decided, pages: decidedRows },
+  }
 
   const toggle = (row: ReviewRow) =>
     setExpanded((current) => {
@@ -160,27 +178,61 @@ function ReviewList({ list }: { list: ReviewListName }) {
     })
 
   const targets: Target[] = []
-  for (const row of [...rows, ...decided]) {
-    if (!duplicates) {
-      const entry = row.entry
-      if (entry !== null) {
-        targets.push({
-          key: rowKey(row),
-          entryId: isMember(entry) ? null : entry.id,
-          open: () => void navigate({ search: entryLink(entry.id) }),
-        })
+  for (const section of ['open', 'decided'] as const) {
+    for (const row of sections[section].rows) {
+      const key = rowKey(section, row)
+      if (!duplicates) {
+        const entry = row.entry
+        if (entry !== null) {
+          targets.push({
+            key,
+            row: key,
+            section,
+            entryId: isMember(entry) ? null : entry.id,
+            open: () => void navigate({ search: entryLink(entry.id) }),
+          })
+        }
+        continue
       }
-      continue
+      targets.push({ key, row: key, section, entryId: null, open: () => toggle(row) })
+      if (expanded.has(row.id)) {
+        for (const item of copyItems(row)) {
+          targets.push({
+            key: copyKey(section, row, item),
+            row: key,
+            section,
+            entryId: item.member ? null : item.ref,
+            open: () => void navigate({ search: entryLink(item.ref) }),
+          })
+        }
+      }
     }
-    targets.push({ key: rowKey(row), entryId: null, open: () => toggle(row) })
-    if (expanded.has(row.id)) {
-      for (const item of copyItems(row)) {
-        targets.push({
-          key: copyKey(row, item),
-          entryId: item.member ? null : item.ref,
-          open: () => void navigate({ search: entryLink(item.ref) }),
-        })
-      }
+  }
+  const cursorAt = cursor === null ? -1 : targets.findIndex((target) => target.key === cursor.key)
+
+  // keyboardCursor selects the target at index from the keyboard.
+  const keyboardCursor = (index: number) => {
+    const target = targets[index]
+    return target === undefined ? null : { key: target.key, row: target.row, index, focus: true }
+  }
+
+  // A selected target that left the list hands the selection to its row (a
+  // copy hidden), or to the target that took its place (a decided row).
+  if (cursor !== null && cursorAt < 0) {
+    const row = targets.findIndex((target) => target.key === cursor.row)
+    setCursor(keyboardCursor(row >= 0 ? row : Math.min(cursor.index, targets.length - 1)))
+  }
+
+  // The page J waits on came: its first row is selected, unless the
+  // selection moved meanwhile.
+  if (awaiting !== null) {
+    const row = sections[awaiting.section].rows[awaiting.count]
+    if (cursor?.key !== awaiting.key) {
+      setAwaiting(null)
+    } else if (row !== undefined) {
+      const key = rowKey(awaiting.section, row)
+      setAwaiting(null)
+      setCursor(keyboardCursor(targets.findIndex((target) => target.key === key)))
     }
   }
 
@@ -188,16 +240,22 @@ function ReviewList({ list }: { list: ReviewListName }) {
     if (targets.length === 0) {
       return
     }
-    let index: number
-    if (cursor === null) {
-      index = delta === 1 ? 0 : targets.length - 1
-    } else {
-      const at = targets.findIndex((target) => target.key === cursor.key)
-      index = at >= 0 ? at + delta : delta === 1 ? cursor.index : cursor.index - 1
+    setAwaiting(null)
+    if (cursorAt >= 0 && delta === 1) {
+      // Past the last loaded row of a section, J loads the section's next
+      // page.
+      const here = targets[cursorAt]!
+      const { rows: sectionRows, pages } = sections[here.section]
+      if (pages.hasNextPage && targets[cursorAt + 1]?.section !== here.section) {
+        setAwaiting({ key: here.key, section: here.section, count: sectionRows.length })
+        if (!pages.isFetchingNextPage) {
+          void pages.fetchNextPage()
+        }
+        return
+      }
     }
-    index = Math.max(0, Math.min(targets.length - 1, index))
-    focusCursor.current = true
-    setCursor({ key: targets[index]!.key, index })
+    const index = cursorAt < 0 ? (delta === 1 ? 0 : targets.length - 1) : cursorAt + delta
+    setCursor(keyboardCursor(Math.max(0, Math.min(targets.length - 1, index))))
   }
 
   const onKey = useEffectEvent((event: KeyboardEvent) => {
@@ -210,7 +268,7 @@ function ReviewList({ list }: { list: ReviewListName }) {
     if (origin !== null && origin.closest('input, select, textarea, [contenteditable="true"], dialog, aside') !== null) {
       return
     }
-    const current = cursor === null ? undefined : targets.find((target) => target.key === cursor.key)
+    const current = cursorAt < 0 ? undefined : targets[cursorAt]
     const key = event.key.toLowerCase()
     const choice = keyChoices[key]
     if (choice !== undefined) {
@@ -239,21 +297,18 @@ function ReviewList({ list }: { list: ReviewListName }) {
     return () => document.removeEventListener('keydown', listener)
   }, [])
 
-  // A target the keyboard moved to takes the focus, so it scrolls into view
+  // A target the keyboard selected takes the focus, so it scrolls into view
   // and assistive technology follows.
   useEffect(() => {
-    if (!focusCursor.current || cursor === null) {
-      return
+    if (cursor?.focus === true) {
+      listRef.current?.querySelector<HTMLElement>(`[data-review-key="${cursor.key}"]`)?.focus()
     }
-    focusCursor.current = false
-    const element = listRef.current?.querySelector<HTMLElement>(`[data-review-key="${cursor.key}"]`)
-    element?.focus()
   }, [cursor])
 
   const select = (key: string) => {
     const index = targets.findIndex((target) => target.key === key)
     if (index >= 0 && cursor?.key !== key) {
-      setCursor({ key, index })
+      setCursor({ key, row: targets[index]!.row, index, focus: false })
     }
   }
 
@@ -317,6 +372,7 @@ function ReviewList({ list }: { list: ReviewListName }) {
         {openRows.isError && <ErrorBanner error={openRows.error} onRetry={() => void openRows.refetch()} />}
         {openRows.data !== undefined && (
           <RowList
+            section="open"
             label={t('review.rows', { list: listLabel })}
             rows={rows}
             emptyText={t('review.noRows')}
@@ -335,6 +391,7 @@ function ReviewList({ list }: { list: ReviewListName }) {
             )}
             {decidedRows.data !== undefined && (
               <RowList
+                section="decided"
                 label={t('review.decidedRows', { list: listLabel })}
                 rows={decided}
                 emptyText={t('review.noDecided')}
@@ -358,12 +415,12 @@ function CardFigures({ card, list }: { card: Card | undefined; list: ReviewListN
   if (card === undefined) {
     return null
   }
+  const figures = cardFigures(card, t, fmt)
   return (
     <div className="grid gap-1 text-sm">
       <p>
-        <span className="text-xl font-semibold">{fmt.bytes(card.bytes)}</span>{' '}
-        {t('opportunities.rows', { count: card.rows, formatted: fmt.count(card.rows) })} ·{' '}
-        {t(`opportunities.basis.${card.basis}`)}
+        <span className="text-xl font-semibold">{figures.headline}</span>{' '}
+        {[...(figures.rows === null ? [] : [figures.rows]), t(`opportunities.basis.${card.basis}`)].join(' · ')}
       </p>
       <p className="text-muted-foreground">{t(`opportunities.help.${list}`)}</p>
     </div>
@@ -377,6 +434,7 @@ interface RowListProps {
   hasMore: boolean
   loadingMore: boolean
   onLoadMore: () => void
+  section: Section
   duplicates: boolean
   cursorKey: string | null
   expanded: ReadonlySet<string>
@@ -417,31 +475,21 @@ type RowProps = Omit<RowListProps, 'label' | 'rows' | 'emptyText' | 'hasMore' | 
 
 const targetClass = 'rounded-lg border bg-card p-3 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
-// dateRange is a row's oldest to newest change, or a file's last change.
-function dateRange(entry: EntryRow, fmt: Formatters): string | null {
-  if (entry.kind === 'directory' && entry.oldest !== null && entry.newest !== null) {
-    const oldest = fmt.date(entry.oldest)
-    const newest = fmt.date(entry.newest)
-    return oldest === newest ? newest : `${oldest} – ${newest}`
-  }
-  const time = lastChange(entry)
-  return time === null ? null : fmt.date(time)
-}
-
 // EntryReviewRow is a row of every list but duplicates: an outermost entry
 // that matches the card, with its size, dates, suggestion, summary, and
-// decision controls.
-function EntryReviewRow({ row, cursorKey, onSelect }: RowProps) {
+// decision controls. An unpacked archive also names the folder it was
+// unpacked in, with a Compare of the two.
+function EntryReviewRow({ row, section, cursorKey, onSelect }: RowProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const entryLink = useEntryLink()
   const sourceLabel = useSourceLabel()
   const entry = row.entry
-  const key = rowKey(row)
+  const key = rowKey(section, row)
   if (entry === null) {
     return null
   }
-  const dates = dateRange(entry, fmt)
+  const dates = fmt.dateSpan(...changeDates(entry)) ?? t('entry.unknownDate')
   return (
     <li
       data-review-key={key}
@@ -461,10 +509,26 @@ function EntryReviewRow({ row, cursorKey, onSelect }: RowProps) {
       <p className="text-xs text-muted-foreground">
         {[
           sourceLabel(entry.source_id),
-          ...(dates === null ? [] : [dates]),
+          dates,
           ...(entry.triage === null ? [] : [t('review.suggestion', { triage: t(`entry.triage.${entry.triage}`) })]),
         ].join(' · ')}
       </p>
+      {row.relation !== null && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="min-w-0 break-all">
+            <Trans
+              i18nKey="review.unpackedIn"
+              values={{ path: row.relation.other.path }}
+              components={{
+                folderLink: (
+                  <Link to={{ search: entryLink(row.relation.other.id) }} className="text-primary hover:underline" />
+                ),
+              }}
+            />
+          </p>
+          <CompareLink left={entry.id} right={row.relation.other.id} />
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span>{t('review.decision', { decision: t(`home.decision.${entry.eff_decision}`) })}</span>
         {isMember(entry) ? (
@@ -480,12 +544,12 @@ function EntryReviewRow({ row, cursorKey, onSelect }: RowProps) {
 // DuplicatesRow is a row of the duplicates list: a folder relation or a
 // group of copies of one file, which expands into its copies, each decided
 // on its own (R2 design D2).
-function DuplicatesRow({ row, cursorKey, expanded, onSelect, onToggle }: RowProps) {
+function DuplicatesRow({ row, section, cursorKey, expanded, onSelect, onToggle }: RowProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const entryLink = useEntryLink()
   const sourceLabel = useSourceLabel()
-  const key = rowKey(row)
+  const key = rowKey(section, row)
   const items = copyItems(row)
   const open = expanded.has(row.id)
   const copiesId = useId()
@@ -514,7 +578,7 @@ function DuplicatesRow({ row, cursorKey, expanded, onSelect, onToggle }: RowProp
       </div>
       <p className="text-muted-foreground">
         {row.relation !== null && `${t(`review.relation.${row.relation.kind}`)} · `}
-        {summaryLine(row.summary, t, fmt)}
+        {summaryLine(row.summary, t, fmt, { files: row.copies === null })}
       </p>
       <div className="flex flex-wrap gap-2">
         <Button
@@ -530,22 +594,13 @@ function DuplicatesRow({ row, cursorKey, expanded, onSelect, onToggle }: RowProp
           {open ? t('review.hideCopies') : t('review.showCopies')}
         </Button>
         {row.relation !== null && row.entry !== null && (
-          <Button asChild size="sm" variant="outline">
-            <Link
-              to={{
-                pathname: '/compare',
-                search: `?${new URLSearchParams({ left: row.entry.id, right: row.relation.other.id })}`,
-              }}
-            >
-              {t('review.compare')}
-            </Link>
-          </Button>
+          <CompareLink left={row.entry.id} right={row.relation.other.id} />
         )}
       </div>
       {open && (
         <ul id={copiesId} aria-label={t('review.copiesList')} className="grid gap-2">
           {items.map((item) => {
-            const itemKey = copyKey(row, item)
+            const itemKey = copyKey(section, row, item)
             return (
               <li
                 key={item.ref}
@@ -590,5 +645,17 @@ function DuplicatesRow({ row, cursorKey, expanded, onSelect, onToggle }: RowProp
         </ul>
       )}
     </li>
+  )
+}
+
+// CompareLink opens Compare on a row's two sides.
+function CompareLink({ left, right }: { left: string; right: string }) {
+  const { t } = useTranslation()
+  return (
+    <Button asChild size="sm" variant="outline">
+      <Link to={{ pathname: '/compare', search: `?${new URLSearchParams({ left, right })}` }}>
+        {t('review.compare')}
+      </Link>
+    </Button>
   )
 }

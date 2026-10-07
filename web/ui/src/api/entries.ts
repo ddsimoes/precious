@@ -126,6 +126,8 @@ export interface EntryRow {
   size: number
   total_bytes: number
   total_files: number
+  // The dates are null when unknown: none recorded, or at or before the Unix
+  // epoch. A folder's newest and oldest leave such files out.
   mtime: string | null
   newest: string | null
   oldest: string | null
@@ -352,6 +354,12 @@ export function displayKind(entry: Pick<EntryRow, 'kind' | 'file_kind' | 'main_k
 // lastChange is the newest modification inside a folder, or a file's own.
 export function lastChange(entry: Pick<EntryRow, 'kind' | 'mtime' | 'newest'>): string | null {
   return entry.kind === 'directory' ? entry.newest : entry.mtime
+}
+
+// changeDates are a row's oldest and newest change: a folder's range, or a
+// file's own last change at both ends. A null end is unknown.
+export function changeDates(entry: Pick<EntryRow, 'kind' | 'mtime' | 'newest' | 'oldest'>): [string | null, string | null] {
+  return entry.kind === 'directory' ? [entry.oldest, entry.newest] : [entry.mtime, entry.mtime]
 }
 
 // isMember reports whether a row is a member of an archive ("m<id>"), which

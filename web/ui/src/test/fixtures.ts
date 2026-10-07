@@ -96,8 +96,9 @@ export function homeResponse(overrides: Partial<Home> = {}): Home {
       { kind: 'other', bytes: 20 * GiB, files: 208_000 },
     ],
     by_year: [
+      { year: null, bytes: 5 * GiB, files: 1_000 },
       { year: 2024, bytes: 70 * GiB, files: 300_000 },
-      { year: 2004, bytes: 50 * GiB, files: 110_000 },
+      { year: 2004, bytes: 45 * GiB, files: 109_000 },
     ],
     decisions: {
       undecided: { bytes: 50 * GiB, files: 300_000 },
@@ -130,7 +131,7 @@ export function card(list: Card['list'], bytes: number, rows: number, overrides:
   return { list, bytes, rows, basis: list === 'duplicates' || list === 'unpacked_archives' ? 'content' : 'rules', ...overrides }
 }
 
-// copyOf is a CopyJSON of row.
+// copyOf is a CopyJSON of row, which follows its folder.
 export function copyOf(row: EntryRow, overrides: Partial<Copy> = {}): Copy {
   return {
     ref: row.id,
@@ -140,6 +141,7 @@ export function copyOf(row: EntryRow, overrides: Partial<Copy> = {}): Copy {
     archive_id: row.archive_id,
     hard_link: false,
     offline: false,
+    decision: null,
     eff_decision: row.eff_decision,
     ...overrides,
   }

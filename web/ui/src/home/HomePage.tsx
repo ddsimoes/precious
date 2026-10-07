@@ -13,6 +13,7 @@ import { SourceFilter } from '@/components/SourceFilter'
 import { Card } from '@/components/ui/card'
 import { BarList } from '@/home/BarList'
 import { HashingProgress } from '@/home/HashingProgress'
+import { yearBars } from '@/home/yearBars'
 import { useFormat } from '@/lib/format'
 import { useSourceParam } from '@/lib/sourceParams'
 import { CardList } from '@/opportunities/CardList'
@@ -84,9 +85,7 @@ function HomeFigures({ home, source, sources }: { home: Home; source: string | n
   const byKind = [...home.by_kind]
     .sort((a, b) => b.bytes - a.bytes)
     .map((a) => ({ key: a.kind, label: t(`home.kind.${a.kind}`), bytes: a.bytes, files: a.files }))
-  const byYear = [...home.by_year]
-    .sort((a, b) => a.year - b.year)
-    .map((a) => ({ key: String(a.year), label: String(a.year), bytes: a.bytes, files: a.files }))
+  const byYear = yearBars(home.by_year, t)
   const byDecision = decisions.map((decision) => ({
     key: decision,
     label: t(`home.decision.${decision}`),

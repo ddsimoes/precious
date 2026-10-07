@@ -46,8 +46,10 @@ export interface KindAmount extends Amount {
   kind: FileKind
 }
 
+// YearAmount is the share of files last changed in a year; year is null for
+// files whose date is unknown (at or before the Unix epoch).
 export interface YearAmount extends Amount {
-  year: number
+  year: number | null
 }
 
 export interface HomeScan {

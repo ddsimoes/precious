@@ -150,8 +150,9 @@ describe('Detail panel', () => {
                 { kind: 'document', bytes: 4 * GiB, files: 700 },
               ],
               by_year: [
+                { year: null, bytes: 1 * GiB, files: 50 },
                 { year: 2006, bytes: 1 * GiB, files: 100 },
-                { year: 2003, bytes: 9 * GiB, files: 900 },
+                { year: 2003, bytes: 8 * GiB, files: 850 },
               ],
             },
           }),
@@ -172,7 +173,7 @@ describe('Detail panel', () => {
       within(panel.getByRole('list', { name: 'Size by year of last change' }))
         .getAllByRole('listitem')
         .map((item) => item.textContent.replace(/\s+/g, ' ')),
-    ).toEqual(['20039 GiB · 900 files', '20061 GiB · 100 files'])
+    ).toEqual(['20038 GiB · 850 files', '20061 GiB · 100 files', 'Unknown date1 GiB · 50 files'])
 
     const classification = within(panel.getByRole('region', { name: 'Classification' }))
     expect(classification.getByText('Installed application')).toBeInTheDocument()

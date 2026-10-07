@@ -100,7 +100,7 @@ describe('Opportunities', () => {
           cards:
             new URL(request.url).searchParams.get('source') === 'fotos'
               ? [card('caches', 1 * GiB, 2)]
-              : [card('leftovers', 1 * MiB, 5), card('duplicates', 8 * GiB, 9), card('installers', 3 * GiB, 4)],
+              : [card('leftovers', 0, 604), card('duplicates', 8 * GiB, 9), card('installers', 3 * GiB, 4)],
           coverage: coverage(),
           computed_at: '2026-10-06T10:00:00Z',
         }),
@@ -116,6 +116,9 @@ describe('Opportunities', () => {
     ])
     expect(cards.getAllByRole('listitem')[0]).toHaveTextContent('Based on the same content')
     expect(cards.getAllByRole('listitem')[1]).toHaveTextContent('Based on the rules')
+    // Empty files and folders hold no bytes: their count heads the card.
+    expect(cards.getAllByRole('listitem')[2]).toHaveTextContent(/^Partial downloads, empty folders, and empty files604 items/)
+    expect(cards.getAllByRole('listitem')[2]).not.toHaveTextContent(/0\sB/)
     expect(screen.getByText('80 GiB of 90 GiB checked (89%)')).toBeInTheDocument()
     expect(screen.getByText(/^Figures as of/)).toBeInTheDocument()
 
@@ -155,7 +158,7 @@ describe('Review list', () => {
                 years: [2003, 2004],
                 files: 120,
                 bytes: 400 * MiB,
-                signals: ['editable_document_present', 'contains_vcs', 'database_present'],
+                signals: ['contains_user_material', 'camera_photo_present', 'database_present'],
               },
             }),
           ],
@@ -170,7 +173,7 @@ describe('Review list', () => {
     expect(row).toHaveTextContent('400 MiB')
     expect(
       within(row).getByText(
-        'Installed application · 2003–2004 · 120 files · 400 MiB · holds Office document, Contains version history',
+        'Installed application · 2003–2004 · 120 files · 400 MiB · holds personal material and camera photos',
       ),
     ).toBeInTheDocument()
     expect(within(row).getByText('Fotos · Feb 1, 2003 – Nov 30, 2004 · Suggestion: Review')).toBeInTheDocument()
@@ -206,13 +209,13 @@ describe('Review list', () => {
     expect(current()).toHaveLength(1)
     expect(current()[0]).toHaveTextContent(thumbs.path)
 
-    // D discards it; it leaves the list, and the next key selects the row
-    // that followed it.
+    // D discards it; it leaves the list, and the row that took its place is
+    // selected.
     await user.keyboard('d')
     await waitFor(() => expect(screen.queryByRole('link', { name: thumbs.path })).not.toBeInTheDocument())
     expect(await commandBodies(requests, 'set-decision')).toEqual([{ entry_id: '21', decision: 'discard' }])
-    await user.keyboard('j')
-    expect(current()[0]).toHaveTextContent(recycler.path)
+    await waitFor(() => expect(current()[0]).toHaveTextContent(recycler.path))
+    expect(current()[0]).toHaveFocus()
     await user.keyboard('{ArrowDown}')
     expect(current()[0]).toHaveTextContent(temp.path)
     await user.keyboard('{ArrowUp}')
@@ -243,6 +246,55 @@ describe('Review list', () => {
         { entry_id: '22', decision: 'later' },
       ]),
     )
+  })
+
+  it('decides consecutive rows from the keyboard without moving', async () => {
+    const list = junkList([thumbs, recycler, temp])
+    const requests = stubApi({ ...base, ...list.routes })
+    renderApp('/opportunities/system_junk')
+    const user = userEvent.setup()
+    await screen.findByRole('link', { name: thumbs.path })
+
+    await user.keyboard('j')
+    await user.keyboard('d')
+    await waitFor(() => expect(current()[0]).toHaveTextContent(recycler.path))
+    await user.keyboard('k')
+    await waitFor(() => expect(current()[0]).toHaveTextContent(temp.path))
+    expect(await commandBodies(requests, 'set-decision')).toEqual([
+      { entry_id: '21', decision: 'discard' },
+      { entry_id: '22', decision: 'keep' },
+    ])
+
+    // Deciding the last row leaves nothing selected.
+    await user.keyboard('l')
+    expect(await screen.findByText('Nothing left to review in this list.')).toBeInTheDocument()
+    expect(screen.queryAllByRole('listitem').filter((item) => item.getAttribute('aria-current') === 'true')).toEqual([])
+  })
+
+  it('loads the next page when the next key passes the last loaded row', async () => {
+    const pages: Record<string, EntryRow[]> = { '': [thumbs, recycler], p2: [temp] }
+    const requests = stubApi({
+      ...base,
+      'GET /api/opportunities/system_junk': (request) => {
+        const after = new URL(request.url).searchParams.get('cursor') ?? ''
+        return jsonResponse(200, {
+          card: card('system_junk', 66 * MiB, 3),
+          items: (pages[after] ?? []).map((row) => reviewRow(`r${row.id}`, row)),
+          next_cursor: after === '' ? 'p2' : null,
+        })
+      },
+    })
+    renderApp('/opportunities/system_junk')
+    const user = userEvent.setup()
+    await screen.findByRole('link', { name: recycler.path })
+    expect(screen.queryByRole('link', { name: temp.path })).not.toBeInTheDocument()
+
+    await user.keyboard('jj')
+    expect(current()[0]).toHaveTextContent(recycler.path)
+    await user.keyboard('j')
+    await waitFor(() => expect(current()[0]).toHaveTextContent(temp.path))
+    expect(current()[0]).toHaveFocus()
+    expect(listRequests(requests, 'system_junk')).toEqual(['?decided=0', '?decided=0&cursor=p2'])
   })
 
   it('shows decided rows on request', async () => {
@@ -357,6 +409,8 @@ describe('Review list', () => {
 
     const groupRow = list.getByText('3 copies of Setup.exe').closest('li')!
     expect(groupRow).toHaveTextContent('6 MiB in extra copies')
+    // Its title counts the copies: its summary does not count files.
+    expect(within(groupRow).getByText('Installers and disk images · 2004 · 9 MiB')).toBeInTheDocument()
     const show = within(groupRow).getByRole('button', { name: 'Show copies' })
     expect(show).toHaveAttribute('aria-expanded', 'false')
     await user.click(show)
@@ -398,6 +452,56 @@ describe('Review list', () => {
     await user.keyboard('jjd')
     expect(current()[0]).toHaveTextContent('Downloads/old.zip!Setup.exe')
     expect(await commandBodies(requests, 'set-decision')).toHaveLength(2)
+  })
+
+  it('shows each copy’s own decision among its controls', async () => {
+    const setup = entryRow({ id: '31', name: 'Setup.exe', path: 'Downloads/Setup.exe', eff_decision: 'discard' })
+    const setup1 = entryRow({ id: '32', name: 'Setup(1).exe', path: 'Downloads/Setup(1).exe' })
+    stubApi({
+      ...base,
+      'GET /api/opportunities/duplicates': () =>
+        jsonResponse(200, {
+          card: card('duplicates', 3 * MiB, 1),
+          items: [reviewRow('d2', null, { copies: [copyOf(setup, { decision: 'discard' }), copyOf(setup1)] })],
+          next_cursor: null,
+        }),
+    })
+    renderApp('/opportunities/duplicates')
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Show copies' }))
+    const pressed = (path: string) =>
+      within(screen.getByRole('group', { name: `Decision for ${path}` }))
+        .getAllByRole('button')
+        .filter((button) => button.getAttribute('aria-pressed') === 'true')
+        .map((button) => button.textContent)
+    expect(pressed(setup.path)).toEqual(['Discard'])
+    expect(pressed(setup1.path)).toEqual(['Follow folder'])
+  })
+
+  it('names the folder an archive was unpacked in, with a Compare of the two', async () => {
+    const zip = entryRow({ id: '61', name: 'eMule0.47c.zip', path: 'Downloads/eMule0.47c.zip', archive_state: 'complete' })
+    const emule = folderRow('60', 'emule-0.47c', { path: 'Downloads/emule-0.47c' })
+    stubApi({
+      ...base,
+      'GET /api/opportunities/unpacked_archives': () =>
+        jsonResponse(200, {
+          card: card('unpacked_archives', zip.total_bytes, 1),
+          items: [reviewRow('u61', zip, { relation: relationTo(emule) })],
+          next_cursor: null,
+        }),
+    })
+    renderApp('/opportunities/unpacked_archives')
+
+    const rows = within(await screen.findByRole('list', { name: 'Rows of Archives already unpacked' }))
+    const row = rows.getAllByRole('listitem')[0]!
+    expect(row).toHaveTextContent(`Unpacked in ${emule.path}`)
+    expect(within(row).getByRole('link', { name: emule.path })).toHaveAttribute(
+      'href',
+      '/opportunities/unpacked_archives?entry=60',
+    )
+    expect(within(row).getByRole('link', { name: 'Compare' })).toHaveAttribute('href', '/compare?left=61&right=60')
+    expect(within(row).getByRole('group', { name: `Decision for ${zip.name}` })).toBeInTheDocument()
   })
 
   it('answers an unknown list as not found', async () => {

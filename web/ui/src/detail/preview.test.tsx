@@ -183,6 +183,17 @@ describe('Preview in the detail panel', () => {
     )
   })
 
+  it('says a file Precious could not read cannot be previewed, without asking for a rescan', async () => {
+    const { panel } = await showPreview(file('notas.txt', { content_state: 'unreadable' }), {
+      text: () => errorResponse(409, 'invalid_entry_state', 'entry is unreadable'),
+    })
+    const alert = await within(panel).findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Precious could not read this file, so it can’t be previewed. Its permissions may not allow it.',
+    )
+    expect(alert).not.toHaveTextContent(/Scan its source again/)
+  })
+
   it('says the disk is not connected for a text file on it', async () => {
     const { panel } = await showPreview(file('notas.txt'), {
       text: () => errorResponse(409, 'source_offline', 'volume not mounted'),

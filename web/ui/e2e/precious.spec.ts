@@ -419,7 +419,8 @@ test('R2.2: Compare of Fotos with Fotos - Copia, chosen from the detail panel', 
     .getByRole('complementary', { name: 'Fotos - Copia' })
     .getByRole('link', { name: 'Compare with Fotos', exact: true })
     .click()
-  await expect(page).toHaveURL(/\/compare\?left=\d+&right=\d+$/)
+  // Fotos holds files Fotos - Copia lacks, so Compare opens on them.
+  await expect(page).toHaveURL(/\/compare\?left=\d+&right=\d+&bucket=only_left$/)
 
   // Reloading shows the same comparison: its sides are in the address.
   for (const reload of [false, true]) {
@@ -585,8 +586,10 @@ test('R2.4: discarding one copy of curriculo.doc in the duplicates list leaves t
       .getByRole('list', { name: 'Copies' })
       .locator(':scope > li')
       .filter({ has: page.getByRole('link', { name: path, exact: true }) })
-  await copy(discarded).getByRole('group', { name: `Decision for ${discarded}` }).getByRole('button', { name: 'Discard' }).click()
+  const discard = copy(discarded).getByRole('group', { name: `Decision for ${discarded}` }).getByRole('button', { name: 'Discard' })
+  await discard.click()
   await expect(copy(discarded)).toContainText('Decision: Discard')
+  await expect(discard).toHaveAttribute('aria-pressed', 'true')
   for (const path of group.filter((p) => p !== discarded)) {
     const decision = before.get(path)?.eff_decision ?? 'undecided'
     await expect(copy(path), path).toContainText(`Decision: ${en.home.decision[decision]}`)
@@ -610,7 +613,9 @@ test('R2.4: discarding one copy of curriculo.doc in the duplicates list leaves t
 })
 
 test('R2.5: every card’s bytes equal the sum of its review list over all pages', async () => {
-  const opportunities: { cards: { list: ListName; bytes: number; rows: number }[] } = await (
+  const opportunities: {
+    cards: { list: ListName; bytes: number; rows: number; basis: keyof typeof en.opportunities.basis }[]
+  } = await (
     await page.request.get('/api/opportunities')
   ).json()
   expect(opportunities.cards.map((c) => c.list).toSorted()).toEqual(Object.keys(en.opportunities.list).toSorted())
@@ -624,17 +629,27 @@ test('R2.5: every card’s bytes equal the sum of its review list over all pages
 
   for (const card of opportunities.cards) {
     const label = en.opportunities.list[card.list]
-    const rowsText = `${count(card.rows)} ${card.rows === 1 ? 'item' : 'items'} to review`
+    // A card whose rows hold no bytes heads with its item count instead.
+    const countFirst = card.bytes === 0 && card.rows > 0
+    const items = `${count(card.rows)} ${card.rows === 1 ? 'item' : 'items'}`
+    const headline = countFirst ? items : bytes(card.bytes)
+    const rowsText = countFirst ? null : `${items} to review`
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Opportunities' }).click()
     const tile = page
       .getByRole('list', { name: 'Opportunity cards' })
       .getByRole('listitem')
       .filter({ has: page.getByRole('link', { name: label, exact: true }) })
-    await expect(tile, label).toContainText(bytes(card.bytes))
-    await expect(tile, label).toContainText(rowsText)
+    await expect(tile, label).toContainText(headline)
+    if (rowsText !== null) {
+      await expect(tile, label).toContainText(rowsText)
+    }
     await tile.getByRole('link', { name: label, exact: true }).click()
     await expect(page.getByRole('heading', { name: label, level: 1 })).toBeVisible()
-    await expect(page.getByRole('main').getByText(rowsText).locator('..'), label).toContainText(bytes(card.bytes))
+    const header = page.getByRole('main').getByText(en.opportunities.basis[card.basis]).locator('..')
+    await expect(header, label).toContainText(headline)
+    if (rowsText !== null) {
+      await expect(header, label).toContainText(rowsText)
+    }
     const list = page.getByRole('list', { name: `Rows of ${label}` })
     if (card.rows === 0) {
       await expect(page.getByText('Nothing left to review in this list.')).toBeVisible()
@@ -707,8 +722,8 @@ test('review keys decide and move through the system junk list', async () => {
   await page.keyboard.press('ArrowUp')
   await expect(row(p0)).toHaveAttribute('aria-current', 'true')
 
-  // A decided row leaves the list, and the next key selects the row that
-  // took its place.
+  // A decided row leaves the list, and the row that took its place is
+  // selected, so the keys decide consecutive rows without moving.
   for (const [key, path, next] of [
     ['d', p0, p1],
     ['k', p1, p2],
@@ -716,8 +731,8 @@ test('review keys decide and move through the system junk list', async () => {
   ] as const) {
     await page.keyboard.press(key)
     await expect(row(path)).toHaveCount(0)
-    await page.keyboard.press('j')
     await expect(row(next)).toHaveAttribute('aria-current', 'true')
+    await expect(row(next)).toBeFocused()
   }
 
   // Enter opens the selected row's details. Keys typed there are the

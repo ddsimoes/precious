@@ -4,6 +4,7 @@ import {
   formatBytes,
   formatCount,
   formatDate,
+  formatDateSpan,
   formatDateTime,
   formatTimePrecision,
 } from '@/lib/format'
@@ -52,6 +53,15 @@ describe('dates', () => {
   it('formats a date and time by locale', () => {
     expect(formatDateTime('2024-03-05T14:30:00Z', 'en')).toMatch(/^Mar 5, 2024, 2:30\sPM$/u)
     expect(formatDateTime('2024-03-05T14:30:00Z', 'pt-BR')).toBe('5 de mar. de 2024, 14:30')
+  })
+
+  it('formats a span of dates with only its known ends', () => {
+    const [a, b] = ['2003-02-01T00:00:00Z', '2004-11-30T08:00:00Z']
+    expect(formatDateSpan(a, b, 'en')).toBe('Feb 1, 2003 – Nov 30, 2004')
+    expect(formatDateSpan(b, '2004-11-30T20:00:00Z', 'en')).toBe('Nov 30, 2004')
+    expect(formatDateSpan(null, b, 'en')).toBe('Nov 30, 2004')
+    expect(formatDateSpan(a, null, 'en')).toBe('Feb 1, 2003')
+    expect(formatDateSpan(null, null, 'en')).toBeNull()
   })
 })
 

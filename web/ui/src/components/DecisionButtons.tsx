@@ -9,9 +9,8 @@ interface DecisionButtonsProps {
   entryId: string
   // name names the entry in the group's label.
   name: string
-  // own is the entry's own decision (null: it follows its folder), when
-  // known; a copy reports only its effective decision.
-  own?: Decision | null
+  // own is the entry's own decision (null: it follows its folder).
+  own: Decision | null
 }
 
 // DecisionButtons are the decision controls of a row in Opportunities,
@@ -19,7 +18,7 @@ interface DecisionButtonsProps {
 export function DecisionButtons({ entryId, name, own }: DecisionButtonsProps) {
   const { t } = useTranslation()
   const decide = useDecide()
-  const current: DecisionChoice | undefined = own === undefined ? undefined : (own ?? 'inherit')
+  const current: DecisionChoice = own ?? 'inherit'
 
   return (
     <div className="grid gap-1">
@@ -29,7 +28,7 @@ export function DecisionButtons({ entryId, name, own }: DecisionButtonsProps) {
             key={choice}
             size="sm"
             variant={choice === current ? 'default' : 'outline'}
-            aria-pressed={current === undefined ? undefined : choice === current}
+            aria-pressed={choice === current}
             disabled={decide.isPending}
             className="h-7 px-2 text-xs"
             onClick={(event) => {
