@@ -46,6 +46,9 @@ export function fotosSource(overrides: Partial<Source> = {}): Source {
     totals: { bytes: 120 * GiB, files: 410_000, dirs: 31_000 },
     last_scan_at: '2026-10-01T14:30:00Z',
     active_job: null,
+    schedule: null,
+    next_scan_at: null,
+    schedule_skipped: null,
     ...overrides,
   }
 }
@@ -65,6 +68,9 @@ export function usbSource(overrides: Partial<Source> = {}): Source {
     totals: { bytes: 5 * GiB, files: 1_200, dirs: 80 },
     last_scan_at: null,
     active_job: null,
+    schedule: null,
+    next_scan_at: null,
+    schedule_skipped: null,
     ...overrides,
   }
 }

@@ -12,7 +12,7 @@ import { apiGet, postCommand } from '@/app/api'
 
 // Sources, the folder picker, and the source commands (design Interfaces:
 // GET /api/sources, GET /api/picker, add-source, rename-source,
-// remove-source, start-scan).
+// remove-source, set-source-schedule, start-scan).
 
 export type SourceState = 'online' | 'offline' | 'unavailable'
 
@@ -45,6 +45,22 @@ export interface Totals {
   dirs: number
 }
 
+// Schedule is a source's rescan schedule: every day, or every week on one
+// weekday (0 is Sunday), at a time of day ("HH:MM") in a named time zone.
+export interface Schedule {
+  every: 'day' | 'week'
+  at: string
+  weekday?: number
+  zone: string
+}
+
+// ScheduleSkip is the last time a scheduled scan came due and was skipped,
+// and why: the source's state then, or invalid_schedule.
+export interface ScheduleSkip {
+  at: string
+  reason: string
+}
+
 export interface Source {
   id: string
   label: string
@@ -62,6 +78,11 @@ export interface Source {
   totals: Totals
   last_scan_at: string | null
   active_job: ActiveJob | null
+  // schedule is null when scheduled rescans are off, and next_scan_at then
+  // too; schedule_skipped is null unless the last due time was skipped.
+  schedule: Schedule | null
+  next_scan_at: string | null
+  schedule_skipped: ScheduleSkip | null
 }
 
 export interface SourcesResponse {
@@ -135,6 +156,15 @@ export function removeSource(sourceId: string, csrfToken: string): Promise<Recor
 
 export function startScan(sourceId: string, csrfToken: string): Promise<StartScanResult> {
   return postCommand<StartScanResult>('start-scan', { source_id: sourceId }, csrfToken)
+}
+
+// setSourceSchedule sets the source's rescan schedule; null turns it off.
+export function setSourceSchedule(
+  sourceId: string,
+  schedule: Schedule | null,
+  csrfToken: string,
+): Promise<SourceResult> {
+  return postCommand<SourceResult>('set-source-schedule', { source_id: sourceId, schedule }, csrfToken)
 }
 
 // updateSource replaces one source in the cached list.
