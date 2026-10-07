@@ -704,6 +704,7 @@ export const en = {
       content: 'Based on the same content',
     },
     list: {
+      rescue: 'Your files inside programs',
       duplicates: 'Duplicate folders and files',
       unpacked_archives: 'Archives already unpacked',
       system_junk: 'System junk',
@@ -713,6 +714,8 @@ export const en = {
       leftovers: 'Partial downloads, empty folders, and empty files',
     },
     help: {
+      rescue:
+        'Your own documents, photos, and saves found inside program or disposable folders. Rescue them before cleaning those folders.',
       duplicates: 'Folders with the same content, and files with more than one copy.',
       unpacked_archives: 'Archives whose content is also in a folder.',
       system_junk: 'Files the system makes and remakes, such as thumbnails and recycle bins.',
@@ -785,6 +788,7 @@ export const en = {
     copiesList: 'Copies',
     compare: 'Compare',
     unpackedIn: 'Unpacked in <folderLink>{{path}}</folderLink>',
+    inside: 'Inside <groupLink>{{path}}</groupLink>',
     memberDecision: 'Decided with its archive',
     selectAll: 'Select all rows',
     selectingAll: 'Counting…',

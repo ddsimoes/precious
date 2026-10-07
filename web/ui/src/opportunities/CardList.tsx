@@ -5,16 +5,20 @@ import type { Card } from '@/api/opportunities'
 import { useFormat } from '@/lib/format'
 import { cardFigures } from '@/opportunities/cardFigures'
 
-// CardList shows the opportunity cards largest first (R2 design D12), each
-// with its bytes, its open rows and those decided (r2b D13), and what it
-// rests on, and each opening its review list for the same source.
+// CardList ranks the opportunity cards as the server does (R2 design D12,
+// r2c D3): the rescue card first while it has open rows, then largest
+// first. Each shows its bytes, its open rows and those decided (r2b D13),
+// and what it rests on, and opens its review list for the same source.
 export function CardList({ cards, source }: { cards: Card[]; source: string | null }) {
   const { t } = useTranslation()
   const fmt = useFormat()
   if (cards.length === 0) {
     return <p className="text-sm text-muted-foreground">{t('opportunities.none')}</p>
   }
-  const ranked = [...cards].sort((a, b) => b.bytes - a.bytes)
+  const ranked = [...cards].sort(
+    (a, b) =>
+      Number(b.list === 'rescue' && b.rows > 0) - Number(a.list === 'rescue' && a.rows > 0) || b.bytes - a.bytes,
+  )
   const search = source === null ? '' : `?${new URLSearchParams({ source })}`
   return (
     <ul aria-label={t('opportunities.cards')} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

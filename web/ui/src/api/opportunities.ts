@@ -7,6 +7,7 @@ import { apiGet, postCommand } from '@/app/api'
 // /api/opportunities, GET /api/opportunities/{list}, command select-list).
 
 export type ReviewListName =
+  | 'rescue'
   | 'duplicates'
   | 'unpacked_archives'
   | 'system_junk'
@@ -16,6 +17,7 @@ export type ReviewListName =
   | 'leftovers'
 
 export const reviewLists: ReviewListName[] = [
+  'rescue',
   'duplicates',
   'unpacked_archives',
   'system_junk',
@@ -62,7 +64,8 @@ export interface RowSummary {
 
 // ReviewRow is RowJSON. An entry row has its entry; a duplicates row is a
 // folder relation (its entry is side a, relation.other side b) or a group of
-// copies of one content.
+// copies of one content. group is the outermost program or disposable group
+// holding a rescue row's file, and null on every other list's rows.
 export interface ReviewRow {
   id: string
   bytes: number
@@ -70,6 +73,7 @@ export interface ReviewRow {
   entry: EntryRow | null
   relation: Relation | null
   copies: Copy[] | null
+  group: EntryRow | null
   summary: RowSummary
 }
 
