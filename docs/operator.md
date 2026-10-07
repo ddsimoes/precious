@@ -348,6 +348,16 @@ The update after R2 adds the owner's category overrides and group marks, schedul
 
 To roll back, stop Precious, reinstall the R2 binary, [restore](#restoring) the backup, and start it. The R2 binary refuses the migrated database (`database has version 4, binary supports up to 2`) and leaves it unmodified. Overrides, group marks, and schedules set after the upgrade are lost with it.
 
+### Upgrading from R2b
+
+The update after R2b removes Gems and keeps its rescue list as the opportunity card "Your files inside programs". Its migration `0005_rescue` rebuilds the table of review rows: the rescue rows stay, under the card's list, and the rows of Gems' "unique" and "only in a copy" lists are dropped. Every other card's rows, every entry, decision, tag, override, and digest stay as they were, and the cards read at once, with no rescan and no wait for the next relations pass.
+
+1. **Back up first** with the R2b binary still running: `precious backup`. The migration is one-way.
+2. **Check the configuration** with the new binary; an R2b configuration stays valid.
+3. **Replace and restart.** The migration applies at startup, in one transaction.
+
+To roll back, stop Precious, reinstall the R2b binary, [restore](#restoring) the backup, and start it. The R2b binary refuses the migrated database (`database has version 5, binary supports up to 4`) and leaves it unmodified. Decisions, tags, and overrides set after the upgrade are lost with it.
+
 ### Moving from curator to precious
 
 Precious replaces the earlier `curator` release; the two share no data. Moving over is a fresh installation:
