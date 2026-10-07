@@ -729,3 +729,5 @@ The B15 binary then restarted the server. Its startup job read the 352 candidate
   - a card whose open rows hold no bytes leads with its row count;
   - Search's `dup=unchecked` choice reads "Not checked or unreadable", which is what it returns (D15).
 - **B26.** Copies carry their own decision, so a duplicate group's copies show the active decision button as relation sides do (task 9.12). `eff_decision` alone could not tell an own decision from one inherited from a folder.
+
+**Owner sign-off (task 8.8, 2026-10-06).** The fixes of tasks 9.1–9.12 were deployed to the reference server and the owner's source was rescanned. The owner then reviewed R2 on his dataset in the browser, accepted it ("much better"), and asked development to proceed. The findings that wait for his decisions are listed in the walkthrough paragraph above, and they go to the next change.

@@ -40,14 +40,14 @@ All scripts and styles SHALL be embedded in the binary and served from the appli
 - **THEN** the complete interface is served and works
 
 ### Requirement: Read-only workflow without models
-The complete R1 workflow SHALL work with every source mounted read-only and no network egress: logging in, adding a source, scanning, following progress, Home, Map, Search, the detail panel, the viewer, decisions, and tags.
+The complete R2 workflow SHALL work with every source mounted read-only and no network egress: logging in, adding a source, scanning, hashing, following progress, Home, Map, Search, the detail panel, the viewer, decisions, tags, Opportunities and review lists, Compare, and Gems.
 
 #### Scenario: A20 read-only and cloud disabled
 - **WHEN** the only source is on a read-only mount and the server has no network egress
-- **THEN** the owner can log in, add the source, scan it, follow its progress, use Home, Map, and Search, open the detail panel and the viewer, and set decisions and tags, and no write to the source or outbound request is attempted
+- **THEN** the owner can log in, add the source, scan and hash it, follow its progress, use Home, Map, Search, Opportunities, Compare, and Gems, open the detail panel and the viewer, and set decisions and tags, and no write to the source or outbound request is attempted
 
 ### Requirement: Home screen
-The Home screen SHALL show, for one chosen source or for all sources together: total bytes, files, and folders; bytes by category family, by file kind, and by modification year; decision totals as bytes and files for undecided, keep, discard, and later; and each active scan with its live progress. When any part of a counted tree could not be read, Home SHALL say its figures are partial (§11.1).
+The Home screen SHALL show, for one chosen source or for all sources together: total bytes, files, and folders; bytes by category family, by file kind, and by modification year; decision totals as bytes and files for undecided, keep, discard, and later; hashing coverage; the opportunity cards with their bytes; and each active scan and hashing job with its live progress. When any part of a counted tree could not be read, Home SHALL say its figures are partial (§11.1).
 
 #### Scenario: Totals and breakdowns
 - **WHEN** the owner opens Home after scanning a source of 120 GB in 410,000 files and 31,000 folders
@@ -59,7 +59,7 @@ The Home screen SHALL show, for one chosen source or for all sources together: t
 
 #### Scenario: One source or all
 - **WHEN** the owner switches Home from all sources to the source `fotos`
-- **THEN** every total, breakdown, and decision figure is recomputed for `fotos` alone
+- **THEN** every total, breakdown, decision figure, coverage figure, and card is recomputed for `fotos` alone
 
 #### Scenario: Partial figures are labeled
 - **WHEN** a scan could not read one folder of the source
@@ -69,8 +69,12 @@ The Home screen SHALL show, for one chosen source or for all sources together: t
 - **WHEN** a scan of the source is running
 - **THEN** Home shows that scan with its folders, files, and bytes so far, updating as the scan proceeds
 
+#### Scenario: Hashing on Home
+- **WHEN** a hashing job of the source is running
+- **THEN** Home shows its checked bytes out of the bytes that could have a copy, updating as it proceeds, and the opportunity cards with their bytes
+
 ### Requirement: Map table
-The Map table SHALL list a folder's children, sorted by size, file count, newest modification, or name, ascending or descending, in pages of 200 by default and at most 1,000, using an opaque cursor. Each row SHALL show the display name, size, file count, kind or category, date range, triage, and decision; every folder row SHALL show its subtree size and file count and a bar of its composition by family. A folder with at least 1% of its bytes outside its dominant family SHALL also show that family's share next to its category. Selecting a row SHALL open the detail panel (§11.2).
+The Map table SHALL list a folder's children, sorted by size, file count, newest modification, or name, ascending or descending, in pages of 200 by default and at most 1,000, using an opaque cursor. Each row SHALL show the display name, size, file count, kind or category, date range, percent duplicated, triage, and decision; every folder row SHALL show its subtree size and file count and a bar of its composition by family. A folder with at least 1% of its bytes outside its dominant family SHALL also show that family's share next to its category. Selecting a row SHALL open the detail panel (§11.2).
 
 #### Scenario: A mixed folder is visible in the table
 - **WHEN** a folder classified `personal_media` holds 98% personal bytes and 2% programs
@@ -96,8 +100,12 @@ The Map table SHALL list a folder's children, sorted by size, file count, newest
 - **WHEN** a synthetic tree of 2,000,000 entries has been scanned
 - **THEN** a 200-row page of a folder's children sorted by size answers in under 300 ms at the 95th percentile, and one treemap level answers in under 500 ms
 
+#### Scenario: Percent duplicated in the table
+- **WHEN** the corpus is hashed and the owner opens its root in the Map
+- **THEN** the `Fotos - Copia` row shows its percent duplicated, and a file with no other copy shows 0%
+
 ### Requirement: Index read API
-The server SHALL provide `GET /api/sources`, `GET /api/picker`, `GET /api/home`, `GET /api/entries/{id}`, `GET /api/entries/{id}/children`, `GET /api/entries/{id}/treemap`, `GET /api/search`, `GET /api/tags`, `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text`, `GET /api/jobs/{id}`, and `GET /api/events`. Entry names and paths SHALL be returned both as an escaped display string and as the base64-encoded raw bytes.
+The server SHALL provide `GET /api/sources`, `GET /api/picker`, `GET /api/home`, `GET /api/entries/{id}`, `GET /api/entries/{id}/children`, `GET /api/entries/{id}/treemap`, `GET /api/search`, `GET /api/tags`, `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text`, `GET /api/opportunities`, `GET /api/opportunities/{card}`, `GET /api/gems`, `GET /api/compare`, `GET /api/jobs/{id}`, and `GET /api/events`. Entry names and paths SHALL be returned both as an escaped display string and as the base64-encoded raw bytes.
 
 #### Scenario: A17 lossless name in API
 - **WHEN** a client fetches an entry whose name contains invalid UTF-8 bytes
@@ -115,8 +123,16 @@ The server SHALL provide `GET /api/sources`, `GET /api/picker`, `GET /api/home`,
 - **WHEN** a client fetches `GET /api/entries/{id}` for a folder
 - **THEN** the response carries its ancestors, its category, family, traits, triage, group and veto flags, the matched rules with their explanations and any veto indicators, its own and effective decision with the entry it comes from, its own and inherited tags with their origins, and its breakdowns by kind and by year
 
+#### Scenario: Entry carries content fields
+- **WHEN** a client fetches `GET /api/entries/{id}` for a hashed file with two other copies
+- **THEN** the response carries its content state, its SHA-256, the two copies with their paths and decisions, and the checked share of the content that could have a copy
+
+#### Scenario: Unknown card
+- **WHEN** a client requests `GET /api/opportunities/colors`
+- **THEN** the response is HTTP 404 with code `not_found`
+
 ### Requirement: Treemap
-The Map SHALL show a treemap of the same folder as its table, one level per request: the 300 largest children by bytes plus one "other" area holding the count and bytes of the rest. The owner SHALL be able to color it by category family, file kind, age, decision, or tag; coloring by family SHALL use each entry's dominant composition family. Clicking a folder SHALL drill into it, and the table SHALL follow.
+The Map SHALL show a treemap of the same folder as its table, one level per request: the 300 largest children by bytes plus one "other" area holding the count and bytes of the rest. The owner SHALL be able to color it by category family, file kind, age, decision, tag, or duplication; coloring by family SHALL use each entry's dominant composition family. Clicking a folder or a completely read archive SHALL drill into it, and the table SHALL follow.
 
 #### Scenario: Unclassified photos take the personal color
 - **WHEN** the owner colors by family a folder of JPEGs that no rule matches
@@ -134,8 +150,16 @@ The Map SHALL show a treemap of the same folder as its table, one level per requ
 - **WHEN** the owner colors the treemap by decision and one child folder has the effective decision discard
 - **THEN** that folder's area takes the discard color, and the legend names each decision
 
+#### Scenario: Color by duplication
+- **WHEN** the owner colors the corpus root by duplication after hashing
+- **THEN** `Fotos - Copia` takes the color of its percent duplicated, a folder not yet checked takes the not-checked color, and the legend names each band
+
+#### Scenario: Drill into an archive
+- **WHEN** the owner clicks `Downloads/eMule0.47c-Installer.zip` in the treemap
+- **THEN** the treemap and the table both show the archive's members
+
 ### Requirement: Search
-Search SHALL find entries anywhere in the index, inside groups too, by any combination of: name substring (case-insensitive), extension, file kind, size range, year range, category, tag (own or inherited), effective decision, and a folder to search within. Results SHALL be paged by cursor and carry the match count, exact up to 10,000 and shown as `10000+` beyond.
+Search SHALL find entries anywhere in the index, inside groups too, by any combination of: name substring (case-insensitive), extension, file kind, size range, year range, category, tag (own or inherited), effective decision, duplicate state, and a folder to search within. The duplicate states SHALL be: has another copy, has a copy outside the folder searched within, no other copy, and not checked. Results SHALL be paged by cursor and carry the match count, exact up to 10,000 and shown as `10000+` beyond.
 
 #### Scenario: R1.3 Search finds files anywhere
 - **WHEN** the owner searches the regression corpus by name, by extension, by size range, by year range, and by tag
@@ -157,6 +181,14 @@ Search SHALL find entries anywhere in the index, inside groups too, by any combi
 - **WHEN** a search matches 25,000 entries
 - **THEN** the count is shown as `10000+`, and a search matching 9,500 entries shows exactly 9,500
 
+#### Scenario: Copies outside a folder
+- **WHEN** the owner searches within `Fotos - Copia` for files with a copy outside it
+- **THEN** every photo of `Fotos - Copia` except `2006/Praia/DSC_editada.JPG` is listed, and selecting all of them gives an explicit list that a bulk decision can use
+
+#### Scenario: Copy outside requires a folder
+- **WHEN** a search asks for files with a copy outside the folder but names no folder to search within
+- **THEN** the response is HTTP 400 `invalid_request`
+
 ### Requirement: Detail panel
 Selecting an entry SHALL open a detail panel with:
 - its path, with links to its ancestors;
@@ -164,17 +196,22 @@ Selecting an entry SHALL open a detail panel with:
 - breakdowns by kind and by year;
 - for a folder, its composition by family and its notable entries inside, each a link;
 - for a file, a preview, without opening the viewer: an image, video and audio players, a PDF, or the first lines of text, source code, or Markdown, under the viewer's rules (file-viewer capability);
+- its copies and relations, with the checked share (§11.8);
 - its classification, with each matched rule's explanation and any veto indicators;
 - its own and effective decision, with where it comes from;
 - its own and inherited tags, with their origin;
 - decision and tag controls;
-- technical details (raw name bytes, inode) in a collapsed section.
+- technical details (raw name bytes, inode, SHA-256) in a collapsed section.
 
 (§11.8)
 
 #### Scenario: A photo previews in the panel
 - **WHEN** the owner selects a JPEG in the Map
 - **THEN** the panel shows the photo without the owner choosing Open, and Open still shows it full size
+
+#### Scenario: A file that could not be read
+- **WHEN** the owner selects a photo that hashing could not read
+- **THEN** the panel says the file could not be read, and does not ask for a rescan
 
 #### Scenario: What is inside a folder
 - **WHEN** the owner selects a folder that is mostly photos but holds a downloads folder and an installed program
@@ -194,7 +231,15 @@ Selecting an entry SHALL open a detail panel with:
 
 #### Scenario: Technical details collapsed
 - **WHEN** the owner opens any entry
-- **THEN** inode and raw name bytes are hidden until the owner expands the technical details section
+- **THEN** inode, raw name bytes, and SHA-256 are hidden until the owner expands the technical details section
+
+#### Scenario: Copies of a file
+- **WHEN** the owner selects `Documentos/curriculo.doc` after hashing
+- **THEN** the panel lists its other copies with their paths and decisions, each a link, and the checked share
+
+#### Scenario: Relations of a folder
+- **WHEN** the owner selects `Downloads/emule-0.47c` after hashing
+- **THEN** the panel shows that it is the same as `Downloads/eMule0.47c-Installer.zip`, with a link that opens Compare on the two
 
 ### Requirement: Screens fit the window
 At a window of 1366×768 or larger, every screen SHALL keep its content inside its own area. No table column, header, or control SHALL extend past its card or the window, and no two controls SHALL overlap. A table too wide for its card SHALL drop its lowest-priority columns or scroll inside the card, with header and rows aligned. Opening the detail panel SHALL NOT squeeze the Map table below a usable width.
@@ -206,6 +251,10 @@ At a window of 1366×768 or larger, every screen SHALL keep its content inside i
 #### Scenario: Search filters
 - **WHEN** the owner opens Search in a 1366×768 window
 - **THEN** no filter control overlaps another or its label
+
+#### Scenario: New screens at 1366×768
+- **WHEN** the owner opens Opportunities, a review list, Compare, and Gems in a 1366×768 window
+- **THEN** nothing spills past its card or the window, and no two controls overlap
 
 ### Requirement: Sources screen
 The Sources screen SHALL list each source with its state, its volume and whether that volume is recognized if moved (strong or weak), its filesystem capabilities, its totals, its last scan, and its active scan. It SHALL let the owner add a source through the folder picker, limited to folders inside the allowed roots, rename a source, remove one after a confirmation, and start a scan.
@@ -231,7 +280,7 @@ The Sources screen SHALL list each source with its state, its volume and whether
 - **THEN** a scan starts and the source shows it as its active scan
 
 ### Requirement: Live progress
-The progress of each active scan (folders, files, and bytes so far) SHALL update on screen without a reload, through the event stream. When the stream drops, the interface SHALL reconnect and resume from its last event, or reload a fresh snapshot when told to reset.
+The progress of each active scan (folders, files, and bytes so far) and of each hashing job (bytes checked out of bytes to check) SHALL update on screen without a reload, through the event stream. When a hashing job or a recomputation of relations ends, the screens that show duplicates SHALL refresh. When the stream drops, the interface SHALL reconnect and resume from its last event, or reload a fresh snapshot when told to reset.
 
 #### Scenario: Progress updates without reload
 - **WHEN** a scan is running while the owner watches the Sources screen
@@ -240,6 +289,10 @@ The progress of each active scan (folders, files, and bytes so far) SHALL update
 #### Scenario: Reconnect resumes
 - **WHEN** the network drops for a minute during a scan and then returns
 - **THEN** the interface reconnects and shows the scan's current progress, or its final state if it ended meanwhile
+
+#### Scenario: Duplicates refresh when hashing advances
+- **WHEN** the owner watches Opportunities while relations are recomputed
+- **THEN** the cards show the new figures without a reload
 
 ### Requirement: Plain vocabulary
 The interface SHALL NOT show the internal terms atomic, expanded, descriptor, epoch, intent revision, frontier, or coverage scope in any user-facing string (§11.11).
@@ -258,3 +311,25 @@ Every user-facing string SHALL come from the translation catalog, which ships En
 #### Scenario: Locale formatting
 - **WHEN** a folder holds 1234567 files and the locale is English
 - **THEN** the count is shown as `1,234,567`, its size in human units, and its dates in the locale's date format
+
+### Requirement: Opportunities, Gems, and Compare screens
+The interface SHALL offer Opportunities and Gems in its main navigation. Each opportunity card SHALL open its review list. Compare SHALL open from a relation in the detail panel or in a review list, and from a folder's detail panel by choosing a second folder or archive, with the two sides named in the address so it can be bookmarked (§11.4, §11.6, §11.7).
+
+#### Scenario: From a card to its list
+- **WHEN** the owner chooses the system junk card on Home
+- **THEN** the system junk review list opens
+
+#### Scenario: Compare two chosen folders
+- **WHEN** the owner chooses "Compare with…" on `Fotos`, then opens `Fotos - Copia` and chooses to compare it with `Fotos`
+- **THEN** Compare opens with `Fotos` on the left and `Fotos - Copia` on the right, and reloading the page shows the same comparison
+
+#### Scenario: Deciding from Compare
+- **WHEN** the owner sets discard on a file listed only on the right in Compare
+- **THEN** the file's decision is discard, and the list shows it
+
+### Requirement: Browsing inside archives
+The Map SHALL let the owner drill into a completely read archive as into a folder, with the table and the treemap showing its members, and open a member in the detail panel and the viewer. A member's detail panel SHALL show the archive's effective decision as the one that applies, with a link to the archive, and no decision or tag controls (§11.2, §6.4).
+
+#### Scenario: A member's detail panel
+- **WHEN** the owner selects a photo inside `Downloads/fotos_2005_do_pendrive.zip`
+- **THEN** the panel shows its preview, its path inside the archive, and its copies, and states that it is decided with the archive
