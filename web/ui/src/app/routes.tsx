@@ -4,7 +4,6 @@ import { AppLayout } from '@/app/AppLayout'
 import { LoginPage } from '@/app/LoginPage'
 import { NotFoundPage } from '@/app/NotFoundPage'
 import { ComparePage } from '@/compare/ComparePage'
-import { GemsPage } from '@/gems/GemsPage'
 import { HomePage } from '@/home/HomePage'
 import { MapPage } from '@/map/MapPage'
 import { OpportunitiesPage } from '@/opportunities/OpportunitiesPage'
@@ -27,7 +26,6 @@ export const routes: RouteObject[] = [
       { path: 'opportunities', element: <OpportunitiesPage /> },
       { path: 'opportunities/similar', element: <SimilarFoldersPage /> },
       { path: 'opportunities/:list', element: <ReviewListPage /> },
-      { path: 'gems', element: <GemsPage /> },
       // Compare names its two sides in the address: ?left=&right=&bucket=.
       { path: 'compare', element: <ComparePage /> },
       { path: 'sources', element: <SourcesPage /> },

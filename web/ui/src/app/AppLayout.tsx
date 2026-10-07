@@ -50,7 +50,6 @@ function SignedInLayout({ session }: { session: Session }) {
     { to: '/map', label: t('nav.map'), end: false },
     { to: '/search', label: t('nav.search'), end: false },
     { to: '/opportunities', label: t('nav.opportunities'), end: false },
-    { to: '/gems', label: t('nav.gems'), end: false },
     { to: '/sources', label: t('nav.sources'), end: false },
   ]
 

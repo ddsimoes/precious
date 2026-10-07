@@ -137,12 +137,8 @@ export function fetchSimilar(source: string | null, cursor: string | null, signa
 }
 
 // SelectableList is a list whose open rows select-list resolves: every
-// review list but duplicates, and the Gems sections.
-export type SelectableList =
-  | Exclude<ReviewListName, 'duplicates'>
-  | 'gems_unique'
-  | 'gems_rescue'
-  | 'gems_only_in_copy'
+// review list but duplicates.
+export type SelectableList = Exclude<ReviewListName, 'duplicates'>
 
 // selectList makes a selection of the entries of a list's open rows, as
 // create-selection does for a search.

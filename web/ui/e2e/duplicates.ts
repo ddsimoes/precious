@@ -29,7 +29,7 @@ const terminal = ['succeeded', 'failed', 'cancelled']
 
 // awaitDuplicates waits until every scan and hashing job has ended with
 // everything checked, and every relations pass they asked for has ended
-// (design D5): the duplicates, cards, and Gems are then those of the whole
+// (design D5): the duplicates and cards are then those of the whole
 // index. startHash starts a hashing job of a source through the command API
 // and returns its job ID: with nothing left to hash, it ends at once, and it
 // is newer than every job the scans and hashing asked for, so the relate

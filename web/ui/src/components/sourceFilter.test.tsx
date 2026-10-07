@@ -19,13 +19,6 @@ function routes() {
       jsonResponse(200, { cards: [card('caches', 1024, 2)], coverage: coverage(), computed_at: null }),
     'GET /api/opportunities/caches': () =>
       jsonResponse(200, { card: card('caches', 1024, 2), items: [], next_cursor: null }),
-    'GET /api/gems': (request: Request) =>
-      jsonResponse(200, {
-        section: new URL(request.url).searchParams.get('section'),
-        items: [],
-        next_cursor: null,
-        coverage: coverage(),
-      }),
     'GET /api/search': (request: Request) =>
       new URL(request.url).searchParams.get('count') === 'only'
         ? jsonResponse(200, { count: 0 })
@@ -49,7 +42,7 @@ async function expectChosen(value: string) {
 }
 
 describe('The chosen source', () => {
-  it('carries from Home to Opportunities, a review list, Gems, and Search', async () => {
+  it('carries from Home to Opportunities, a review list, and Search', async () => {
     const requests = stubApi(routes())
     const { router } = renderApp('/')
     await screen.findByRole('option', { name: 'Old disk' })
@@ -65,10 +58,6 @@ describe('The chosen source', () => {
     await userEvent.click(await screen.findByRole('link', { name: 'Caches, temporary files, and build output' }))
     await waitFor(() => expect(sourcesAsked(requests, '/api/opportunities/caches')).toEqual(['old-disk']))
 
-    await openFromMenu('Gems')
-    await expectChosen('old-disk')
-    await waitFor(() => expect(sourcesAsked(requests, '/api/gems')).toEqual(['old-disk', 'old-disk', 'old-disk']))
-
     await openFromMenu('Search')
     await expectChosen('old-disk')
     await waitFor(() => expect(sourcesAsked(requests, '/api/search')).toEqual(['old-disk', 'old-disk']))
@@ -77,9 +66,9 @@ describe('The chosen source', () => {
   it('gives way to a source in the address', async () => {
     rememberSource('old-disk')
     const requests = stubApi(routes())
-    renderApp('/gems?source=fotos')
+    renderApp('/opportunities?source=fotos')
     await expectChosen('fotos')
-    await waitFor(() => expect(sourcesAsked(requests, '/api/gems')).toEqual(['fotos', 'fotos', 'fotos']))
+    await waitFor(() => expect(sourcesAsked(requests, '/api/opportunities')).toEqual(['fotos']))
     // The address does not change what is remembered.
     expect(localStorage.getItem('precious.source')).toBe('old-disk')
   })
@@ -100,5 +89,21 @@ describe('The chosen source', () => {
     renderApp('/')
     await expectChosen('')
     await waitFor(() => expect(sourcesAsked(requests, '/api/home').at(-1)).toBe(''))
+  })
+})
+
+describe('The main menu', () => {
+  it('offers every screen but Gems, and an old Gems link is not found', async () => {
+    stubApi(routes())
+    renderApp('/gems')
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument()
+    const menu = within(screen.getByRole('navigation', { name: 'Main' }))
+    expect(menu.getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'Home',
+      'Map',
+      'Search',
+      'Opportunities',
+      'Sources',
+    ])
   })
 })

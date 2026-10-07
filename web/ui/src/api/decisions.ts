@@ -61,8 +61,8 @@ export function createSelection(query: SelectionQuery, csrfToken: string): Promi
 // refreshAfterDecision refetches what a decision makes stale: every entry
 // (effective decisions change across the subtree), search results (the
 // decision filter), Home's decision totals and cards, and the opportunity
-// cards, review lists, Gems, and Compare, whose open rows and decision
-// controls follow the decisions live.
+// cards, review lists, and Compare, whose open rows and decision controls
+// follow the decisions live.
 export async function refreshAfterDecision(queryClient: QueryClient) {
   await Promise.all(duplicatesQueryRoots.map((queryKey) => queryClient.invalidateQueries({ queryKey })))
 }

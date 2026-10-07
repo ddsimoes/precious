@@ -13,8 +13,8 @@ interface DecisionButtonsProps {
   own: Decision | null
 }
 
-// DecisionButtons are the decision controls of a row in Opportunities,
-// Compare, and Gems: the detail panel's choices, smaller.
+// DecisionButtons are the decision controls of a row in Opportunities and
+// Compare: the detail panel's choices, smaller.
 export function DecisionButtons({ entryId, name, own }: DecisionButtonsProps) {
   const { t } = useTranslation()
   const decide = useDecide()
