@@ -122,7 +122,7 @@ Stays:
   - `make cross` builds all six targets;
   - UI lint, Vitest (225 tests), and build pass; Playwright passes 36 tests; `scripts/e2e-docker.sh` passes; `openspec validate --strict` passes.
 
-  `make test-slow` passed everything but `TestReviewPagesStayFastAt2MillionEntries`, whose cards p95 read 1.05, 1.15, and 1.19 s against the 1 s target. Another process held about five cores at the time, and the r2b binary's own test (`e4e0f1f`), run under the same load, read 1.44 s. So r2c, whose cards no longer read Gems' 780,000 rows, is faster than r2b, and the miss is the load. The test is to be rerun on a quiet machine before 5.2 is ticked.
+  `make test-slow` passed everything but `TestReviewPagesStayFastAt2MillionEntries`, whose cards p95 read 1.05, 1.15, 1.36, and 1.09 s against the 1 s target. Other processes held three to five cores at the time, and the r2b binary's own test (`e4e0f1f`), run under the same load, read 1.44 s. So r2c, whose cards no longer read Gems' 780,000 rows, is faster than r2b, and the miss is the load. The test's pages stayed under 1 ms at p95. On 2026-10-07 the owner accepted 5.2 on this comparison rather than a run on a quiet machine: the 1 s cards target was not measured for r2c.
 - **V2. Deploy on the reference server (task 5.4)**, binary `r2c-smoke-cc64e49`.
   - **Before:** the r2b database was copied with `precious backup` (51 s, `backups/r2b-before-r2c.db`).
   - **Upgrade:** `0005` ran at startup, and the server answered within 3 s. The relate pass that startup enqueued finished 48 s later. It took the rescue rows from Gems' 6 to the card's 5, `save/Joao/profile.sav` going as an inner item (B2).

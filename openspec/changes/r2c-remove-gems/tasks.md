@@ -65,7 +65,7 @@
   - `env.ts` follows D6.
 
   Verify with `npx playwright test` passing headless, with no console error.
-- [ ] 5.2 Run the full verification:
+- [x] 5.2 Run the full verification:
   - gofmt and both vet runs;
   - `go test -race ./...`;
   - `make test-slow`;
