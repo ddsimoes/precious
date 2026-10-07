@@ -19,16 +19,16 @@
 
 ## 2. Owner overrides and group marks
 
-- [ ] 2.1 Implement `rules.ApplyOwner` and `rules.CategoryOf` (design D2). Verify with tests:
+- [x] 2.1 Implement `rules.ApplyOwner` and `rules.CategoryOf` (design D2). Verify with tests:
   - an owner category sets family and triage;
   - the veto still applies to an owner discard category;
   - all three group states;
   - `CategoryOf` gives the rules' own result for a conflict and for no match.
-- [ ] 2.2 Apply overrides in the scan walk (D3) and in the `indextest` mirror. Verify with scan tests:
+- [x] 2.2 Apply overrides in the scan walk (D3) and in the `indextest` mirror. Verify with scan tests:
   - an owner category and a group mark change composition and notable lists exactly as a rule result would;
   - a second unchanged scan writes nothing;
   - the seed and scan comparison holds.
-- [ ] 2.3 Add `set-category` and `set-group` (D5):
+- [x] 2.3 Add `set-category` and `set-group` (D5):
   - target resolution;
   - 400 for members, and for `set-group` on a file;
   - the audit events;
@@ -36,15 +36,15 @@
   - `StartScan`, or `rescan_requested` with the follow-up scan in `OnScanDone`.
 
   Verify with tests of the owner-intent and classification scenarios: survival across a rescan and a rules bump, back to the rules, an override during an active scan converging, and an offline source.
-- [ ] 2.4 Add `classification.owner`, `rules_category`, and `rules_group` to the detail read. Verify with an API test of an owner category explained as the owner's beside the rule that matched.
-- [ ] 2.5 Add the detail panel's classification controls:
+- [x] 2.4 Add `classification.owner`, `rules_category`, and `rules_group` to the detail read. Verify with an API test of an owner category explained as the owner's beside the rule that matched.
+- [x] 2.5 Add the detail panel's classification controls:
   - a category choice with "Back to the rules";
   - a "Review as one item" group switch;
   - "set by you" labels;
   - a note that folder figures update after the scan.
 
   Verify with Vitest.
-- [ ] 2.6 Document overrides and group marks in `docs/operator.md` (Classification and the detail panel). Verify with the docs tests.
+- [x] 2.6 Document overrides and group marks in `docs/operator.md` (Classification and the detail panel). Verify with the docs tests.
 
 ## 3. Scheduled rescans
 
@@ -62,14 +62,14 @@
 
 ## 4. Search
 
-- [ ] 4.1 Search names with folded accents through the rebuilt index (D7). Verify with a search test (`confraternizacao` finds `Confraternização 2018`; short searches unchanged), and document the short-search limit in the search package doc.
-- [ ] 4.2 Build the page in two stages, with the driving duplicate filters, and write `0004_search.sql` with only the indexes that the plan tests prove necessary (D8). Verify:
+- [x] 4.1 Search names with folded accents through the rebuilt index (D7). Verify with a search test (`confraternizacao` finds `Confraternização 2018`; short searches unchanged), and document the short-search limit in the search package doc.
+- [x] 4.2 Build the page in two stages, with the driving duplicate filters, and write `0004_search.sql` with only the indexes that the plan tests prove necessary (D8). Verify:
   - `TestDupFilter` and `TestDupFilterHardLinks` pass unchanged;
   - plan tests show that no driver does a full scan;
   - `walkbench` shows no scan regression from the new indexes.
-- [ ] 4.3 Add `count=only`, and make the UI show "Counting…" until the count arrives. Verify with an API test and Vitest.
-- [ ] 4.4 Add the `state=unreadable` filter (server and UI), and link Home's partial notice to it with the source. Verify with the inventory-explorer scenario as an API test and Vitest.
-- [ ] 4.5 Search UI:
+- [x] 4.3 Add `count=only`, and make the UI show "Counting…" until the count arrives. Verify with an API test and Vitest.
+- [x] 4.4 Add the `state=unreadable` filter (server and UI), and link Home's partial notice to it with the source. Verify with the inventory-explorer scenario as an API test and Vitest.
+- [x] 4.5 Search UI:
   - the location line under each name;
   - the copies text of a checked file;
   - the source label on the root row;
@@ -78,12 +78,12 @@
 
   Verify with Vitest for each, including the remembered source carrying from Home to the Map.
 - [ ] 4.6 Add the slow test at 2 million entries: first page within 1 s and count within 2 s at p95, with no filter, each duplicate state, and with and without a source, run without the race detector in the second pass of `make test-slow`. Verify with `make test-slow`, and record the figures in the design addendum.
-- [ ] 4.7 Update the Search section of `docs/operator.md` (accents, location, copies, source, unreadable, counting). Verify with the docs tests.
+- [x] 4.7 Update the Search section of `docs/operator.md` (accents, location, copies, source, unreadable, counting). Verify with the docs tests.
 
 ## 5. Map, detail panel, and archives
 
 - [x] 5.1 Add the Map keyboard: arrows, Enter, Escape, and ignored inside fields and dialogs. Verify with Vitest, including the inventory-explorer scenario.
-- [ ] 5.2 Map cells:
+- [x] 5.2 Map cells:
   - Decision hides before Duplicated;
   - the quieter Decision cell;
   - unreadable rows read "Could not be read" with "—" figures.
