@@ -4,6 +4,7 @@ import '@/i18n'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, vi } from 'vitest'
 
+import { rememberSource } from '@/app/sourceChoice'
 import { chooseCompareFirst } from '@/compare/compareChoice'
 import { MockEventSource } from '@/test/eventSource'
 
@@ -24,6 +25,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
   // "Compare with…" remembers its first side in session storage.
   chooseCompareFirst(null)
+  // The chosen source is remembered in local storage.
+  rememberSource(null)
 })
 
 // jsdom lays nothing out. Virtualized lists read their scroll container's

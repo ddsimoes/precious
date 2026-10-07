@@ -2,8 +2,10 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
+import type { EntryRow } from '@/api/entries'
 import type { SearchCount } from '@/api/search'
-import { entryDetail, entryRow, folderRow, fotosSource } from '@/test/fixtures'
+import { rememberSource } from '@/app/sourceChoice'
+import { entryDetail, entryRow, folderRow, fotosSource, usbSource } from '@/test/fixtures'
 import { errorResponse, jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
 
 const GiB = 1024 ** 3
@@ -12,13 +14,21 @@ const tmpFiles = Array.from({ length: 5 }, (_, i) =>
   entryRow({ id: String(300 + i), name: `f${i}.tmp`, path: `Backup_PC_2004/f${i}.tmp`, total_bytes: 1000 + i }),
 )
 
+// searchRoute answers a page of items, and the count for count=only.
+function searchRoute(items: EntryRow[], count: SearchCount | Promise<SearchCount>) {
+  return async (request: Request) =>
+    new URL(request.url).searchParams.get('count') === 'only'
+      ? jsonResponse(200, { count: await count })
+      : jsonResponse(200, { items, next_cursor: null })
+}
+
 function routes(
   count: SearchCount = 1_200,
   extra: Record<string, (request: Request) => Response | Promise<Response>> = {},
 ) {
   return {
     'GET /api/session': () => jsonResponse(200, signedIn),
-    'GET /api/sources': () => jsonResponse(200, { sources: [fotosSource()] }),
+    'GET /api/sources': () => jsonResponse(200, { sources: [fotosSource(), usbSource()] }),
     'GET /api/tags': () =>
       jsonResponse(200, {
         tags: [
@@ -26,15 +36,48 @@ function routes(
           { id: 10, name: 'scan', own_count: 0 },
         ],
       }),
-    'GET /api/search': () => jsonResponse(200, { items: tmpFiles, next_cursor: null, count }),
+    'GET /api/search': searchRoute(tmpFiles, count),
     'GET /api/entries/5': () =>
       jsonResponse(200, entryDetail(folderRow('5', 'Backup_PC_2004', { path: 'Backup_PC_2004' }))),
     ...extra,
   }
 }
 
+// searches lists the parameters of the page requests; counts, those of the
+// count requests.
 function searches(requests: Request[]) {
-  return requests.filter((r) => new URL(r.url).pathname === '/api/search').map((r) => new URL(r.url).searchParams)
+  return requests
+    .filter((r) => new URL(r.url).pathname === '/api/search')
+    .map((r) => new URL(r.url).searchParams)
+    .filter((p) => !p.has('count'))
+}
+
+function counts(requests: Request[]) {
+  return requests
+    .filter((r) => new URL(r.url).pathname === '/api/search')
+    .map((r) => new URL(r.url).searchParams)
+    .filter((p) => p.get('count') === 'only')
+}
+
+function rowOf(name: string) {
+  const row = screen.getByRole('link', { name }).closest('[role="row"]')
+  if (!(row instanceof HTMLElement)) {
+    throw new Error(`no row for ${name}`)
+  }
+  return row
+}
+
+function cellIn(row: HTMLElement, column: string) {
+  const headers = screen.getAllByRole('columnheader').map((header) => header.textContent)
+  const cell = within(row).getAllByRole('cell')[headers.indexOf(column)]
+  if (cell === undefined) {
+    throw new Error(`no ${column} cell`)
+  }
+  return cell
+}
+
+function cellOf(name: string, column: string) {
+  return cellIn(rowOf(name), column)
 }
 
 function commandBodies(requests: Request[], name: string) {
@@ -97,6 +140,176 @@ describe('Search screen', () => {
     stubApi(routes(9_500))
     renderApp('/search?name=tmp')
     expect(await screen.findByText('9,500 results')).toBeInTheDocument()
+  })
+
+  it('says it is counting until the count arrives', async () => {
+    let answer: (count: SearchCount) => void = () => {}
+    const count = new Promise<SearchCount>((resolve) => {
+      answer = resolve
+    })
+    const requests = stubApi(routes(0, { 'GET /api/search': searchRoute(tmpFiles, count) }))
+    renderApp('/search?name=tmp')
+    expect(await screen.findByRole('link', { name: 'f0.tmp' })).toBeInTheDocument()
+    expect(screen.getByText('Counting…')).toBeInTheDocument()
+
+    answer(1_200)
+    expect(await screen.findByText('1,200 results')).toBeInTheDocument()
+    expect(screen.queryByText('Counting…')).not.toBeInTheDocument()
+    expect(searches(requests).map(String)).toEqual(['name=tmp'])
+    expect(counts(requests).map(String)).toEqual(['name=tmp&count=only'])
+  })
+
+  it('finds what could not be read, and selects it all', async () => {
+    const requests = stubApi(
+      routes(5, {
+        'POST /api/commands/create-selection': () =>
+          jsonResponse(201, {
+            selection_id: 'sel-4',
+            count: 5,
+            bytes: 0,
+            kept: { count: 0, bytes: 0 },
+            expires_at: '2026-10-05T18:00:00Z',
+          }),
+      }),
+    )
+    const { router } = renderApp('/search')
+    const form = within(await screen.findByRole('form', { name: 'Filters' }))
+    await userEvent.click(form.getByRole('checkbox', { name: 'Could not be read' }))
+    await userEvent.click(form.getByRole('button', { name: 'Search' }))
+
+    await waitFor(() => expect(router.state.location.search).toBe('?state=unreadable'))
+    await waitFor(() => expect(searches(requests).at(-1)?.toString()).toBe('state=unreadable'))
+    await waitFor(() => expect(counts(requests).at(-1)?.toString()).toBe('state=unreadable&count=only'))
+    const filters = within(screen.getByRole('form', { name: 'Filters' }))
+    expect(filters.getByRole('checkbox', { name: 'Could not be read' })).toBeChecked()
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Select all results' }))
+    expect(await commandBodies(requests, 'create-selection')).toEqual([{ query: { state: 'unreadable' } }])
+  })
+
+  it('marks the entries that could not be read, with no figures', async () => {
+    const locked = folderRow('40', 'Sem acesso', {
+      path: 'Backup_PC_2004/Sem acesso',
+      state: 'unreadable',
+      total_bytes: 0,
+      total_files: 0,
+      duplicated_bytes: 0,
+    })
+    const lockedFile = entryRow({
+      id: '41',
+      name: 'bloqueado.doc',
+      path: 'Backup_PC_2004/bloqueado.doc',
+      state: 'unreadable',
+      total_bytes: 0,
+    })
+    stubApi(routes(2, { 'GET /api/search': searchRoute([locked, lockedFile], 2) }))
+    renderApp('/search?state=unreadable')
+    await screen.findByText('2 results')
+
+    for (const name of ['Sem acesso', 'bloqueado.doc']) {
+      expect(cellOf(name, 'Type or category')).toHaveTextContent('Could not be read')
+      expect(cellOf(name, 'Size▼')).toHaveTextContent('—')
+      expect(cellOf(name, 'Duplicated')).toHaveTextContent('—')
+      expect(rowOf(name)).not.toHaveTextContent(/0\sB|0%/)
+    }
+    expect(cellOf('Sem acesso', 'Files')).toHaveTextContent('—')
+  })
+
+  it('shows the folder and copies of each result, after its source across sources', async () => {
+    const movs = ['Fotos/2004', 'Backup_PC_2004/Meus documentos/Videos', 'Celular'].map((folder, i) =>
+      entryRow({
+        id: String(60 + i),
+        name: 'MOV_0195.mp4',
+        path: `${folder}/MOV_0195.mp4`,
+        file_kind: 'video',
+        content_state: 'hashed',
+        copies: 3,
+      }),
+    )
+    const notas = entryRow({
+      id: '64',
+      name: 'notas.txt',
+      path: 'notas.txt',
+      source_id: 'old-disk',
+      content_state: 'hashed',
+      copies: 1,
+    })
+    const pending = entryRow({ id: '65', name: 'novo.bin', path: 'Novos/novo.bin', content_state: 'pending' })
+    const copia = folderRow('66', 'Fotos - Copia', {
+      candidate_bytes: 10 * GiB,
+      checked_bytes: 10 * GiB,
+      duplicated_bytes: 9 * GiB,
+    })
+    const root = folderRow('1', '', { path: '', path_b64: '' })
+    stubApi(routes(7, { 'GET /api/search': searchRoute([...movs, notas, pending, copia, root], 7) }))
+    renderApp('/search')
+    await screen.findByText('7 results')
+
+    for (const where of ['Fotos: Fotos/2004', 'Fotos: Backup_PC_2004/Meus documentos/Videos', 'Fotos: Celular']) {
+      const line = screen.getByText(where)
+      // Cut from the left when too long, with the full text as its title.
+      expect(line.closest('[title]')).toHaveAttribute('title', where)
+      expect(line.closest('[title]')).toHaveAttribute('dir', 'rtl')
+      const row = line.closest('[role="row"]')
+      if (!(row instanceof HTMLElement)) {
+        throw new Error(`no row for ${where}`)
+      }
+      expect(within(row).getByRole('link', { name: 'MOV_0195.mp4' })).toBeInTheDocument()
+      expect(cellIn(row, 'Duplicated')).toHaveTextContent('3 copies')
+    }
+    // A top-level entry shows its source alone.
+    expect(cellOf('notas.txt', 'Name')).toHaveTextContent(/^notas\.txtOld disk$/)
+    expect(cellOf('notas.txt', 'Duplicated')).toHaveTextContent('No other copy')
+    expect(cellOf('novo.bin', 'Duplicated')).toHaveTextContent('Not checked')
+    expect(cellOf('Fotos - Copia', 'Duplicated')).toHaveTextContent('90%')
+    // A source's top folder is named after the source.
+    expect(screen.getByRole('link', { name: 'Fotos' })).toHaveAttribute('href', '/map/1')
+    expect(screen.getByRole('checkbox', { name: 'Select Fotos' })).toBeInTheDocument()
+    expect(cellOf('Fotos', 'Name')).toHaveTextContent(/^FotosDetails$/)
+  })
+
+  it('shows the folder of each result without the source when one source is searched', async () => {
+    const mov = entryRow({
+      id: '60',
+      name: 'MOV_0195.mp4',
+      path: 'Fotos/2004/MOV_0195.mp4',
+      content_state: 'hashed',
+      copies: 3,
+    })
+    const notas = entryRow({ id: '64', name: 'notas.txt', path: 'notas.txt' })
+    stubApi(routes(2, { 'GET /api/search': searchRoute([mov, notas], 2) }))
+    renderApp('/search?source=fotos')
+    await screen.findByText('2 results')
+
+    expect(cellOf('MOV_0195.mp4', 'Name')).toHaveTextContent(/^MOV_0195\.mp4Fotos\/2004$/)
+    expect(cellOf('notas.txt', 'Name')).toHaveTextContent(/^notas\.txt$/)
+  })
+
+  it('searches the source chosen in its filter, and remembers it', async () => {
+    const requests = stubApi(routes())
+    const { router } = renderApp('/search?name=tmp')
+    await screen.findByRole('option', { name: 'Old disk' })
+    await screen.findByText('1,200 results')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Source' }), 'Old disk')
+
+    await waitFor(() => expect(router.state.location.search).toBe('?name=tmp&source=old-disk'))
+    await waitFor(() => expect(searches(requests).at(-1)?.toString()).toBe('source=old-disk&name=tmp'))
+    await waitFor(() => expect(counts(requests).at(-1)?.toString()).toBe('source=old-disk&name=tmp&count=only'))
+    expect(localStorage.getItem('precious.source')).toBe('old-disk')
+  })
+
+  it('searches the remembered source unless the address names one', async () => {
+    rememberSource('old-disk')
+    const requests = stubApi(routes())
+    const { router } = renderApp('/search?name=tmp')
+    await screen.findByText('1,200 results')
+    expect(screen.getByRole('combobox', { name: 'Source' })).toHaveValue('old-disk')
+    expect(searches(requests).map(String)).toEqual(['source=old-disk&name=tmp'])
+    expect(router.state.location.search).toBe('?name=tmp')
+
+    await router.navigate('/search?name=tmp&source=fotos')
+    await waitFor(() => expect(searches(requests).at(-1)?.toString()).toBe('source=fotos&name=tmp'))
+    expect(screen.getByRole('combobox', { name: 'Source' })).toHaveValue('fotos')
   })
 
   it('limits the search to a folder until asked to search everywhere', async () => {
