@@ -28,7 +28,7 @@ const tagName = 'Fotos de 2006'
 const pendrive = 'Downloads/fotos_2005_do_pendrive'
 const pendriveZip = `${pendrive}.zip`
 // At the default window the Map's table sits beside the treemap, too
-// narrow for its Decision column, which hides before Duplicated (r2b design
+// narrow for its Decision column, which hides before Has copies (r2b design
 // D9); the tests that read Decision widen the window for it.
 const defaultWindow = devices['Desktop Chrome'].viewport
 const wideWindow = { width: 1920, height: 1080 }
@@ -424,10 +424,19 @@ test('R2.2: Compare of Fotos with Fotos - Copia, chosen from the detail panel', 
   await expect(fotos.getByRole('status')).toContainText('Chosen for Compare.')
   await fotos.getByRole('button', { name: 'Close details' }).click()
   await page.getByRole('link', { name: 'Details of Fotos - Copia', exact: true }).click()
-  await page
-    .getByRole('complementary', { name: 'Fotos - Copia' })
-    .getByRole('link', { name: 'Compare with Fotos', exact: true })
-    .click()
+  const copia = page.getByRole('complementary', { name: 'Fotos - Copia' })
+  // The panel names the bytes the two share and leaves what is only on one
+  // side to Compare (r2d design D3).
+  const copiaBytes = filesBelow('Fotos - Copia').reduce((sum, e) => sum + (e.size ?? 0), 0)
+  const onlyCopiaBytes = relation.a_only.reduce((sum, p) => sum + (truth.find((e) => e.path === p.path)?.size ?? 0), 0)
+  const related = copia
+    .getByRole('list', { name: 'Folders related to this one' })
+    .getByRole('listitem')
+    .filter({ has: page.getByRole('link', { name: 'Fotos', exact: true }) })
+  await expect(related).toContainText(`${bytes(copiaBytes - onlyCopiaBytes)} in common`)
+  await expect(related).not.toContainText(/\bonly\b/i)
+  await expect(related.getByRole('link', { name: 'Compare', exact: true })).toBeVisible()
+  await copia.getByRole('link', { name: 'Compare with Fotos', exact: true }).click()
   // Fotos holds files Fotos - Copia lacks, so Compare opens on them.
   await expect(page).toHaveURL(/\/compare\?left=\d+&right=\d+&bucket=only_left$/)
 
@@ -916,13 +925,10 @@ test('r2b D12: Similar folders lists the declared overlaps with their figures', 
     const row = rows
       .filter({ has: page.getByRole('link', { name: item.a.path, exact: true }) })
       .filter({ has: page.getByRole('link', { name: item.other.path, exact: true }) })
-    await expect(row, item.a.path).toContainText(
-      [
-        `${bytes(item.matched_bytes)} in common`,
-        `Only in ${item.a.path}: ${fileCount(item.only_here.files)} (${bytes(item.only_here.bytes)})`,
-        `Only in ${item.other.path}: ${fileCount(item.only_there.files)} (${bytes(item.only_there.bytes)})`,
-      ].join(' · '),
-    )
+    // The row names the bytes the two share; Compare counts what is only on
+    // one side (r2d design D3).
+    await expect(row, item.a.path).toContainText(`${bytes(item.matched_bytes)} in common`)
+    await expect(row, item.a.path).not.toContainText(/\bonly\b/i)
     shown.push(row)
   }
   // Compare opens on the two sides.
