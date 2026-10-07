@@ -9,6 +9,7 @@ import { HomePage } from '@/home/HomePage'
 import { MapPage } from '@/map/MapPage'
 import { OpportunitiesPage } from '@/opportunities/OpportunitiesPage'
 import { ReviewListPage } from '@/opportunities/ReviewListPage'
+import { SimilarFoldersPage } from '@/opportunities/SimilarFoldersPage'
 import { SearchPage } from '@/search/SearchPage'
 import { SourcesPage } from '@/sources/SourcesPage'
 
@@ -24,6 +25,7 @@ export const routes: RouteObject[] = [
       { path: 'map/:entryId?', element: <MapPage /> },
       { path: 'search', element: <SearchPage /> },
       { path: 'opportunities', element: <OpportunitiesPage /> },
+      { path: 'opportunities/similar', element: <SimilarFoldersPage /> },
       { path: 'opportunities/:list', element: <ReviewListPage /> },
       { path: 'gems', element: <GemsPage /> },
       // Compare names its two sides in the address: ?left=&right=&bucket=.
