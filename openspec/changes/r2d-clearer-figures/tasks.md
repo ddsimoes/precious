@@ -21,7 +21,7 @@
 ## 4. Integration
 
 - [x] 4.1 Update the Playwright tests that read the removed figures (Similar folders) and the installers rows. Verify with `npx playwright test` passing headless.
-- [ ] 4.2 Run the full verification:
+- [x] 4.2 Run the full verification:
   - gofmt and both vet runs;
   - `go test -race ./...`;
   - `make cross`;
@@ -31,7 +31,7 @@
   - `openspec validate --strict`.
 
   `make test-slow` is not needed: no query on a slow path changes.
-- [ ] 4.3 Smoke-check the built binary with a throwaway script on a copy of an r2c database. After a scan, verify:
+- [x] 4.3 Smoke-check the built binary with a throwaway script on a copy of an r2c database. After a scan, verify:
   - the installers card holds file rows only;
   - the relation JSON still carries `only_here`.
 
