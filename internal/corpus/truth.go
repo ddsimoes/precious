@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"path"
 	"slices"
 	"strings"
 	"time"
@@ -13,11 +12,11 @@ import (
 	"precious/internal/domain"
 )
 
-// What a complete hashing run must find in a tree (R2 design D8, D9, D14,
-// D19). Everything here is computed from the bytes the tree writes, except
-// the relations, which are declared and checked against those bytes, and
-// the parts of Gems that need the rules' classification, which are declared
-// in gemDeclarations.
+// What a complete hashing run must find in a tree (R2 design D8, D9, D19),
+// and the rows of the rescue card (r2c design D6). Everything here is
+// computed from the bytes the tree writes, except the relations, which are
+// declared and checked against those bytes, and the rescue rows, which need
+// the rules' classification and are declared in rescueDeclarations.
 //
 // A copy is an indexed file (not one inside an unreadable folder) or a file
 // member of an archive the archive readers open completely; the corpus has
@@ -103,29 +102,12 @@ type Relation struct {
 	BOnly []Path `json:"b_only"`
 }
 
-// Gems are the Gems sections (design D14), each in its order.
-type Gems struct {
-	// Unique are the personal images, videos, audio files, and documents
-	// outside every programs or disposable group that have no other copy,
-	// oldest first (then by raw path).
-	Unique []Gem `json:"unique"`
-	// Rescue are the indicators of the programs and disposable groups (files
-	// or folders), each under its outermost such group, in declaration
-	// order.
-	Rescue []Gem `json:"rescue"`
-	// OnlyInCopy are the files on one side of a declared overlap relation
-	// that have no other copy, by relation then raw path.
-	OnlyInCopy []Gem `json:"only_in_copy"`
-}
-
-// Gem is one entry of a Gems section. Group is set in rescue, Relation (an
-// index into GroundTruth.Relations) in only_in_copy. Copies counts a file's
-// copies, itself included; it is 0 for a folder.
-type Gem struct {
-	Path
-	Group    *Path `json:"group,omitempty"`
-	Relation *int  `json:"relation,omitempty"`
-	Copies   int   `json:"copies"`
+// Rescue is one row of the rescue card: a user-material indicator (a file
+// or a folder) inside a programs or disposable group, and the outermost
+// such group holding it. Both are display paths.
+type Rescue struct {
+	Path  string `json:"path"`
+	Group string `json:"group"`
 }
 
 // copyOf is one copy of a content.
@@ -176,15 +158,6 @@ func (t *Tree) copies(side string) []copyOf {
 		}
 	}
 	return out
-}
-
-// counts returns how many copies the tree holds of each content.
-func (t *Tree) counts() map[[32]byte]int {
-	n := make(map[[32]byte]int)
-	for _, c := range t.copies("") {
-		n[c.sum]++
-	}
-	return n
 }
 
 // duplicates returns the duplicate groups, sorted by their first copy.
@@ -382,113 +355,45 @@ func (t *Tree) relationTruth() []Relation {
 	return out
 }
 
-// gemTruth computes the Gems sections from the declarations and the copy
-// counts.
-func (t *Tree) gemTruth() Gems {
-	counts := t.counts()
-	g := Gems{Unique: []Gem{}, Rescue: []Gem{}, OnlyInCopy: []Gem{}}
-	byPath := make(map[string]item)
-	for _, it := range t.visible() {
-		byPath[it.path] = it
-	}
-
-	var unique []item
-	for _, it := range t.visible() {
-		if it.kind == domain.EntryFile && len(it.data) > 0 && t.gems.personal(it.path) && counts[it.sum] == 1 {
-			unique = append(unique, it)
-		}
-	}
-	slices.SortFunc(unique, func(a, b item) int {
-		return cmp.Or(a.mtime.Compare(b.mtime), strings.Compare(a.path, b.path))
-	})
-	for _, it := range unique {
-		g.Unique = append(g.Unique, Gem{Path: pathOf(it.path), Copies: 1})
-	}
-
-	for _, r := range t.gems.rescue {
-		group := pathOf(r.group)
-		x := Gem{Path: pathOf(r.path), Group: &group}
-		if it := byPath[r.path]; it.kind == domain.EntryFile {
-			x.Copies = counts[it.sum]
-		}
-		g.Rescue = append(g.Rescue, x)
-	}
-
-	for i, r := range t.relations {
-		if r.kind != relOverlap {
-			continue
-		}
-		var paths []string
-		for _, p := range append(slices.Clone(r.aOnly), r.bOnly...) {
-			if it, ok := byPath[p]; ok && counts[it.sum] == 1 {
-				paths = append(paths, p)
+// rescueTruth returns the declared rescue rows in the card's order: largest
+// first (a file's size, a folder's total bytes), then by raw path.
+func (t *Tree) rescueTruth() []Rescue {
+	bytes := make(map[string]int64, len(t.rescue))
+	for _, r := range t.rescue {
+		for _, it := range t.visible() {
+			if it.kind == domain.EntryFile && (it.path == r.path || strings.HasPrefix(it.path, r.path+"/")) {
+				bytes[r.path] += int64(len(it.data))
 			}
 		}
-		slices.Sort(paths)
-		for _, p := range paths {
-			g.OnlyInCopy = append(g.OnlyInCopy, Gem{Path: pathOf(p), Relation: &i, Copies: 1})
-		}
 	}
-	return g
-}
-
-// gemDecls declare what Gems needs from the rules' classification (design
-// D14), which the corpus does not run: which files are personal images,
-// videos, audio files, and documents outside every programs or disposable
-// group, and which indicators those groups raise.
-type gemDecls struct {
-	// kinds maps the lower-case extensions of the corpus's files of kind
-	// image, video, audio, or document to that kind.
-	kinds map[string]string
-	// outside are the outermost groups of family programs or disposable.
-	outside []string
-	// notPersonal are the files of those kinds that rules classify outside
-	// the personal family.
-	notPersonal []string
-	// rescue are the indicators of the programs and disposable groups.
-	rescue []rescueDecl
+	decls := slices.Clone(t.rescue)
+	slices.SortFunc(decls, func(a, b rescueDecl) int {
+		return cmp.Or(cmp.Compare(bytes[b.path], bytes[a.path]), strings.Compare(a.path, b.path))
+	})
+	out := make([]Rescue, len(decls))
+	for i, r := range decls {
+		out[i] = Rescue{Path: displayPath(r.path), Group: displayPath(r.group)}
+	}
+	return out
 }
 
 // rescueDecl is one indicator of a group: a file or a folder below it.
 type rescueDecl struct{ group, path string }
 
-// personal reports whether the file at p is a personal image, video, audio
-// file, or document outside every programs or disposable group.
-func (g gemDecls) personal(p string) bool {
-	if g.kinds[strings.ToLower(path.Ext(p))] == "" || slices.Contains(g.notPersonal, p) {
-		return false
-	}
-	for _, o := range g.outside {
-		if strings.HasPrefix(p, o+"/") {
-			return false
-		}
-	}
-	return true
-}
-
-// checkGems checks that every declared path exists with its kind, and
-// returns g.
-func (t *Tree) checkGems(g gemDecls) gemDecls {
+// checkRescue checks that every declared group is a folder holding its
+// indicator, a file or a folder, and returns decls.
+func (t *Tree) checkRescue(decls []rescueDecl) []rescueDecl {
 	kinds := make(map[string]domain.EntryKind)
 	for _, it := range t.visible() {
 		kinds[it.path] = it.kind
 	}
-	want := func(p string, k domain.EntryKind) {
-		if kinds[p] != k {
-			panic(fmt.Sprintf("corpus: Gems declares %s, which is no %s", displayPath(p), k))
+	for _, r := range decls {
+		if kinds[r.group] != domain.EntryDirectory {
+			panic("corpus: rescue group is no folder: " + displayPath(r.group))
 		}
-	}
-	for _, p := range g.outside {
-		want(p, domain.EntryDirectory)
-	}
-	for _, p := range g.notPersonal {
-		want(p, domain.EntryFile)
-	}
-	for _, r := range g.rescue {
-		want(r.group, domain.EntryDirectory)
 		if k := kinds[r.path]; k != domain.EntryFile && k != domain.EntryDirectory || !strings.HasPrefix(r.path, r.group+"/") {
-			panic("corpus: Gems rescue is no entry of its group: " + displayPath(r.path))
+			panic("corpus: rescue row is no entry of its group: " + displayPath(r.path))
 		}
 	}
-	return g
+	return decls
 }

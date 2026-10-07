@@ -424,86 +424,54 @@ func TestRelationDeclarationChecked(t *testing.T) {
 			t.Error("a wrong kind was accepted")
 		}
 	}()
-	d.finish(nil, []relationDecl{{relSame, "a", "b"}}, gemDecls{})
+	d.finish(nil, []relationDecl{{relSame, "a", "b"}}, nil)
 }
 
-// Gems: R2.6's required members are listed, and every listed file has the
-// copy count its section needs.
-func TestGems(t *testing.T) {
+// Rescue: R2.6's spreadsheet is listed inside Microsoft Office, every row
+// lies inside its group, and the rows are in the card's order: largest
+// first, then by path.
+func TestRescue(t *testing.T) {
 	g := Corpus().GroundTruth()
-	inGroup := map[string]bool{}
-	for _, d := range g.Duplicates {
-		for _, c := range d.Copies {
-			inGroup[rawOf(t, c)] = true
+	bytes := map[string]int64{}
+	for _, r := range g.Rescue {
+		for _, e := range g.Entries {
+			if e.Size != nil && (e.Path == r.Path || strings.HasPrefix(e.Path, r.Path+"/")) {
+				bytes[r.Path] += *e.Size
+			}
 		}
 	}
-	mtimes := map[string]time.Time{}
-	for _, it := range Corpus().items {
-		mtimes[it.path] = it.mtime
+	want := Rescue{Path: programs + "/Microsoft Office/OFFICE11/Meu orcamento casamento.xls", Group: programs + "/Microsoft Office"}
+	if !slices.Contains(g.Rescue, want) {
+		t.Errorf("rescue %v lacks %v", g.Rescue, want)
 	}
-	paths := func(gems []Gem) []string {
-		var out []string
-		for _, x := range gems {
-			out = append(out, rawOf(t, x.Path))
+	for i, r := range g.Rescue {
+		if !strings.HasPrefix(r.Path, r.Group+"/") {
+			t.Errorf("rescue row %s outside its group %s", r.Path, r.Group)
 		}
-		return out
+		if i == 0 {
+			continue
+		}
+		prev := g.Rescue[i-1]
+		if bytes[r.Path] > bytes[prev.Path] || bytes[r.Path] == bytes[prev.Path] && r.Path < prev.Path {
+			t.Errorf("rescue row %s (%d bytes) after %s (%d bytes)", r.Path, bytes[r.Path], prev.Path, bytes[prev.Path])
+		}
 	}
+	if len(g.Rescue) != len(rescueDeclarations) {
+		t.Errorf("%d rescue rows, %d declared", len(g.Rescue), len(rescueDeclarations))
+	}
+}
 
-	unique := paths(g.Gems.Unique)
-	for i, p := range unique {
-		if inGroup[p] || g.Gems.Unique[i].Copies != 1 {
-			t.Errorf("unique gem %s has another copy", p)
+// A rescue declaration outside its group is refused.
+func TestRescueDeclarationChecked(t *testing.T) {
+	d := newDef()
+	d.file("a/x", at(2005, 1, 1, 0, 0), []byte("x"))
+	d.file("b/y", at(2005, 1, 1, 0, 0), []byte("y"))
+	defer func() {
+		if recover() == nil {
+			t.Error("a row outside its group was accepted")
 		}
-		if i > 0 && mtimes[p].Before(mtimes[unique[i-1]]) {
-			t.Errorf("unique gems not oldest first at %s", p)
-		}
-	}
-	for _, p := range []string{
-		"celular_backup_2009/DCIM/100MEDIA/IMAG0001.jpg",
-		"celular_backup_2009/WhatsApp/Media/WhatsApp Images/IMG-20090612-WA0002.jpg",
-		"Documentos/TCC/TCC_versao_final.doc",
-		"Midia/foto.jpg",
-	} {
-		if !slices.Contains(unique, p) {
-			t.Errorf("unique gems lack %s", p)
-		}
-	}
-	for _, p := range []string{
-		"Midia/video.mp4",                                // a copy in Midia/videos.zip
-		"Fotos/2004/Natal/DSC00101.JPG",                  // copied photo
-		programs + "/Winamp/winamp.ico",                  // inside a programs group
-		"temp/~$curriculo.doc",                           // temporary data
-		"Documentos/Nova pasta/Nova pasta (2)/teste.txt", // empty
-		"privado/diario.txt",                             // unreadable folder
-	} {
-		if slices.Contains(unique, p) {
-			t.Errorf("unique gems list %s", p)
-		}
-	}
-
-	rescue := paths(g.Gems.Rescue)
-	if !slices.Contains(rescue, programs+"/Microsoft Office/OFFICE11/Meu orcamento casamento.xls") {
-		t.Errorf("rescue gems %v lack the spreadsheet", rescue)
-	}
-	for _, x := range g.Gems.Rescue {
-		if x.Group == nil || !strings.HasPrefix(rawOf(t, x.Path), rawOf(t, *x.Group)+"/") {
-			t.Errorf("rescue gem %s outside its group", x.Path.Path)
-		}
-	}
-
-	only := paths(g.Gems.OnlyInCopy)
-	if !slices.Contains(only, "Fotos - Copia/2006/Praia/DSC_editada.JPG") {
-		t.Errorf("only-in-copy gems %v lack DSC_editada.JPG", only)
-	}
-	for _, x := range g.Gems.OnlyInCopy {
-		p := rawOf(t, x.Path)
-		if x.Relation == nil || g.Relations[*x.Relation].Kind != relOverlap || inGroup[p] {
-			t.Errorf("only-in-copy gem %s: relation %v, copied %v", p, x.Relation, inGroup[p])
-		}
-	}
-	if slices.Contains(only, "Fotos/2005/Carnaval/DSC01005.JPG") {
-		t.Error("DSC01005.JPG has copies in Downloads, yet is an only-in-copy gem")
-	}
+	}()
+	d.finish(nil, nil, []rescueDecl{{"a", "b/y"}})
 }
 
 // The large-file fixtures are at least 16 MiB, in pairs of one size whose
