@@ -22,7 +22,7 @@ const families: Family[] = ['personal', 'programs', 'disposable', 'containers']
 const decisions: Decision[] = ['keep', 'discard', 'later', 'undecided']
 
 // HomePage answers "how is my disk?" for every source together, or for the
-// one chosen in the filter (kept in the address as ?source=).
+// one chosen in the filter (?source=, else the remembered one).
 export function HomePage() {
   const { t } = useTranslation()
   const source = useSourceParam()
@@ -92,12 +92,22 @@ function HomeFigures({ home, source, sources }: { home: Home; source: string | n
     bytes: home.decisions[decision].bytes,
     files: home.decisions[decision].files,
   }))
+  // The partial notice links to what could not be read, in the source shown.
+  const unreadable = new URLSearchParams({ state: 'unreadable' })
+  if (source !== null) {
+    unreadable.set('source', source)
+  }
 
   return (
     <>
       {home.partial && (
         <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
-          {t('home.partial')}
+          <Trans
+            i18nKey="home.partial"
+            components={{
+              searchLink: <Link to={`/search?${unreadable}`} className="font-medium text-primary underline" />,
+            }}
+          />
         </p>
       )}
 

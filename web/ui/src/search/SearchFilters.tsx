@@ -69,6 +69,7 @@ export function SearchFilters({ params, onSearch }: SearchFiltersProps) {
   const [maxSize, setMaxSize] = useState(() => sizeDraft(params.get('max_size')))
   const [yearFrom, setYearFrom] = useState(params.get('year_from') ?? '')
   const [yearTo, setYearTo] = useState(params.get('year_to') ?? '')
+  const [unreadable, setUnreadable] = useState(params.get('state') === 'unreadable')
   const [lists, setLists] = useState<Record<ListFilter, string[]>>(() => ({
     file_kind: params.getAll('file_kind'),
     category: params.getAll('category'),
@@ -99,6 +100,7 @@ export function SearchFilters({ params, onSearch }: SearchFiltersProps) {
       max_size: sizeBytes(maxSize),
       year_from: yearFrom.trim() === '' ? null : yearFrom.trim(),
       year_to: yearTo.trim() === '' ? null : yearTo.trim(),
+      state: unreadable ? 'unreadable' : null,
     }
     for (const [key, value] of Object.entries(singles)) {
       if (value !== null) {
@@ -119,11 +121,14 @@ export function SearchFilters({ params, onSearch }: SearchFiltersProps) {
     onSearch(next)
   }
 
+  // The folder searched within and the source have their own controls.
   const clear = () => {
     const next = new URLSearchParams()
-    const within = params.get('within')
-    if (within !== null) {
-      next.set('within', within)
+    for (const key of ['within', 'source']) {
+      const value = params.get(key)
+      if (value !== null) {
+        next.set(key, value)
+      }
     }
     onSearch(next)
   }
@@ -241,6 +246,10 @@ export function SearchFilters({ params, onSearch }: SearchFiltersProps) {
             (tags.data?.tags ?? []).map((tag) => ({ value: String(tag.id), label: tag.name })),
           )}
         </Choices>
+        <label className="flex items-center gap-2 self-start py-1 text-sm">
+          <input type="checkbox" checked={unreadable} onChange={() => setUnreadable(!unreadable)} />
+          {t('search.unreadable')}
+        </label>
       </div>
 
       <div className="flex gap-2">
