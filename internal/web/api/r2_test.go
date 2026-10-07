@@ -414,6 +414,53 @@ func TestR2ReadAPI(t *testing.T) {
 	})
 }
 
+// Spec "Opportunity cards", scenario "A downloads folder is not an
+// installer" (r2d D1): GET /api/opportunities/installers lists
+// Downloads/Setup.exe and the corpus's disk images as rows of their own,
+// each with its size; no row is the folder Downloads or any other entry
+// but an installer; and the card's bytes are the sum of its rows (R2.5).
+func TestDownloadsFolderIsNotAnInstaller(t *testing.T) {
+	w := newContentWorld(t)
+	var list struct {
+		Card  cardRes `json:"card"`
+		Items []struct {
+			Bytes int64       `json:"bytes"`
+			Entry *contentRow `json:"entry"`
+		} `json:"items"`
+		NextCursor *string `json:"next_cursor"`
+	}
+	w.get(t, "/api/opportunities/installers?limit=500", 200, &list)
+	if list.NextCursor != nil || int64(len(list.Items)) != list.Card.Rows {
+		t.Fatalf("installers: card %+v, %d items, next cursor %v", list.Card, len(list.Items), list.NextCursor)
+	}
+	rows := map[string]int64{}
+	var sum int64
+	for _, it := range list.Items {
+		sum += it.Bytes
+		if it.Entry == nil || str(it.Entry.Category) != string(domain.CategoryInstallerDownload) || it.Entry.Path == "Downloads" {
+			t.Errorf("installers row %+v, want an installer or a disk image", it.Entry)
+			continue
+		}
+		rows[it.Entry.Path] = it.Bytes
+	}
+	if sum != list.Card.Bytes {
+		t.Errorf("installers rows hold %d bytes, the card %d", sum, list.Card.Bytes)
+	}
+	sizes := map[string]int64{}
+	for _, e := range w.gt.Entries {
+		if e.Size != nil {
+			sizes[e.Path] = *e.Size
+		}
+	}
+	for _, p := range []string{"Downloads/Setup.exe", "Downloads/Setup(1).exe", "Downloads/pacote.msi",
+		"ISOs/Windows XP Professional SP2.iso", "ISOs/Office 2003.iso", "ISOs/copia/Windows XP Professional SP2.iso",
+		"Jogos/retro/jogo.bin"} {
+		if bytes, ok := rows[p]; !ok || bytes != sizes[p] || bytes == 0 {
+			t.Errorf("installers row %s: listed %v with %d bytes, want its %d bytes", p, ok, bytes, sizes[p])
+		}
+	}
+}
+
 // R2.6 (r2c): the rescue card lists the spreadsheet inside Microsoft
 // Office, each row naming its group; discarding Microsoft Office leaves the
 // row open, reading an inherited discard; keeping the file closes it. The

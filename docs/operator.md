@@ -926,7 +926,7 @@ Opportunities answers "what should I look at first?" with eight cards, built fro
 | Exact duplicates (`duplicates`) | Folder and archive relations of kind same or inside, and duplicate files outside every listed relation | Redundant bytes | Same content |
 | Archives already unpacked (`unpacked_archives`) | Archives whose whole content is the same as, or inside, a folder | The archive file's size | Same content |
 | System junk (`system_junk`) | Entries of category `system_junk` | Total bytes | Rules |
-| Installers and downloads (`installers`) | Entries of category `installer_download` or `download_collection` | Total bytes | Rules |
+| Old installers and disk images (`installers`) | Entries of category `installer_download`: installers and disk images, wherever they are | Total bytes | Rules |
 | Programs and system copies (`programs`) | Entries of category `application_installation` or `os_installation` | Total bytes | Rules |
 | Caches and generated files (`caches`) | Entries of category `cache`, `temporary_data`, or `generated_artifacts`, except unfinished downloads | Total bytes | Rules |
 | Leftovers (`leftovers`) | Unfinished downloads (`*.part`, `*.partial`, `*.crdownload`), empty folders, and zero-byte files | Total bytes | Rules |
@@ -936,6 +936,7 @@ Cards are ranked by bytes, largest first, except that **Your files inside progra
 How the bytes are counted:
 
 - **A row is the outermost match.** A row is a group, folder, archive, or file that matches its card while no folder above it does. `Backup_PC_2004/C/WINDOWS` is one row of the programs card; `system32` inside it adds no bytes of its own. So no byte counts twice in one card. Different cards can overlap: a zero-byte `desktop.ini` is both system junk and a leftover.
+- **A downloads folder is not a row.** A `Downloads` folder (category `download_collection`) holds your own files beside what you fetched, so it is not a row of **Old installers and disk images**: the installers and disk images inside it are, each on its own, such as `Downloads/Setup.exe`. The folder itself stays in the Map and in Search. Sorting the rest of it is organizing, which a later release adds.
 - **An empty folder** holds no file at any depth, is readable, and is not where another filesystem is mounted. Folders below an unreadable folder or a mount boundary are never called empty.
 - **A duplicates row** is a relation (its bytes are one side's worth of redundant bytes), or a group of identical files with at least one copy outside every listed relation. A group's bytes are its size times its copies outside the listed relations, less one when none of its copies is inside a relation: the relation already counts the copies inside it. Hard links to one file are one copy. Files inside archives count as copies; the archive itself does not.
 - **Only open rows count.** A row is open while its entry's effective decision is undecided. A duplicates row is open while at least two of its copies are undecided (for a relation, both sides). A row of **Your files inside programs** is open until you decide the file itself or it is kept (see below). Deciding an entry, or the folder above it, closes its row at once and shrinks the card by the row's bytes. A card's bytes are always the sum of its list's open rows, read through every page.
