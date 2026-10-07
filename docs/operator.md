@@ -238,7 +238,7 @@ After a failed sign-in, the next attempt is refused for 1 s, and each further co
 
 ### Audit trail
 
-Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, and `tag_deleted`. To read the latest ones, run this as the user that owns the state directory:
+Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, and `tag_deleted`. To read the latest ones, run this as the user that owns the state directory:
 
 ```sh
 sqlite3 <state_dir>/precious.db \
@@ -506,6 +506,18 @@ A source is found by its volume identity and its folder inside the volume (see [
 
 Under systemd's read-only settings or in a container, a disk mounted after the service started may stay invisible to it until Precious restarts (see [Read-only disk mounts](#read-only-disk-mounts-recommended)).
 
+### Rescan schedule
+
+Each source can be rescanned on a schedule: off (the default), daily at a time of day, or weekly on a day of the week at a time of day. Set it with **Change schedule** on the source's card; the time is in the browser's time zone, which is stored with the schedule, so the scan runs at that wall-clock time there whatever the server's own zone. The card shows the schedule, the time of the next scheduled scan, and, when the last due time was skipped, when and why. See [Scheduled scans](#scheduled-scans) for how the scans run.
+
+| Command | Request | Response |
+|---|---|---|
+| `set-source-schedule` | `{"source_id":"fotos","schedule":{"every":"week","weekday":0,"at":"03:00","zone":"America/Sao_Paulo"}}`; `"every":"day"` has no `weekday`; `"schedule":null` turns it off | 200 `{"source": …}` |
+
+`weekday` is 0 (Sunday) to 6 (Saturday), `at` is `HH:MM` from `00:00` to `23:59`, and `zone` is an IANA time zone name, resolved from a copy of the time zone database built into the binary, so it works on every system. A malformed schedule (a bad time, weekday, or zone, a field missing or unknown, or no `schedule` at all) is refused with `invalid_request`, and an unknown source with `unknown_source`; a refused request changes nothing. Setting a schedule computes its next scan from the current time, and turning it off clears it. Each accepted request writes one `source_schedule_set` audit event with the previous and the new schedule.
+
+Each source in `GET /api/sources` carries `schedule` (the object above, or `null` when off), `next_scan_at` (the next due time, or `null`), and `schedule_skipped` (`{"at","reason"}` for the last due time when it was skipped, or `null` when it ran). The reason is the source's state then, `offline` or `unavailable`, or `invalid_schedule` for a stored schedule that no longer validates, which stops its scans until it is set again.
+
 ### Volumes that cannot be recognized when moved
 
 A source on a volume with the weak `path` identity, reported with `"strong": false`, is recognized only at the mount point it was added at. Mounted anywhere else, it shows as offline. This applies to filesystems with no UUID, dataset, or btrfs identity (network shares, tmpfs, most FUSE filesystems), to disks whose UUID the service cannot see, and to every source on macOS and Windows in this release. To keep such a source:
@@ -516,7 +528,7 @@ A source on a volume with the weak `path` identity, reported with `"strong": fal
 
 ## Scanning and the index
 
-A scan reads a source's folders and records every file, folder, symbolic link, and special file in it, with the folder totals, breakdowns, and classification the screens show. Start one with **Scan now** on the Sources screen, or with the `start-scan` command; adding a source does not scan it.
+A scan reads a source's folders and records every file, folder, symbolic link, and special file in it, with the folder totals, breakdowns, and classification the screens show. Start one with **Scan now** on the Sources screen, or with the `start-scan` command, or let a [rescan schedule](#scheduled-scans) start it; adding a source does not scan it.
 
 ### What a scan reads and records
 
@@ -544,6 +556,16 @@ Every scan walks the whole source again. It compares each entry with the one sto
 Changing the rules between releases does not need anything special: the next scan reclassifies every entry whose classification differs and writes only those.
 
 A scan that finishes successfully starts a hashing job for every online source (see [Hashing](#hashing)); a failed or cancelled scan does not.
+
+### Scheduled scans
+
+A source with a [rescan schedule](#rescan-schedule) is scanned when its time comes, exactly as **Scan now** would: hashing and relations follow it, and it changes no decision, tag, override, or group mark. Precious looks for due sources when it starts and then every minute, so a scan starts within a minute of its time. For each due source:
+
+- An **online** source gets a scan. When one of its scans is already queued, running, or paused, the due scan joins it rather than starting a second.
+- A source that is **offline or unavailable** is skipped until its next time, checked just before. The skip is recorded on the source with its time and the state, and the card shows it; the next scheduled scan that runs clears it.
+- Either way, its next scan becomes the schedule's first time after now, in the same transaction, so a due time is used once and never runs twice.
+
+The next scan time is stored in the database, so it survives restarts. When the server was down at one or more due times, it starts one scan when it is back, not one per missed time, and the next scan is the schedule's next time. A time that a daylight-saving change skips runs once that day, shifted by the change (02:30 on the day clocks go forward an hour runs at 03:30), and a time that occurs twice runs once, the first time.
 
 ### Missing entries
 
@@ -1125,10 +1147,11 @@ When some folder could not be read, Home says its figures are incomplete rather 
 
 ### The Sources screen
 
-The Sources screen lists each source with its state (online, offline, or unavailable, with the reason), its location and disk, whether the disk will be recognized if it is mounted at another path, what its file system can and cannot record, its totals, and its last scan. The location is the source's folder where its disk is mounted now, such as `/run/media/you/FOTOS/Fotos`; while the disk is not connected it is the folder inside the disk and the disk's label (or identity), such as `Fotos on FOTOS (not connected)`. Each source has these actions:
+The Sources screen lists each source with its state (online, offline, or unavailable, with the reason), its location and disk, whether the disk will be recognized if it is mounted at another path, what its file system can and cannot record, its totals, its last scan, and its rescan schedule with the next scheduled scan and the last skipped one. The location is the source's folder where its disk is mounted now, such as `/run/media/you/FOTOS/Fotos`; while the disk is not connected it is the folder inside the disk and the disk's label (or identity), such as `Fotos on FOTOS (not connected)`. Each source has these actions:
 
 - **Scan now** reads the disk and updates the index. Progress shows on the source and on Home while it runs. A disk that is not connected cannot be scanned.
 - **Open in Map** browses the source, also while it is offline.
+- **Change schedule** sets the rescan schedule: off, daily, or weekly on a day, at a time in your browser's time zone. See [Rescan schedule](#rescan-schedule).
 - **Rename** changes the label only.
 - **Remove** asks first. It forgets the source with its decisions and tag assignments; no file on the disk is changed.
 

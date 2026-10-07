@@ -206,3 +206,12 @@ The panel words each reason, and says that what is inside is not checked for cop
 1. Take a backup with `precious backup`, then install. `0003` applies at start: it creates tables and columns, and rebuilds the name index (seconds per 100,000 names).
 2. Overrides and schedules start empty. No rescan is needed.
 3. **Rollback.** The R2 binary refuses schema version 3, so restore the backup.
+
+## Addendum: decisions made during implementation
+
+- **S1.** The scheduler is `internal/schedule`: `schedule.New(store, runner, sources, clock, log)` with `RunDue(ctx, now)` and `Run(ctx)`. `Run` calls `RunDue` at once and then every minute; `serve` stops it before the job runner, since it starts scans on the runner.
+- **S2.** `RunDue` refreshes availability (bounded at 10 s) before deciding, but only when a source is due, so a disk unplugged since the last one-minute refresh is skipped rather than refused by `StartScan`. It then reads the due sources again under the writer lock, and starts or joins each scan and moves its `next_scan_at` in that one transaction, which is what makes a due time run once.
+- **S3.** A skip records the due time itself (`schedule_skipped_at` is the 03:00 that was skipped, not the minute it was noticed) and the state as the reason. A due time that runs, including one that joins an active scan, clears the skip; `set-source-schedule` leaves it alone.
+- **S4.** A stored schedule that no longer validates (a zone the binary does not know) is skipped with the reason `invalid_schedule` and its `next_scan_at` cleared, so it is not retried every minute; setting the schedule again restores it. It is logged as an error.
+- **S5.** `set-source-schedule` requires the `schedule` key (`null` turns it off), so a client that omits it does not turn a schedule off by accident. The schedule is decoded strictly and validated before the transaction; `next_scan_at` is computed from the registry's clock.
+- **S6.** The card shows the schedule's time as stored ("Daily at 03:00"), naming its zone only when it is not the browser's, and the next scan and the last skip like the other dates (the interface language, the browser's zone).
