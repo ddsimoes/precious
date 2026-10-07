@@ -59,7 +59,7 @@
 
 ## 5. Integration
 
-- [ ] 5.1 Update the Playwright suite:
+- [x] 5.1 Update the Playwright suite:
   - **R2.6** becomes the rescue card test, including the inherited-discard scenario;
   - `layout.spec.ts` drops Gems;
   - `env.ts` follows D6.

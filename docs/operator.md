@@ -350,7 +350,7 @@ To roll back, stop Precious, reinstall the R2 binary, [restore](#restoring) the 
 
 ### Upgrading from R2b
 
-The update after R2b removes Gems and keeps its rescue list as the opportunity card "Your files inside programs". Its migration `0005_rescue` rebuilds the table of review rows: the rescue rows stay, under the card's list, and the rows of Gems' "unique" and "only in a copy" lists are dropped. Every other card's rows, every entry, decision, tag, override, and digest stay as they were, and the cards read at once, with no rescan and no wait for the next relations pass.
+The update after R2b removes Gems and keeps its rescue list as the opportunity card "Your files inside programs". Its migration `0005_rescue` rebuilds the table of review rows: the rescue rows stay, under the card's list, and the rows of Gems' "unique" and "only in a copy" lists are dropped. Every other card's rows, every entry, decision, tag, override, and digest stay as they were, and the cards read at once, with no rescan. The relations pass that starts with the server then recomputes the review rows under the new rules (a minute or so on a large archive).
 
 1. **Back up first** with the R2b binary still running: `precious backup`. The migration is one-way.
 2. **Check the configuration** with the new binary; an R2b configuration stays valid.

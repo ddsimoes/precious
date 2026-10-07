@@ -63,7 +63,7 @@ func TestV4DatabaseMigratesToRescue(t *testing.T) {
 	}
 	after := tableRows(t, s.Writer())
 	for table, rows := range before {
-		if table == "review_rows" {
+		if table == "review_rows" || table == "review_state" {
 			continue
 		}
 		if !reflect.DeepEqual(after[table], rows) {
@@ -72,6 +72,11 @@ func TestV4DatabaseMigratesToRescue(t *testing.T) {
 	}
 	if len(after["review_row_sources"]) != 2 {
 		t.Errorf("review_row_sources = %q, want the duplicates row's two sources", after["review_row_sources"])
+	}
+	// The copied generation stays visible, and the next relate job rewrites
+	// it under r2c's rules.
+	if got := after["review_state"]; len(got) != 1 || got[0] != `int64:1|int64:1|int64:1|int64:7|` {
+		t.Errorf("review_state after the upgrade = %q, want gen 1 dirty 1 computed_at 7", got)
 	}
 
 	type row struct {

@@ -3,8 +3,11 @@
 -- cannot be altered in place, so the table is rebuilt: the rows of the
 -- removed lists gems_unique and gems_only_in_copy are dropped, gems_rescue
 -- rows are kept as rescue, and every other row and its review_row_sources
--- rows are kept as they are. review_state is untouched: the copied rows
--- stay the visible generation. Conventions as in 0001_baseline.sql.
+-- rows are kept as they are. The copied rows stay the visible generation,
+-- so the cards read as before at once; review_state is marked dirty, so the
+-- relate job that startup enqueues rewrites them under r2c's rules (a
+-- rescue row is an outermost item, design B2). Conventions as in
+-- 0001_baseline.sql.
 
 CREATE TABLE review_rows_v5 (
   id       INTEGER PRIMARY KEY,
@@ -48,3 +51,5 @@ CREATE INDEX review_rows_group    ON review_rows(group_id) WHERE group_id IS NOT
 CREATE INDEX review_rows_relation ON review_rows(relation_id) WHERE relation_id IS NOT NULL;
 CREATE INDEX review_rows_content  ON review_rows(content_id) WHERE content_id IS NOT NULL;
 CREATE INDEX review_row_sources_row ON review_row_sources(row_id);
+
+UPDATE review_state SET dirty = 1 WHERE id = 1;
