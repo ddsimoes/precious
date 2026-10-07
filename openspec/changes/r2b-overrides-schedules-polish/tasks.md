@@ -103,9 +103,9 @@
   - show both paths and "extra copy, same as …" in the UI, without the summary-only request.
 
   Verify with relations and API tests (the duplicates scenarios), Vitest, and the updated Playwright Compare tests.
-- [ ] 6.2 Add `GET /api/relations?kind=overlap` and the read-only similar folders page, linked from Opportunities (D12). Verify with an API test (the corpus scenario) and Vitest.
-- [ ] 6.3 Count the decided rows in the cards (D13), and show the decided figures and "Nothing left to review" in cards and list headers. Verify by extending the R2.5 test to the decided list, and with Vitest.
-- [ ] 6.4 Update the Compare and Opportunities sections of `docs/operator.md`. Verify with the docs tests.
+- [x] 6.2 Add `GET /api/relations?kind=overlap` and the read-only similar folders page, linked from Opportunities (D12). Verify with an API test (the corpus scenario) and Vitest.
+- [x] 6.3 Count the decided rows in the cards (D13), and show the decided figures and "Nothing left to review" in cards and list headers. Verify by extending the R2.5 test to the decided list, and with Vitest.
+- [x] 6.4 Update the Compare and Opportunities sections of `docs/operator.md`. Verify with the docs tests.
 
 ## 7. Integration
 
