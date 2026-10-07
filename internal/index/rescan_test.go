@@ -14,6 +14,7 @@ import (
 	"precious/internal/fsaccess"
 	"precious/internal/fsaccess/instrument"
 	"precious/internal/fsaccess/synthfs"
+	"precious/internal/rules"
 )
 
 // node returns the synthfs node at the '/'-joined path below root.
@@ -376,7 +377,7 @@ func TestR1_6RescanKeepsDecisionsAndTags(t *testing.T) {
 		thumbs    = "Fotos/2006/Praia/Thumbs.db"
 		gone      = "Fotos/2007"
 	)
-	dec := decisions.New(fixedClock{testNow})
+	dec := decisions.New(fixedClock{testNow}, rules.Default(), nil)
 	ctx := context.Background()
 	var familia, lixo int64
 	err := e.st.Write(ctx, func(tx *sql.Tx) error {

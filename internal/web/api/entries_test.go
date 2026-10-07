@@ -34,7 +34,7 @@ func detailTree(t *testing.T, e *env) *indextest.Seeded {
 		{Path: "f\xe9.txt", Size: 6, MTime: year(2012), FileKind: doc},
 		{Path: "trancada", Kind: domain.EntryDirectory, Unreadable: true},
 	}})
-	svc := decisions.New(clock.Real{})
+	svc := decisions.New(clock.Real{}, rules.Default(), nil)
 	ctx := clientip.With(context.Background(), clientip.Info{Addr: netip.MustParseAddr("192.0.2.7"), Scheme: "https"})
 	for _, d := range []decisions.SetDecision{
 		{EntryID: s.ID("a"), Decision: domain.DecisionDiscard},

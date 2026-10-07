@@ -13,7 +13,9 @@ import (
 
 	"precious/internal/corpus"
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/index/indextest"
+	"precious/internal/rules"
 	"precious/internal/search"
 	"precious/internal/store"
 	"precious/internal/store/storetest"
@@ -52,7 +54,7 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	clk := &testClock{t: start}
-	return &env{st: storetest.Open(t), clk: clk, svc: New(clk)}
+	return &env{st: storetest.Open(t), clk: clk, svc: New(clk, rules.Default(), index.StartScan)}
 }
 
 // reqCtx is a request context carrying the client address.

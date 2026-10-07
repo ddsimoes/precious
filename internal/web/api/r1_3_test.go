@@ -13,6 +13,7 @@ import (
 	"precious/internal/corpus"
 	"precious/internal/decisions"
 	"precious/internal/domain"
+	"precious/internal/rules"
 	"precious/internal/web/clientip"
 )
 
@@ -149,7 +150,7 @@ func TestR1_3SearchFindsFilesAnywhere(t *testing.T) {
 // decisions service as the create-tag and set-tags commands do.
 func createTag(t *testing.T, e *env, name string, ids ...domain.EntryID) int64 {
 	t.Helper()
-	svc := decisions.New(clock.Real{})
+	svc := decisions.New(clock.Real{}, rules.Default(), nil)
 	ctx := clientip.With(context.Background(), clientip.Info{Addr: netip.MustParseAddr("192.0.2.7"), Scheme: "https"})
 	var tag decisions.Tag
 	err := e.st.Write(ctx, func(tx *sql.Tx) error {

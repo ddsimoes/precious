@@ -1,6 +1,6 @@
 // Package decisions holds the owner's intent on indexed entries (§6.7, §6.9,
-// design D10): own and effective decisions, tags, and the selections that
-// bulk requests name.
+// design D10): own and effective decisions, tags, the owner's category
+// overrides and group marks, and the selections that bulk requests name.
 //
 // # Decisions
 //
@@ -40,11 +40,26 @@
 // (Effective); they are never materialized. Removing a tag removes own tags
 // only.
 //
+// # Category overrides and group marks
+//
+// SetCategory and SetGroup (r2b design D3, D5) write entry_overrides rows,
+// one per overridden entry, deleted once both values are back to the rules.
+// In the same transaction they write each target's own effective category,
+// family, triage, group flag, and veto, as rules.ApplyOwner gives them over
+// the rules' result rebuilt from the stored rule IDs, and start a scan of
+// each online source of the targets (index.StartScan), which brings the
+// compositions and inside lists above them up to date. When that source's
+// scan is already running, it may have read the overrides before them:
+// sources.rescan_requested makes it run once more. An offline source keeps
+// the overrides for its next scan. Archive members, which are classified
+// with their archive, are no targets.
+//
 // # Audit
 //
 // Each accepted request writes one audit event in its transaction:
-// decision_set, tags_set, tag_created, tag_renamed, or tag_deleted, with the
-// client address from the request context. A rejected request writes none.
+// decision_set, tags_set, tag_created, tag_renamed, tag_deleted,
+// category_set, or group_set, with the client address from the request
+// context. A rejected request writes none.
 package decisions
 
 import (
@@ -61,6 +76,8 @@ import (
 	"precious/internal/auth"
 	"precious/internal/clock"
 	"precious/internal/domain"
+	"precious/internal/jobs"
+	"precious/internal/rules"
 	"precious/internal/store"
 	"precious/internal/web/clientip"
 )
@@ -81,16 +98,27 @@ const MaxEntryIDs = 1000
 // count covers them all.
 const MaxSkippedListed = 100
 
-// Service applies the owner's decisions, tags, and selections. Its methods
-// run inside the caller's writing transaction.
+// Service applies the owner's decisions, tags, selections, and
+// classification overrides. Its methods run inside the caller's writing
+// transaction.
 type Service struct {
-	clk clock.Clock
+	clk   clock.Clock
+	pol   *rules.Policy
+	scans ScanStarter
 }
 
-// New returns the service; clk dates decisions, tags, selections, and audit
-// events.
-func New(clk clock.Clock) *Service {
-	return &Service{clk: clk}
+// ScanStarter starts a scan of a source in tx, or returns its active scan;
+// a source that is not online is source_offline. serve passes
+// index.StartScan, which this package cannot import: the scanner's tests
+// use it.
+type ScanStarter func(ctx context.Context, tx *jobs.Tx, src domain.SourceID) (jobs.Accepted, error)
+
+// New returns the service. clk dates decisions, tags, selections,
+// overrides, and audit events; pol is the policy the scans classify with,
+// from which an override's write-through derives what the rules give; and
+// scans starts the scan an override needs.
+func New(clk clock.Clock, pol *rules.Policy, scans ScanStarter) *Service {
+	return &Service{clk: clk, pol: pol, scans: scans}
 }
 
 // Mode tells an individual request from a bulk one.
