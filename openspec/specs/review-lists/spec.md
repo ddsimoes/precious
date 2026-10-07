@@ -1,7 +1,7 @@
 # review-lists Specification
 
 ## Purpose
-Turns the index, the rules, and the duplicates into focused lists that answer "what should I do first?" and "what is valuable?", so that the owner reviews and decides in groups whenever they choose.
+Turns the index, the rules, and the duplicates into focused lists that answer "what should I do first?", so that the owner reviews and decides in groups whenever they choose.
 
 ## Requirements
 

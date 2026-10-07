@@ -10,7 +10,8 @@ context: |
   from it require an architecture decision note under `docs/adr/`.
   `directory-first-curator-spec-v0.2.md` is history only.
 
-  Delivery order (§14): R1 full index and explorer -> R2 duplicates, opportunities, and gems
+  Delivery order (§14): R1 full index and explorer -> R2 duplicates and opportunities (Gems
+  removed by docs/adr/0009-remove-gems.md)
   -> R3 organizing -> R4 cleanup -> R5 media dates -> R6 classifier assistant (Jev)
   -> R7 versions, extended viewer, and pt-BR -> R8 platforms and removable media.
   One OpenSpec change per milestone. A milestone is done only when its listed acceptance
