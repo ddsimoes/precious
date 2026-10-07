@@ -67,11 +67,12 @@ func TestHome(t *testing.T) {
 	e.fails(t, "/api/home?fonte=pen", 400, "invalid_request")
 }
 
-// homeR2Empty is Home's R2 fields before any hashing: no coverage, seven
+// homeR2Empty is Home's R2 fields before any hashing: no coverage, eight
 // empty cards in their fixed order, and no hashing job.
 const homeR2Empty = `"coverage":{"candidate":{"files":0,"bytes":0},"checked":{"files":0,"bytes":0},` +
 	`"unchecked":{"files":0,"bytes":0},"unreadable":{"files":0,"bytes":0}},` +
-	`"cards":[{"list":"duplicates","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"content"},` +
+	`"cards":[{"list":"rescue","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"rules"},` +
+	`{"list":"duplicates","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"content"},` +
 	`{"list":"unpacked_archives","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"content"},` +
 	`{"list":"system_junk","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"rules"},` +
 	`{"list":"installers","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"rules"},` +

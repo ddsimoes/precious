@@ -251,7 +251,9 @@ func readIntent(t *testing.T, st *store.Store) intent {
 
 // TestServeHashesTheCorpus drives the wired R2 server over the corpus: after
 // the scan, hashing starts without any request, relate runs, and the
-// opportunities and Gems read through the API are not empty.
+// opportunities read through the API are not empty: the rescue card comes
+// first and lists the spreadsheet inside Microsoft Office (R2.6), and the
+// removed GET /api/gems is 404.
 func TestServeHashesTheCorpus(t *testing.T) {
 	disk := corpusDisk(t)
 	cfg := r2Config(t, disk)
@@ -292,20 +294,35 @@ func TestServeHashesTheCorpus(t *testing.T) {
 	for _, card := range opp.Cards {
 		byList[card.List] = card.Rows
 	}
-	if len(opp.Cards) != 7 || byList["duplicates"] == 0 || byList["unpacked_archives"] == 0 || byList["system_junk"] == 0 {
-		t.Errorf("opportunities %+v: want seven cards with duplicates, unpacked archives, and system junk", opp.Cards)
+	if len(opp.Cards) != 8 || opp.Cards[0].List != "rescue" || byList["rescue"] == 0 || byList["duplicates"] == 0 ||
+		byList["unpacked_archives"] == 0 || byList["system_junk"] == 0 {
+		t.Errorf("opportunities %+v: want eight cards, rescue first, with rescue, duplicates, unpacked archives, and system junk",
+			opp.Cards)
 	}
 	if opp.Coverage.Candidate.Bytes == 0 || opp.Coverage.Checked.Bytes != opp.Coverage.Candidate.Bytes {
 		t.Errorf("coverage %+v, want every candidate byte checked", opp.Coverage)
 	}
-	for _, section := range []string{"unique", "rescue", "only_in_copy"} {
-		var gems struct {
-			Items []json.RawMessage `json:"items"`
-		}
-		c.getJSON("/api/gems?section="+section, &gems)
-		if len(gems.Items) == 0 {
-			t.Errorf("gems section %s is empty", section)
-		}
+	var rescue struct {
+		Items []struct {
+			Entry struct {
+				Path string `json:"path"`
+			} `json:"entry"`
+			Group *struct {
+				Path string `json:"path"`
+			} `json:"group"`
+		} `json:"items"`
+	}
+	c.getJSON("/api/opportunities/rescue?limit=500", &rescue)
+	const office = "Backup_PC_2004/C/Arquivos de programas/Microsoft Office"
+	found := false
+	for _, it := range rescue.Items {
+		found = found || it.Entry.Path == office+"/OFFICE11/Meu orcamento casamento.xls" && it.Group != nil && it.Group.Path == office
+	}
+	if !found {
+		t.Errorf("rescue rows %+v lack the spreadsheet inside Microsoft Office", rescue.Items)
+	}
+	if resp, body := c.fetch(http.MethodGet, "/api/gems?section=unique"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /api/gems = %d: %s, want 404", resp.StatusCode, body)
 	}
 }
 

@@ -214,8 +214,9 @@ func toCardJSON(c review.Card) cardJSON {
 		Basis: c.Basis}
 }
 
-// readCards reads the seven cards of src ("" = every source), largest
-// first.
+// readCards reads the eight cards of src ("" = every source) in
+// review.Cards' order: the rescue card first while it has open rows, then
+// largest first.
 func readCards(ctx context.Context, tx *sql.Tx, src domain.SourceID) ([]cardJSON, error) {
 	cards, err := review.Cards(ctx, tx, src)
 	if err != nil {
