@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Your files inside programs
-The rescue card SHALL list the owner's own files (user-material indicators) found inside program or disposable groups, one row per file, for one source or all. Each row SHALL name the outermost such group that holds the file and link to it. Its basis SHALL be rules (§11.4; ADR 0009 moves this list here from §11.7).
+The rescue card SHALL list the owner's own material (user-material indicators: a file, or a folder such as saved games) found inside program or disposable groups, one row per item, for one source or all. Each row SHALL name the outermost such group that holds the item and link to it. Its basis SHALL be rules (§11.4; ADR 0009 moves this list here from §11.7).
 
 #### Scenario: R2.6 The spreadsheet inside Microsoft Office
 - **WHEN** the corpus is scanned and hashed to completion and the owner opens the rescue card
@@ -42,7 +42,7 @@ Each card SHALL show its bytes, its row count, and its basis (rules or same cont
 
 #### Scenario: The rescue card leads with its files
 - **WHEN** the rescue card has one open row of 20 KiB
-- **THEN** it is the first card and leads with "1 file", not with its bytes
+- **THEN** it is the first card and leads with "1 item", not with its bytes
 
 #### Scenario: A rescue card with nothing open
 - **WHEN** every row of the rescue card is decided

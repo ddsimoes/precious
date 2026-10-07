@@ -17,7 +17,7 @@ One section is useful: rescue. It lists the owner's own files inside program or 
 - **BREAKING** Gems is removed: the page, its menu entry, `GET /api/gems`, the "unique" and "only in a copy" lists, and their computation.
 - A new opportunity card, **Your files inside programs** (list `rescue`), holds the former rescue rows. Each row is a file of the owner's inside its outermost program or disposable group, and names that group.
 - A rescue row stays open until the owner decides the file itself, or until it is kept. An inherited discard keeps it open: deciding a program folder must not hide the files of the owner's inside it.
-- While the rescue card has open rows, it comes first among the cards and leads with its file count.
+- While the rescue card has open rows, it comes first among the cards and leads with its item count. A row is a file or a folder such as saved games.
 - Migration `0005_rescue` rebuilds `review_rows`. It keeps the rescue rows under the new list name and drops the two removed lists. This is schema version 5, one way like 0003 and 0004.
 - The ground truth (`internal/corpus`, `gencorpus`) keeps only the rescue list. Its Gems fields and declarations are removed.
 - Docs: the operator manual, the README, and the project context in `openspec/config.yaml` drop Gems and describe the rescue card.

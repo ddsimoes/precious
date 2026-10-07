@@ -21,7 +21,7 @@ After R2b, the owner judged Gems unworkable and asked for its removal. He chose 
 ## Decision
 
 1. **Gems is removed:** its page, its menu entry, `GET /api/gems`, and the "unique" and "only in a copy" lists with their computation.
-2. **The rescue list becomes the opportunity card "Your files inside programs"** (§11.4). It comes first while it has open rows, and leads with its file count. A row stays open until the owner decides the file itself or it is kept, so that a decision on the program around it does not hide it.
+2. **The rescue list becomes the opportunity card "Your files inside programs"** (§11.4). It comes first while it has open rows, and leads with its item count, since a row may be a file or a folder such as saved games. A row stays open until the owner decides the item itself or it is kept, so that a decision on the program around it does not hide it.
 3. **What "unique" and "only in a copy" answered stays available where it is precise:**
    - the detail panel says whether a file has another copy, with the checked share (R2.7, I7);
    - Search filters files with no other copy;
