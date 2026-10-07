@@ -207,6 +207,10 @@ function TriageCell({ row }: CellProps) {
 function DuplicatedCell({ row }: CellProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
+  // An unreadable file never gets checked: "Not checked" would promise it.
+  if (row.original.content_state === 'unreadable') {
+    return t('map.dupCell.unreadable')
+  }
   const duplication = duplicationOf(row.original)
   if (duplication === null) {
     return ''

@@ -525,6 +525,7 @@ export const en = {
     dupCell: {
       unchecked: 'Not checked',
       partial: '{{percent}} so far',
+      unreadable: 'Could not be read',
     },
   },
   search: {

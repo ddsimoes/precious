@@ -38,6 +38,7 @@ const novos = folderRow('7', 'Novos')
 const curriculo = entryRow({ id: '8', name: 'curriculo.doc', path: 'curriculo.doc', content_state: 'hashed', copies: 3 })
 const unico = entryRow({ id: '9', name: 'unico.txt', path: 'unico.txt', content_state: 'unique_size', copies: 1 })
 const pendente = entryRow({ id: '10', name: 'pendente.bin', path: 'pendente.bin', content_state: 'pending', copies: null })
+const ilegivel = entryRow({ id: '11', name: 'ilegivel.jpg', path: 'ilegivel.jpg', content_state: 'unreadable', copies: null })
 const vazio = entryRow({ id: '13', name: 'vazio.txt', path: 'vazio.txt', size: 0, total_bytes: 0 })
 // An archive read completely opens as a folder; one not read is a file.
 const emuleZip = entryRow({
@@ -53,7 +54,7 @@ const emuleZip = entryRow({
 })
 const oldRar = entryRow({ id: '62', name: 'old.zip', path: 'old.zip', file_kind: 'archive', archive_state: null })
 
-const rows = [copia, documentos, novos, curriculo, unico, pendente, vazio, emuleZip, oldRar]
+const rows = [copia, documentos, novos, curriculo, unico, pendente, ilegivel, vazio, emuleZip, oldRar]
 
 // Members of the archive: a folder and a file, decided with the archive.
 const memberDir = folderRow('m70', 'emule-0.47c', {
@@ -130,6 +131,7 @@ describe('Map duplication', () => {
     expect(cellOf('curriculo.doc', 'Duplicated')).toHaveTextContent('100%')
     expect(cellOf('unico.txt', 'Duplicated')).toHaveTextContent('0%')
     expect(cellOf('pendente.bin', 'Duplicated')).toHaveTextContent('Not checked')
+    expect(cellOf('ilegivel.jpg', 'Duplicated')).toHaveTextContent('Could not be read')
     expect(cellOf('vazio.txt', 'Duplicated')).toHaveTextContent('')
   })
 
@@ -200,6 +202,7 @@ describe('Map duplication', () => {
         'curriculo.doc': '#dc2626',
         'unico.txt': '#16a34a',
         'pendente.bin': '#93c5fd',
+        'ilegivel.jpg': '#93c5fd',
         'vazio.txt': '#d4d4d8',
         'eMule0.47c-Installer.zip': '#16a34a',
         'old.zip': '#d4d4d8',
