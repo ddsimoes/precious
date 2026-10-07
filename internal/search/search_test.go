@@ -364,8 +364,9 @@ func TestSortAndPaging(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if full.NextCursor != "" || full.Count != len(full.Items) || full.CountCapped {
-				t.Fatalf("one page: next %q count %d of %d", full.NextCursor, full.Count, len(full.Items))
+			n, capped, err := Count(context.Background(), st.Reader(), query)
+			if err != nil || full.NextCursor != "" || n != len(full.Items) || capped {
+				t.Fatalf("one page: next %q count %d of %d, %v", full.NextCursor, n, len(full.Items), err)
 			}
 			if !slices.IsSortedFunc(full.Items, k.less) {
 				t.Errorf("not in order: %q", rowPaths(full.Items))
@@ -485,26 +486,26 @@ func TestCountCap(t *testing.T) {
 	}
 	ctx := context.Background()
 
+	count := func(q Query) (int, bool) {
+		t.Helper()
+		n, capped, err := Count(ctx, st.Reader(), q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n, capped
+	}
 	res, err := Page(ctx, st.Reader(), Query{Ext: []string{"dat"}}, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Count != CountCap || !res.CountCapped || len(res.Items) != 10 || res.NextCursor == "" {
-		t.Errorf("10,001 matches: count %d capped %v items %d next %q", res.Count, res.CountCapped, len(res.Items), res.NextCursor)
+	if n, capped := count(Query{Ext: []string{"dat"}}); n != CountCap || !capped || len(res.Items) != 10 || res.NextCursor == "" {
+		t.Errorf("10,001 matches: count %d capped %v items %d next %q", n, capped, len(res.Items), res.NextCursor)
 	}
-	res, err = Page(ctx, st.Reader(), Query{Ext: []string{"dat"}, MinSize: ptr[int64](1)}, "", 10)
-	if err != nil {
-		t.Fatal(err)
+	if n, capped := count(Query{Ext: []string{"dat"}, MinSize: ptr[int64](1)}); n != CountCap || capped {
+		t.Errorf("10,000 matches: count %d capped %v", n, capped)
 	}
-	if res.Count != CountCap || res.CountCapped {
-		t.Errorf("10,000 matches: count %d capped %v", res.Count, res.CountCapped)
-	}
-	res, err = Page(ctx, st.Reader(), Query{Ext: []string{"dat"}, MaxSize: ptr[int64](9499)}, "", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Count != 9500 || res.CountCapped {
-		t.Errorf("9,500 matches: count %d capped %v", res.Count, res.CountCapped)
+	if n, capped := count(Query{Ext: []string{"dat"}, MaxSize: ptr[int64](9499)}); n != 9500 || capped {
+		t.Errorf("9,500 matches: count %d capped %v", n, capped)
 	}
 
 	ids, err := Resolve(ctx, st.Reader(), Query{Ext: []string{"dat"}}, 20000)
@@ -540,8 +541,8 @@ func TestParse(t *testing.T) {
 		"source": {"disco"}, "name": {"natal"}, "ext": {"jpg", "", "PNG"}, "file_kind": {"image"},
 		"min_size": {"10"}, "max_size": {"20"}, "year_from": {"2004"}, "year_to": {"2006"},
 		"category": {"personal_media", "documents"}, "triage": {"review", "discard"}, "tag": {"3", "4"}, "decision": {"keep"},
-		"dup":    {"copies", "", "elsewhere"},
-		"within": {"12"}, "sort": {"name"}, "order": {"asc"}, "cursor": {"x"}, "limit": {"5"},
+		"dup": {"copies", "", "elsewhere"}, "state": {"unreadable"},
+		"within": {"12"}, "sort": {"name"}, "order": {"asc"}, "cursor": {"x"}, "limit": {"5"}, "count": {"only"},
 	}
 	got, err = Parse(v)
 	if err != nil {
@@ -553,8 +554,9 @@ func TestParse(t *testing.T) {
 		Categories: []domain.Category{domain.CategoryPersonalMedia, domain.CategoryDocuments},
 		Triages:    []domain.Triage{domain.TriageReview, domain.TriageDiscard},
 		Tags:       []int64{3, 4}, Decisions: []domain.Decision{domain.DecisionKeep}, Within: ptr(domain.EntryID(12)),
-		Dup:  []domain.DupFilter{domain.DupCopies, domain.DupElsewhere},
-		Sort: SortName, Order: OrderAsc,
+		Dup:   []domain.DupFilter{domain.DupCopies, domain.DupElsewhere},
+		State: StateUnreadable,
+		Sort:  SortName, Order: OrderAsc,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Parse\n got %+v\nwant %+v", got, want)
@@ -567,7 +569,7 @@ func TestParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(b), `"within":"12"`) || !strings.Contains(string(b), `"file_kind":["image"]`) ||
-		!strings.Contains(string(b), `"dup":["copies","elsewhere"]`) {
+		!strings.Contains(string(b), `"dup":["copies","elsewhere"]`) || !strings.Contains(string(b), `"state":"unreadable"`) {
 		t.Errorf("JSON %s", b)
 	}
 	var back Query
@@ -607,10 +609,90 @@ func TestParse(t *testing.T) {
 		// "copies outside this folder" needs the folder.
 		{"dup": {"elsewhere"}},
 		{"dup": {"unique", "elsewhere"}, "source": {"disco"}},
+		// Only what could not be read is a state to search for.
+		{"state": {"present"}},
+		{"state": {"Unreadable"}},
+		{"state": {"unreadable", "unreadable"}},
 	}
 	for _, v := range bad {
 		_, err := Parse(v)
 		wantCode(t, err, domain.CodeInvalidRequest)
+	}
+}
+
+// The inventory-explorer scenario "Accents are ignored" (r2b design D7): a
+// name of three characters or more matches whatever its accents and case,
+// through the rebuilt name index, which folds the searched name too. A
+// shorter name keeps its own letters: "ão" finds both names, "ao" neither.
+func TestAccentsAreIgnored(t *testing.T) {
+	st := storetest.Open(t)
+	indextest.Seed(t, st, indextest.Tree{Source: "festas", CreateSource: true, Nodes: []indextest.Node{
+		{Path: "Confraternização 2018/IMG_0001.JPG", Size: 10, MTime: year(2018), FileKind: domain.FileKindImage},
+		{Path: "Leilão.txt", Size: 1, MTime: year(2018), FileKind: domain.FileKindDocument},
+		{Path: "caixa.txt", Size: 2, MTime: year(2018), FileKind: domain.FileKindDocument},
+	}})
+	confra, leilao := []string{"festas:Confraternização 2018"}, []string{"festas:Leilão.txt"}
+	for _, tc := range []struct {
+		name string
+		want []string
+	}{
+		{"confraternizacao", confra},
+		{"CONFRATERNIZACAO 2018", confra},
+		{"confraternização", confra},
+		{"çao", confra},
+		{"leilao", leilao},
+		{"LEILÃO", leilao},
+		{"lão", leilao},
+		// Short names are unchanged: case folds, accents do not.
+		{"ÃO", sorted(confra[0], leilao[0])},
+		{"ao", []string{}},
+		{"ca", []string{"festas:caixa.txt"}},
+	} {
+		if got := resolve(t, st, Query{Name: tc.name}); !slices.Equal(got, tc.want) {
+			t.Errorf("name %q: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// State unreadable lists exactly the folders that could not be read, of
+// every source or of one, alone or with other filters, and pages and
+// counts them alike.
+func TestStateUnreadable(t *testing.T) {
+	st := storetest.Open(t)
+	for _, src := range []domain.SourceID{"fotos", "pen"} {
+		indextest.Seed(t, st, indextest.Tree{Source: src, CreateSource: true, Nodes: []indextest.Node{
+			{Path: "ok/a.jpg", Size: 10, MTime: year(2006), FileKind: domain.FileKindImage},
+			{Path: "trancada", Kind: domain.EntryDirectory, Unreadable: true},
+			{Path: "fundo/meio", Kind: domain.EntryDirectory, Unreadable: true},
+		}})
+	}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		query Query
+		want  []string
+	}{
+		{Query{State: StateUnreadable}, sorted("fotos:fundo/meio", "fotos:trancada", "pen:fundo/meio", "pen:trancada")},
+		{Query{State: StateUnreadable, Source: "pen"}, sorted("pen:fundo/meio", "pen:trancada")},
+		{Query{State: StateUnreadable, Name: "trancada"}, sorted("fotos:trancada", "pen:trancada")},
+		{Query{State: StateUnreadable, Name: "me", Source: "fotos"}, []string{"fotos:fundo/meio"}},
+		{Query{State: StateUnreadable, Ext: []string{"jpg"}}, []string{}},
+	} {
+		if got := resolve(t, st, tc.query); !slices.Equal(got, tc.want) {
+			t.Errorf("%+v: %q, want %q", tc.query, got, tc.want)
+		}
+		res, err := Page(ctx, st.Reader(), tc.query, "", DefaultLimit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, capped, err := Count(ctx, st.Reader(), tc.query)
+		if err != nil || capped || n != len(tc.want) || len(res.Items) != len(tc.want) {
+			t.Errorf("%+v: page %d rows, count %d (capped %v, %v); want %d", tc.query, len(res.Items), n, capped, err, len(tc.want))
+		}
+		for _, r := range res.Items {
+			if r.State != "unreadable" {
+				t.Errorf("%s: state %s", r.Path, r.State)
+			}
+		}
 	}
 }
 

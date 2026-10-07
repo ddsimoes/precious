@@ -18,12 +18,24 @@ import (
 // minTrigram is the shortest name the trigram index can look up.
 const minTrigram = 3
 
-// filter is the WHERE clause of a query over `entries e`, with its
-// arguments in order.
+// filter is the FROM and WHERE clauses of a query: from reads `entries e`,
+// alone or after its driver's rows; where and its arguments, in order,
+// select the matches.
 type filter struct {
+	from  string
 	where string
 	args  []any
+	drive driver
+	// arms, set for a page by bytes the duplicate filter drives, are the
+	// size-ordered ranges each of whose statements reads from with where;
+	// the page merges them (idsSQL).
+	arms []arm
 }
+
+// ordered reports that a statement over f may read entries e in its sort
+// index's order (driveColumns): the other drivers select their rows first,
+// and their statements sort them.
+func (f filter) ordered() bool { return f.drive == driveColumns }
 
 type filterBuilder struct {
 	conds []string
@@ -64,30 +76,38 @@ func writeMarks(s *strings.Builder, n int) {
 type driver int
 
 const (
-	// driveColumns lets SQLite use the source and decision indexes:
-	// entries_eff (source_id, eff_decision), or the (source_id, path)
-	// index for a source or the root's Within.
-	driveColumns driver = iota
-	driveName           // the trigram index
-	driveWithin         // the path range of a folder
-	driveTags           // the tagged entries and their path ranges
+	// driveColumns lets SQLite use the source and decision
+	// indexes: entries_eff (source_id, eff_decision), or the (source_id,
+	// path) index for a source or the root's Within.
+	driveColumns    driver = iota
+	driveUnreadable        // the partial index of unreadable entries
+	driveName              // the trigram index
+	driveWithin            // the path range of a folder
+	driveTags              // the tagged entries and their path ranges
+	driveDup               // the content states, or the contents with copies
 )
 
 func (q Query) driver(withinRoot bool) driver {
 	switch {
+	case q.State == StateUnreadable:
+		return driveUnreadable
 	case utf8.RuneCountInString(q.Name) >= minTrigram:
 		return driveName
 	case q.Within != nil && !withinRoot:
 		return driveWithin
 	case len(q.Tags) > 0:
 		return driveTags
+	case len(q.Dup) > 0:
+		return driveDup
 	}
 	return driveColumns
 }
 
 // buildFilter turns a validated query into SQL. It reads the Within entry,
-// which must exist.
-func buildFilter(ctx context.Context, q store.Queryer, query Query) (filter, error) {
+// which must exist. ranged makes a query the duplicate filter drives read
+// its files by ranges of file_content_by_source, one per source and content
+// state (dupArms): a page by bytes merges them, a count reads them in turn.
+func buildFilter(ctx context.Context, q store.Queryer, query Query, ranged bool) (filter, error) {
 	var (
 		withinSource string
 		withinPath   []byte
@@ -105,28 +125,60 @@ func buildFilter(ctx context.Context, q store.Queryer, query Query) (filter, err
 	drive := query.driver(query.Within != nil && len(withinPath) == 0)
 	// A unary + on a column keeps SQLite from using an index for that term,
 	// so only the driver's index selects rows.
-	columns, within, tags := "+", "+", "+"
+	source, decision, within, tags := "+", "+", "+", "+"
 	switch drive {
 	case driveColumns:
-		columns = ""
+		source, decision = "", ""
+	case driveUnreadable:
+		source = ""
 	case driveWithin:
 		within = ""
 	case driveTags:
 		tags = ""
 	}
 
-	var b filterBuilder
+	b := filterBuilder{}
+	f := filter{from: `entries e`, drive: drive}
+	switch drive {
+	case driveDup:
+		// The candidates' source: the query's, or the root Within's.
+		src := string(query.Source)
+		if src == "" {
+			src = withinSource
+		}
+		if !ranged {
+			f.from = dupDriver(&b, query.Dup, src)
+			break
+		}
+		f.from = byContentState
+		var err error
+		if f.arms, err = dupArms(ctx, q, query.Dup, src); err != nil {
+			return filter{}, err
+		}
+	case driveUnreadable:
+		// Without statistics SQLite may prefer another (source_id, …)
+		// index, which reads the whole source for its few unreadable entries.
+		f.from = `entries e INDEXED BY entries_unreadable`
+	}
 	if query.Source != "" {
-		b.add(columns+`e.source_id = ?`, string(query.Source))
-	} else if drive == driveColumns && len(query.Decisions) > 0 {
-		// entries_eff starts with source_id: name every source so the
-		// decision filter can use it.
+		b.add(source+`e.source_id = ?`, string(query.Source))
+	} else if (drive == driveColumns && len(query.Decisions) > 0) || drive == driveUnreadable {
+		// entries_eff and entries_unreadable start with source_id: name
+		// every source so the decision or state filter can use them.
 		b.add(`e.source_id IN (SELECT id FROM sources)`)
+	}
+	if query.State == StateUnreadable {
+		if drive == driveUnreadable {
+			b.add(`e.state = 'unreadable'`)
+		} else {
+			b.add(`+e.state = 'unreadable'`)
+		}
 	}
 	if query.Within != nil {
 		if len(withinPath) == 0 {
-			// The root: every other entry of the source.
-			b.add(columns+`e.source_id = ? AND `+columns+`e.path > ?`, withinSource, []byte{})
+			// The root: every other entry of the source, which only its
+			// source selects.
+			b.add(source+`e.source_id = ? AND +e.path > ?`, withinSource, []byte{})
 		} else {
 			b.add(within+`e.source_id = ? AND `+within+`e.path >= ? AND `+within+`e.path < ?`,
 				withinSource, descendantsFrom(withinPath), descendantsTo(withinPath))
@@ -135,6 +187,8 @@ func buildFilter(ctx context.Context, q store.Queryer, query Query) (filter, err
 	if query.Name != "" {
 		if drive == driveName {
 			b.add(`e.id IN (SELECT rowid FROM entry_names WHERE entry_names MATCH ?)`, ftsPhrase(query.Name))
+		} else if utf8.RuneCountInString(query.Name) >= minTrigram {
+			b.add(`+e.id IN (SELECT rowid FROM entry_names WHERE entry_names MATCH ?)`, ftsPhrase(query.Name))
 		} else {
 			nameScan(&b, query.Name)
 		}
@@ -156,7 +210,7 @@ func buildFilter(ctx context.Context, q store.Queryer, query Query) (filter, err
 		in(&b, `e.triage`, query.Triages)
 	}
 	if len(query.Decisions) > 0 {
-		in(&b, columns+`e.eff_decision`, query.Decisions)
+		in(&b, decision+`e.eff_decision`, query.Decisions)
 	}
 	if query.MinSize != nil {
 		b.add(`e.total_bytes >= ?`, *query.MinSize)
@@ -174,12 +228,13 @@ func buildFilter(ctx context.Context, q store.Queryer, query Query) (filter, err
 		tagFilter(&b, tags, query.Tags)
 	}
 	if len(query.Dup) > 0 {
-		dupFilter(&b, query.Dup, &withinRange{source: withinSource, path: withinPath})
+		dupFilter(&b, query.Dup, &withinRange{source: withinSource, path: withinPath}, drive == driveDup)
 	}
-	if len(b.conds) == 0 {
-		return filter{where: `1`}, nil
+	f.where, f.args = `1`, b.args
+	if len(b.conds) > 0 {
+		f.where = strings.Join(b.conds, ` AND `)
 	}
-	return filter{where: strings.Join(b.conds, ` AND `), args: b.args}, nil
+	return f, nil
 }
 
 // descendantsFrom and descendantsTo bound the paths below a non-root path p:
@@ -211,14 +266,15 @@ func tagFilter(b *filterBuilder, prefix string, tags []int64) {
 }
 
 // ftsPhrase quotes name as one FTS5 phrase. The trigram tokenizer matches a
-// phrase as a substring, case-insensitively.
+// phrase as a substring, case- and accent-insensitively.
 func ftsPhrase(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // nameScan adds the per-row test of a name too short for trigrams: the raw
-// name contains one of the name's case variants. It folds as the trigram
-// index does (Unicode simple case folding, no diacritic removal).
+// name contains one of the name's case variants. It folds case as the
+// trigram index does (Unicode simple case folding), but not accents: a
+// short search finds only its own accented letters.
 func nameScan(b *filterBuilder, name string) {
 	variants := [][]byte{nil}
 	for _, r := range name {

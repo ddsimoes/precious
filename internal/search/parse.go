@@ -12,19 +12,19 @@ import (
 //
 //	source=ID  name=TEXT  ext=X…  file_kind=K…  min_size=N  max_size=N
 //	year_from=Y  year_to=Y  category=C…  triage=T…  tag=ID…  decision=D…
-//	dup=copies|elsewhere|unique|unchecked…  within=ENTRY_ID
+//	dup=copies|elsewhere|unique|unchecked…  state=unreadable  within=ENTRY_ID
 //	sort=bytes|files|newest|name  order=desc|asc
 //
 // Parameters marked … repeat, one value each. An empty value is the same as
-// an absent parameter. cursor and limit are the caller's and ignored here.
-// Any other parameter, a repeated single-valued one, or a bad value is
-// invalid_request.
+// an absent parameter. cursor, limit, and count are the caller's and
+// ignored here. Any other parameter, a repeated single-valued one, or a bad
+// value is invalid_request.
 func Parse(v url.Values) (Query, error) {
 	var q Query
 	for key, vals := range v {
 		var err error
 		switch key {
-		case "cursor", "limit":
+		case "cursor", "limit", "count":
 		case "source":
 			err = single(key, vals, func(s string) error { q.Source = domain.SourceID(s); return nil })
 		case "name":
@@ -33,6 +33,8 @@ func Parse(v url.Values) (Query, error) {
 			err = single(key, vals, func(s string) error { q.Sort = s; return nil })
 		case "order":
 			err = single(key, vals, func(s string) error { q.Order = s; return nil })
+		case "state":
+			err = single(key, vals, func(s string) error { q.State = s; return nil })
 		case "min_size":
 			err = single(key, vals, func(s string) error { return parseInt(key, s, &q.MinSize) })
 		case "max_size":
@@ -193,6 +195,11 @@ func (q Query) validate() error {
 		if d == domain.DupElsewhere && q.Within == nil {
 			return invalid("dup=elsewhere needs within")
 		}
+	}
+	switch q.State {
+	case "", StateUnreadable:
+	default:
+		return invalid("unknown state %q", q.State)
 	}
 	switch q.Sort {
 	case "", SortBytes, SortFiles, SortNewest, SortName:

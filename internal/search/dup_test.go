@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -177,8 +178,8 @@ func TestDupFilter(t *testing.T) {
 	// included: curriculo.doc's group has four copies.
 	size := ptr[int64](24576)
 	res, err := Page(context.Background(), st.Reader(), Query{Name: "curriculo", MinSize: size, MaxSize: size}, "", 0)
-	if err != nil || res.Count != 4 {
-		t.Fatalf("curriculo.doc's group: %d rows, %v", res.Count, err)
+	if err != nil || len(res.Items) != 4 {
+		t.Fatalf("curriculo.doc's group: %d rows, %v", len(res.Items), err)
 	}
 	for _, r := range res.Items {
 		if r.ContentState != domain.ContentHashed || r.Copies.Int64 != 4 {
@@ -220,6 +221,58 @@ func TestDupFilterHardLinks(t *testing.T) {
 	for _, r := range res.Items {
 		if r.Copies.Int64 != 2 {
 			t.Errorf("%s: %v copies, want 2 (the link set and the other file)", r.Path, r.Copies)
+		}
+	}
+}
+
+// The duplicate filter's pages (r2b design D8): by bytes they merge each
+// source's size-ordered ranges, in other orders they sort the driven
+// matches. Either way the pages list exactly the matches Resolve finds, in
+// order, without repeats across page boundaries, and Count counts them.
+func TestDupPages(t *testing.T) {
+	st, s, _ := contentCorpus(t)
+	ctx := context.Background()
+	dups := func(d ...domain.DupFilter) []domain.DupFilter { return d }
+	fotosCopia := s.ID("Fotos - Copia")
+	for _, q := range []Query{
+		{Dup: dups(domain.DupCopies)},
+		{Dup: dups(domain.DupCopies), Order: OrderAsc},
+		{Dup: dups(domain.DupUnique), Source: "corpus"},
+		{Dup: dups(domain.DupUnchecked, domain.DupCopies)},
+		{Dup: dups(domain.DupUnique), Ext: []string{"jpg"}},
+		{Dup: dups(domain.DupCopies), Sort: SortName},
+		{Dup: dups(domain.DupUnique), Sort: SortNewest},
+		{Dup: dups(domain.DupElsewhere), Within: &fotosCopia},
+		{Dup: dups(domain.DupCopies), Source: "nenhuma"},
+	} {
+		want := matchPaths(t, st, q)
+		full, err := Page(ctx, st.Reader(), q, "", MaxLimit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paged := allPages(t, st.Reader(), q, 7)
+		if !reflect.DeepEqual(rowPaths(paged), rowPaths(full.Items)) {
+			t.Errorf("%+v: pages of 7 %q\nwant %q", q, rowPaths(paged), rowPaths(full.Items))
+		}
+		var got []string
+		for _, r := range full.Items {
+			got = append(got, string(r.Path))
+		}
+		if !slices.Equal(slices.Sorted(slices.Values(got)), want) {
+			t.Errorf("%+v: page %q\nwant %q", q, got, want)
+		}
+		s := q.sortSpec()
+		if s.key == SortBytes && !slices.IsSortedFunc(full.Items, func(a, b Row) int {
+			c := cmpThen(cmpInt(a.TotalBytes, b.TotalBytes), cmpInt(int64(a.ID), int64(b.ID)))
+			if s.desc {
+				return -c
+			}
+			return c
+		}) {
+			t.Errorf("%+v: not in size order: %q", q, rowPaths(full.Items))
+		}
+		if n, capped, err := Count(ctx, st.Reader(), q); err != nil || capped || n != len(want) {
+			t.Errorf("%+v: count %d (capped %v, %v), want %d", q, n, capped, err, len(want))
 		}
 	}
 }

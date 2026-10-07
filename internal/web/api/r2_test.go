@@ -242,7 +242,6 @@ func TestR2ReadAPI(t *testing.T) {
 		}
 		var res struct {
 			Items []contentRow `json:"items"`
-			Count int          `json:"count"`
 		}
 		w.get(t, "/api/search?dup=elsewhere&within="+copia.ID, 200, &res)
 		for _, r := range res.Items {
@@ -250,8 +249,12 @@ func TestR2ReadAPI(t *testing.T) {
 				t.Errorf("elsewhere: %+v", r)
 			}
 		}
-		if res.Count < 30 {
-			t.Errorf("elsewhere within Fotos - Copia: %d matches", res.Count)
+		var count struct {
+			Count int `json:"count"`
+		}
+		w.get(t, "/api/search?dup=elsewhere&within="+copia.ID+"&count=only", 200, &count)
+		if count.Count < 30 || count.Count != len(res.Items) {
+			t.Errorf("elsewhere within Fotos - Copia: %d matches, %d rows", count.Count, len(res.Items))
 		}
 		w.fails(t, "/api/search?dup=elsewhere", 400, "invalid_request")
 	})

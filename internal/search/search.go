@@ -8,11 +8,14 @@
 //   - Source: the entries of one source.
 //   - Name: a case-insensitive substring of the display name
 //     (domain.DisplayName). A name of three characters or more is looked up
-//     in the trigram index entry_names. A shorter name cannot be: trigrams
-//     need three characters. It is then tested on each row the other
-//     filters select, as a byte substring of the raw name in any of its
-//     Unicode simple case foldings, so a one- or two-character name with no
-//     other filter reads every entry.
+//     in the trigram index entry_names, whose tokenizer folds accents in
+//     the indexed names and in the searched name alike (r2b design D7):
+//     "confraternizacao" finds "Confraternização 2018". A shorter name
+//     cannot be looked up: trigrams need three characters. It is then
+//     tested on each row the other filters select, as a byte substring of
+//     the raw name in any of its Unicode simple case foldings, without
+//     folding accents ("çã" finds "AÇÃO", "ca" does not), so a one- or
+//     two-character name with no other filter reads every entry.
 //   - Ext: the extension column (ASCII lower case, without the dot).
 //   - FileKinds, Categories, Triages: the file_kind, category, and triage
 //     columns.
@@ -28,7 +31,9 @@
 //   - Dup: the duplicate state of a present file (R2 design D15): copies
 //     (another physical copy anywhere, archive members included),
 //     elsewhere (one outside the Within folder; needs Within), unique, or
-//     unchecked. It has no index and is tested on each candidate.
+//     unchecked.
+//   - State: StateUnreadable for the folders and files that could not be
+//     read, through the partial index entries_unreadable.
 //
 // The descendants of an entry at path p are the entries of its source whose
 // path starts with p + "/" (every entry but the root, for the root): the
@@ -36,24 +41,31 @@
 // such as "Fotos - Copia" is outside the range of "Fotos".
 //
 // One filter selects the candidate rows through an index, in this order of
-// preference: a name of three characters or more (entry_names), a Within
-// folder other than the root, tags (entry_tags_by_tag, then path ranges),
-// and otherwise source and decision (entries_eff, or the (source_id, path)
-// index). Every other filter is tested on those candidates. Extension, file
-// kind, category, triage, size, year, and a short name have no index in the
-// baseline schema, so a query made of them alone reads every entry of its
-// source, or of the index without a source.
+// preference: State (entries_unreadable), a name of three characters or more
+// (entry_names), a Within folder other than the root, tags
+// (entry_tags_by_tag, then path ranges), Dup, and otherwise source and
+// decision (entries_eff, or the (source_id, path) index).
+// Every other filter is tested on those candidates. Dup selects the files
+// of the contents with two copies or more (file_content_by_content, for
+// copies and elsewhere), or the files in the content states its values need
+// (file_content_by_source), and tests the exact duplicate state on those
+// only (r2b design D8). Extension, file kind, category, triage, size, year,
+// and a short name have no index, so a query made of them alone reads every
+// entry of its source, or of the index without a source, in the order of
+// the page when it is by bytes.
 //
 // Entries of every state (present, missing, unreadable) are found; each row
 // carries its state.
 //
 // Results are ordered by Sort (bytes, files, newest, or name; default
 // bytes) and Order (desc or asc; default desc, asc for name), ties broken
-// by entry ID in the same direction. A cursor holds the last row's sort key
-// and ID, so a page starts strictly after it: rows inserted while paging
-// appear only when they sort after the cursor, and no earlier row is
-// skipped or repeated. The match count is exact up to CountCap and reported
-// as capped beyond.
+// by entry ID in the same direction. A page by bytes, the default, that the
+// duplicate filter drives merges size-ordered ranges and stops after the
+// page (Page); a page with no filter reads every entry once. A cursor
+// holds the last row's sort key and ID, so a page starts strictly after it:
+// rows inserted while paging appear only when they sort after the cursor,
+// and no earlier row is skipped or repeated. The match count (Count) is a
+// request of its own, exact up to CountCap and reported as capped beyond.
 package search
 
 import (
@@ -86,11 +98,17 @@ type Query struct {
 	Decisions  []domain.Decision `json:"decision,omitempty"`
 	// Dup filters by duplicate state (R2 design D15, see dupFilter);
 	// elsewhere requires Within.
-	Dup    []domain.DupFilter `json:"dup,omitempty"`
-	Within *domain.EntryID    `json:"within,omitempty,string"`
-	Sort   string             `json:"sort,omitempty"`
-	Order  string             `json:"order,omitempty"`
+	Dup []domain.DupFilter `json:"dup,omitempty"`
+	// State is StateUnreadable for the entries that could not be read, ""
+	// for every state.
+	State  string          `json:"state,omitempty"`
+	Within *domain.EntryID `json:"within,omitempty,string"`
+	Sort   string          `json:"sort,omitempty"`
+	Order  string          `json:"order,omitempty"`
 }
+
+// StateUnreadable is the State of the entries that could not be read.
+const StateUnreadable = "unreadable"
 
 // Sort keys.
 const (
@@ -191,17 +209,22 @@ type Result struct {
 	Items []Row
 	// NextCursor continues after the last item; "" on the last page.
 	NextCursor string
-	// Count is the number of matches, at most CountCap. CountCapped
-	// reports more than CountCap.
-	Count       int
-	CountCapped bool
 }
 
 // Page returns the matches of query after cursor ("" for the first page),
 // at most limit of them (DefaultLimit when limit ≤ 0, at most MaxLimit). A
 // bad query value or cursor is invalid_request; an unknown Within entry is
-// not_found. Pass a read transaction as q for a page and count from one
-// snapshot.
+// not_found. Pass a read transaction as q so that the page's two
+// statements read one snapshot.
+//
+// The page is read in two stages (r2b design D8): the first selects the
+// IDs of the page's rows with the filter, the order, and the limit; the
+// second reads the full columns, copies included, for those rows only.
+//
+// A page by bytes that the duplicate filter drives reads the files of
+// each source and content state it needs in size order, through
+// file_content_by_source, and merges them (dupArms), so it stops after the
+// page; other orders sort every match.
 func Page(ctx context.Context, q store.Queryer, query Query, cursor string, limit int) (Result, error) {
 	if err := query.validate(); err != nil {
 		return Result{}, err
@@ -220,7 +243,7 @@ func Page(ctx context.Context, q store.Queryer, query Query, cursor string, limi
 	}
 	limit = min(limit, MaxLimit)
 
-	f, err := buildFilter(ctx, q, query)
+	f, err := buildFilter(ctx, q, query, s.key == SortBytes)
 	if err != nil {
 		return Result{}, err
 	}
@@ -228,13 +251,30 @@ func Page(ctx context.Context, q store.Queryer, query Query, cursor string, limi
 	if err != nil {
 		return Result{}, err
 	}
-	if res.Count, res.CountCapped, err = count(ctx, q, f); err != nil {
-		return Result{}, err
-	}
 	if res.Items == nil {
 		res.Items = []Row{}
 	}
 	return res, nil
+}
+
+// Count returns the number of matches of query, at most CountCap; capped
+// reports more than CountCap. It is a request of its own (r2b design D8),
+// so a page never waits for its count. When the duplicate filter drives,
+// copies and elsewhere count the files of the contents with copies; the
+// other values read their content states' ranges in turn, those that need
+// no copy test first (dupStates), so a capped count stops early.
+func Count(ctx context.Context, q store.Queryer, query Query) (n int, capped bool, err error) {
+	if err := query.validate(); err != nil {
+		return 0, false, err
+	}
+	f, err := buildFilter(ctx, q, query, !copiesOnly(query.Dup))
+	if err != nil {
+		return 0, false, err
+	}
+	if f.arms != nil && len(f.arms) == 0 {
+		return 0, false, nil // no source
+	}
+	return count(ctx, q, f)
 }
 
 // Resolve returns the IDs of every match of query, ascending, for a
@@ -249,7 +289,7 @@ func Resolve(ctx context.Context, q store.Queryer, query Query, max int) ([]doma
 	if err := query.validate(); err != nil {
 		return nil, err
 	}
-	f, err := buildFilter(ctx, q, query)
+	f, err := buildFilter(ctx, q, query, false)
 	if err != nil {
 		return nil, err
 	}
@@ -296,64 +336,116 @@ const From = `entries e LEFT JOIN dir_stats ds ON ds.entry_id = e.id
 	LEFT JOIN dir_dups dd ON dd.entry_id = e.id
 	LEFT JOIN archives ar ON ar.entry_id = e.id`
 
-// pageSQL is the page statement of f in order s, starting after a position
-// when after is set.
-func pageSQL(f filter, s sortSpec, after *position, limit int) (string, []any) {
+// idsSQL is the first stage of a page (r2b design D8): the sort key and ID
+// of the rows of f in order s, starting after a position when after is
+// set, one row past limit. Only driveColumns may read entries in its sort
+// index's order, and f.arms are each read in size order and merged; for the
+// other drivers a unary + keeps the order from an index, so their rows are
+// selected first and then sorted.
+func idsSQL(f filter, s sortSpec, after *position, limit int) (string, []any) {
+	cmp, dir := ">", " ASC"
+	if s.desc {
+		cmp, dir = "<", " DESC"
+	}
+	var (
+		b    strings.Builder
+		args []any
+	)
+	if f.arms != nil {
+		// A compound SELECT whose arms are each in its ORDER BY's order is
+		// a merge (MERGE (UNION ALL) in the plan), which stops at the limit.
+		for i, a := range f.arms {
+			if i > 0 {
+				b.WriteString(` UNION ALL `)
+			}
+			fmt.Fprintf(&b, `SELECT df.size, df.entry_id FROM %s WHERE df.source_id = ? AND df.state = ? AND %s`,
+				f.from, f.where)
+			args = append(append(args, a.source, a.state), f.args...)
+			if after != nil {
+				fmt.Fprintf(&b, ` AND (df.size, df.entry_id) %s (?, ?)`, cmp)
+				args = append(args, after.key(s), int64(after.ID))
+			}
+		}
+		fmt.Fprintf(&b, ` ORDER BY 1%s, 2%s LIMIT ?`, dir, dir)
+		return b.String(), append(args, limit+1)
+	}
+	expr := s.expr
+	if !f.ordered() {
+		expr = `+` + expr
+	}
+	fmt.Fprintf(&b, `SELECT %s, e.id FROM %s WHERE %s`, expr, f.from, f.where)
+	args = append(args, f.args...)
+	if after != nil {
+		fmt.Fprintf(&b, ` AND (%s, e.id) %s (?, ?)`, expr, cmp)
+		args = append(args, after.key(s), int64(after.ID))
+	}
+	fmt.Fprintf(&b, ` ORDER BY %s%s, e.id%s LIMIT ?`, expr, dir, dir)
+	return b.String(), append(args, limit+1)
+}
+
+// rowsSQL is the second stage of a page: the Columns of n entries by ID.
+func rowsSQL(n int) string {
 	var b strings.Builder
 	b.WriteString(`SELECT `)
-	b.WriteString(s.expr)
-	b.WriteString(`, `)
 	b.WriteString(Columns)
 	b.WriteString(` FROM `)
 	b.WriteString(From)
-	b.WriteString(` WHERE `)
-	b.WriteString(f.where)
-	args := append([]any(nil), f.args...)
-	cmp := ">"
-	if s.desc {
-		cmp = "<"
-	}
-	if after != nil {
-		fmt.Fprintf(&b, ` AND (%s, e.id) %s (?, ?)`, s.expr, cmp)
-		args = append(args, after.key(s), int64(after.ID))
-	}
-	dir := " ASC"
-	if s.desc {
-		dir = " DESC"
-	}
-	fmt.Fprintf(&b, ` ORDER BY %s%s, e.id%s LIMIT ?`, s.expr, dir, dir)
-	args = append(args, limit+1)
-	return b.String(), args
+	b.WriteString(` WHERE e.id IN (`)
+	writeMarks(&b, n)
+	b.WriteByte(')')
+	return b.String()
 }
 
 func page(ctx context.Context, q store.Queryer, f filter, s sortSpec, after *position, limit int) (Result, error) {
-	query, args := pageSQL(f, s, after, limit)
-	rows, err := q.QueryContext(ctx, query, args...)
+	if f.arms != nil && len(f.arms) == 0 {
+		return Result{}, nil // no source
+	}
+	stmt, args := idsSQL(f, s, after, limit)
+	keys, err := pageKeys(ctx, q, stmt, args, s)
 	if err != nil {
 		return Result{}, fmt.Errorf("search: page: %w", err)
 	}
+	var res Result
+	if len(keys) > limit {
+		keys = keys[:limit]
+		res.NextCursor = encodeCursor(s, keys[limit-1])
+	}
+	if len(keys) == 0 {
+		return res, nil
+	}
+	ids := make([]any, len(keys))
+	at := make(map[domain.EntryID]int, len(keys))
+	for i, k := range keys {
+		ids[i] = int64(k.ID)
+		at[k.ID] = i
+	}
+	rows, err := q.QueryContext(ctx, rowsSQL(len(ids)), ids...)
+	if err != nil {
+		return Result{}, fmt.Errorf("search: page rows: %w", err)
+	}
 	defer rows.Close()
-	var (
-		res  Result
-		last position
-	)
+	items := make([]Row, len(keys))
+	found := make([]bool, len(keys))
 	for rows.Next() {
-		if len(res.Items) == limit {
-			res.NextCursor = encodeCursor(s, last)
-			break
-		}
-		r, key, err := scanRow(rows, s)
+		r, err := ScanRow(rows)
 		if err != nil {
-			return Result{}, fmt.Errorf("search: page: %w", err)
+			return Result{}, fmt.Errorf("search: page rows: %w", err)
 		}
-		res.Items = append(res.Items, r)
-		last = key
+		i := at[r.ID]
+		items[i], found[i] = r, true
 	}
 	if err := rows.Err(); err != nil {
-		return Result{}, fmt.Errorf("search: page: %w", err)
+		return Result{}, fmt.Errorf("search: page rows: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return Result{}, fmt.Errorf("search: page: %w", err)
+		return Result{}, fmt.Errorf("search: page rows: %w", err)
+	}
+	// Outside a read transaction an entry may go between the stages.
+	res.Items = make([]Row, 0, len(items))
+	for i, r := range items {
+		if found[i] {
+			res.Items = append(res.Items, r)
+		}
 	}
 	if err := LoadTags(ctx, q, res.Items); err != nil {
 		return Result{}, err
@@ -361,19 +453,33 @@ func page(ctx context.Context, q store.Queryer, f filter, s sortSpec, after *pos
 	return res, nil
 }
 
-// scanRow reads one page row: the sort key, then Columns.
-func scanRow(rows *sql.Rows, s sortSpec) (Row, position, error) {
-	var p position
-	keyDest := any(&p.N)
-	if s.key == SortName {
-		keyDest = &p.B
-	}
-	r, err := ScanRow(rows, keyDest)
+// pageKeys reads the positions the first stage selects.
+func pageKeys(ctx context.Context, q store.Queryer, stmt string, args []any, s sortSpec) ([]position, error) {
+	rows, err := q.QueryContext(ctx, stmt, args...)
 	if err != nil {
-		return Row{}, position{}, err
+		return nil, err
 	}
-	p.ID = r.ID
-	return r, p, nil
+	defer rows.Close()
+	var keys []position
+	for rows.Next() {
+		var (
+			p  position
+			id int64
+		)
+		keyDest := any(&p.N)
+		if s.key == SortName {
+			keyDest = &p.B
+		}
+		if err := rows.Scan(keyDest, &id); err != nil {
+			return nil, err
+		}
+		p.ID = domain.EntryID(id)
+		keys = append(keys, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return keys, rows.Close()
 }
 
 // ScanRow reads the current row of rows: the lead destinations, then
@@ -538,14 +644,32 @@ func count(ctx context.Context, q store.Queryer, f filter) (int, bool, error) {
 	return n, false, nil
 }
 
-// countSQL counts the matches of f up to one past CountCap.
+// countSQL counts the matches of f up to one past CountCap. f.arms are read
+// one after the other (a compound SELECT without ORDER BY), so the count
+// stops in the first ranges when they hold enough matches.
 func countSQL(f filter) (string, []any) {
-	return `SELECT count(*) FROM (SELECT 1 FROM entries e WHERE ` + f.where + ` LIMIT ?)`,
-		append(f.args[:len(f.args):len(f.args)], CountCap+1)
+	if f.arms == nil {
+		return `SELECT count(*) FROM (SELECT 1 FROM ` + f.from + ` WHERE ` + f.where + ` LIMIT ?)`,
+			append(f.args[:len(f.args):len(f.args)], CountCap+1)
+	}
+	var (
+		b    strings.Builder
+		args []any
+	)
+	b.WriteString(`SELECT count(*) FROM (`)
+	for i, a := range f.arms {
+		if i > 0 {
+			b.WriteString(` UNION ALL `)
+		}
+		fmt.Fprintf(&b, `SELECT 1 FROM %s WHERE df.source_id = ? AND df.state = ? AND %s`, f.from, f.where)
+		args = append(append(args, a.source, a.state), f.args...)
+	}
+	b.WriteString(` LIMIT ?)`)
+	return b.String(), append(args, CountCap+1)
 }
 
 // resolveSQL lists the IDs of up to limit matches of f, ascending.
 func resolveSQL(f filter, limit int) (string, []any) {
-	return `SELECT e.id FROM entries e WHERE ` + f.where + ` ORDER BY e.id LIMIT ?`,
+	return `SELECT e.id FROM ` + f.from + ` WHERE ` + f.where + ` ORDER BY e.id LIMIT ?`,
 		append(f.args[:len(f.args):len(f.args)], limit)
 }
