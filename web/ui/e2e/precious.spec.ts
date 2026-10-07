@@ -26,6 +26,11 @@ const keptThumbs = 'Fotos/2006/Praia/Thumbs.db'
 const tagName = 'Fotos de 2006'
 const pendrive = 'Downloads/fotos_2005_do_pendrive'
 const pendriveZip = `${pendrive}.zip`
+// At the default window the Map's table sits beside the treemap, too
+// narrow for its Decision column, which hides before Duplicated (r2b design
+// D9); the tests that read Decision widen the window for it.
+const defaultWindow = devices['Desktop Chrome'].viewport
+const wideWindow = { width: 1920, height: 1080 }
 
 const corpus = groundTruth()
 const truth = corpus.entries
@@ -245,10 +250,13 @@ test('R1.7: discarding a folder decides its subtree and changes Home', async () 
   await expect(details.getByRole('button', { name: 'Discard' })).toHaveAttribute('aria-pressed', 'true')
   await expect(term(details, 'Effective decision')).toContainText('Discard')
 
+  // The table is wide enough for its Decision column only in a wide window.
+  await page.setViewportSize(wideWindow)
   await page.getByRole('table', { name: /^Contents of / }).getByRole('link', { name: backup, exact: true }).click()
   const inside = page.getByRole('table', { name: `Contents of ${backup}` })
   const drive = inside.getByRole('row').filter({ has: page.getByRole('link', { name: 'C', exact: true }) })
-  await expect(drive.getByRole('cell').last()).toHaveText('Discard ↑')
+  await expect(await cellUnder(inside, drive, 'Decision')).toHaveText('Discard ↑')
+  await page.setViewportSize(defaultWindow)
 
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home' }).click()
   await expect(decisions.getByRole('listitem').filter({ hasText: /^Discard/ })).toHaveText(spaced(discarded))
@@ -490,6 +498,7 @@ test('browsing inside the pendrive zip in the Map shows its members, decided wit
   }
 
   const folder = folders[0]?.path ?? ''
+  await page.setViewportSize(wideWindow)
   await openFolder(`${pendriveZip}/${folder}`)
   const inside = page.getByRole('table', { name: `Contents of ${folder}` })
   const photos = filesUnder(folder)
@@ -499,11 +508,12 @@ test('browsing inside the pendrive zip in the Map shows its members, decided wit
     const row = inside.getByRole('row').filter({ has: page.getByRole('link', { name, exact: true }) })
     await expect(row.getByRole('cell').nth(1), name).toHaveText(bytes(photo.size ?? 0))
     // A member that follows an undecided archive leaves Decision blank.
-    await expect(row.getByRole('cell').last(), name).toHaveText('')
+    await expect(await cellUnder(inside, row, 'Decision'), name).toHaveText('')
     await expect(
       areas.getByRole('button', { name: `Details of ${name} (${bytes(photo.size ?? 0)})`, exact: true }),
     ).toBeAttached()
   }
+  await page.setViewportSize(defaultWindow)
 
   const photo = photos[0]?.path ?? ''
   const name = photo.slice(folder.length + 1)
@@ -801,6 +811,15 @@ function spaced(text: string): RegExp {
 // inside scope.
 function term(scope: Locator, name: string): Locator {
   return scope.locator(`xpath=.//dt[normalize-space()="${name}"]/following-sibling::dd[1]`)
+}
+
+// cellUnder returns row's cell in the column of table headed name, so a
+// hidden column fails instead of reading another one.
+async function cellUnder(table: Locator, row: Locator, name: string): Promise<Locator> {
+  await expect(table.getByRole('columnheader', { name, exact: true })).toBeVisible()
+  const index = (await table.getByRole('columnheader').allTextContents()).indexOf(name)
+  expect(index, `the ${name} column`).toBeGreaterThanOrEqual(0)
+  return row.getByRole('cell').nth(index)
 }
 
 function parent(path: string): string {
