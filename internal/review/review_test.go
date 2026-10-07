@@ -58,9 +58,7 @@ func (w *corpusWorld) corpusTotals(p string) int64 {
 
 // 5.1: no entry counts twice in a card: an entry card names each entry
 // once and never an entry below another of its rows; duplicates names each
-// relation and each content once. The rescue card names each indicator
-// once, and a folder indicator and an indicator inside it both (as the
-// rules raise them, r2c design addendum B2).
+// relation and each content once.
 func TestRefreshCountsNoEntryTwiceInACard(t *testing.T) {
 	w := newCorpusWorld(t)
 	for _, l := range CardLists {
@@ -83,9 +81,6 @@ func TestRefreshCountsNoEntryTwiceInACard(t *testing.T) {
 				t.Errorf("%s lists %q twice", l, k)
 			}
 			seen[k] = true
-		}
-		if l == ListRescue {
-			continue
 		}
 		for k := range seen {
 			for o := range seen {
@@ -475,7 +470,7 @@ func TestR2_5CardBytesEqualTheirLists(t *testing.T) {
 	w.decide(w.corpus.ID("Downloads/Setup(1).exe"), domain.DecisionDiscard)
 	w.decide(w.corpus.ID("Projetos/app_react"), domain.DecisionKeep)
 	w.decide(w.corpus.ID(office), domain.DecisionDiscard)
-	w.decide(w.corpus.ID(profileSav), domain.DecisionKeep)
+	w.decide(w.corpus.ID(saveFolder), domain.DecisionKeep)
 	sum := func(rows []Row) (bytes, n int64) {
 		for _, r := range rows {
 			bytes += r.Bytes
@@ -519,7 +514,7 @@ func TestR2_5CardBytesEqualTheirLists(t *testing.T) {
 const (
 	office     = "Backup_PC_2004/C/Arquivos de programas/Microsoft Office"
 	orcamento  = office + "/OFFICE11/Meu orcamento casamento.xls"
-	profileSav = "Jogos/Need for Speed Underground 2/save/Joao/profile.sav"
+	saveFolder = "Jogos/Need for Speed Underground 2/save"
 )
 
 // R2.6: the rescue card lists the ground truth's rows, each inside its

@@ -355,18 +355,25 @@ func (t *Tree) relationTruth() []Relation {
 	return out
 }
 
-// rescueTruth returns the declared rescue rows in the card's order: largest
-// first (a file's size, a folder's total bytes), then by raw path.
+// rescueTruth returns the rescue card's rows: the declared indicators that
+// lie inside no other declared indicator, so that no byte counts twice in
+// the card, in its order: largest first (a file's size, a folder's total
+// bytes), then by raw path.
 func (t *Tree) rescueTruth() []Rescue {
-	bytes := make(map[string]int64, len(t.rescue))
+	var decls []rescueDecl
 	for _, r := range t.rescue {
+		if !slices.ContainsFunc(t.rescue, func(o rescueDecl) bool { return strings.HasPrefix(r.path, o.path+"/") }) {
+			decls = append(decls, r)
+		}
+	}
+	bytes := make(map[string]int64, len(decls))
+	for _, r := range decls {
 		for _, it := range t.visible() {
 			if it.kind == domain.EntryFile && (it.path == r.path || strings.HasPrefix(it.path, r.path+"/")) {
 				bytes[r.path] += int64(len(it.data))
 			}
 		}
 	}
-	decls := slices.Clone(t.rescue)
 	slices.SortFunc(decls, func(a, b rescueDecl) int {
 		return cmp.Or(cmp.Compare(bytes[b.path], bytes[a.path]), strings.Compare(a.path, b.path))
 	})

@@ -532,11 +532,13 @@ func loadGroups(ctx context.Context, tx *sql.Tx) ([]group, error) {
 	return out, rows.Err()
 }
 
-// rescueRows returns the rescue card's rows (r2c D4): the indicators of the
-// programs and disposable groups (dir_stats.indicators), each once, under
-// its outermost such group, with its total bytes as sort key. They are
-// written in reverse card order, so that among rows of equal bytes the
-// higher ID, which pages first, has the smaller path.
+// rescueRows returns the rescue card's rows (r2c D4): the outermost
+// indicators of the programs and disposable groups (dir_stats.indicators),
+// each once, under its outermost such group, with its total bytes as sort
+// key. An indicator inside another indicator is no row, so that no byte
+// counts twice in the card (D12). They are written in reverse card order,
+// so that among rows of equal bytes the higher ID, which pages first, has
+// the smaller path.
 func rescueRows(ctx context.Context, tx *sql.Tx) ([]newRow, error) {
 	groups, err := loadGroups(ctx, tx)
 	if err != nil {
@@ -615,10 +617,16 @@ func rescueRows(ctx context.Context, tx *sql.Tx) ([]newRow, error) {
 		row  newRow
 		path string
 	}
+	listed := make(map[string]bool, len(facts))
+	for _, x := range inds {
+		if f, ok := facts[x.id]; ok {
+			listed[key(x.src, f.path)] = true
+		}
+	}
 	var out []found
 	for _, x := range inds {
 		f, ok := facts[x.id]
-		if !ok {
+		if !ok || underAny(listed, x.src, f.path) {
 			continue
 		}
 		out = append(out, found{path: key(x.src, f.path), row: newRow{list: ListRescue, source: x.src, entry: x.id,

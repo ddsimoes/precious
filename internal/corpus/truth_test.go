@@ -428,8 +428,9 @@ func TestRelationDeclarationChecked(t *testing.T) {
 }
 
 // Rescue: R2.6's spreadsheet is listed inside Microsoft Office, every row
-// lies inside its group, and the rows are in the card's order: largest
-// first, then by path.
+// lies inside its group and inside no other row (the saved game inside the
+// listed save folder is no row), and the rows are in the card's order:
+// largest first, then by path.
 func TestRescue(t *testing.T) {
 	g := Corpus().GroundTruth()
 	bytes := map[string]int64{}
@@ -456,8 +457,16 @@ func TestRescue(t *testing.T) {
 			t.Errorf("rescue row %s (%d bytes) after %s (%d bytes)", r.Path, bytes[r.Path], prev.Path, bytes[prev.Path])
 		}
 	}
-	if len(g.Rescue) != len(rescueDeclarations) {
-		t.Errorf("%d rescue rows, %d declared", len(g.Rescue), len(rescueDeclarations))
+	for _, r := range g.Rescue {
+		for _, o := range g.Rescue {
+			if strings.HasPrefix(r.Path, o.Path+"/") {
+				t.Errorf("rescue row %s lies inside the row %s", r.Path, o.Path)
+			}
+		}
+	}
+	saved := "Jogos/Need for Speed Underground 2/save/Joao/profile.sav"
+	if slices.ContainsFunc(g.Rescue, func(r Rescue) bool { return r.Path == saved }) || len(g.Rescue) != 2 {
+		t.Errorf("rescue %v, want the save folder and the spreadsheet, not %s", g.Rescue, saved)
 	}
 }
 
