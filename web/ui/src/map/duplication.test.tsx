@@ -128,8 +128,8 @@ describe('Map duplication', () => {
     expect(cellOf('Fotos - Copia', 'Duplicated')).toHaveTextContent('90%')
     expect(cellOf('Documentos', 'Duplicated')).toHaveTextContent('10% so far')
     expect(cellOf('Novos', 'Duplicated')).toHaveTextContent('Not checked')
-    expect(cellOf('curriculo.doc', 'Duplicated')).toHaveTextContent('100%')
-    expect(cellOf('unico.txt', 'Duplicated')).toHaveTextContent('0%')
+    expect(cellOf('curriculo.doc', 'Duplicated')).toHaveTextContent('3 copies')
+    expect(cellOf('unico.txt', 'Duplicated')).toHaveTextContent('No other copy')
     expect(cellOf('pendente.bin', 'Duplicated')).toHaveTextContent('Not checked')
     expect(cellOf('ilegivel.jpg', 'Duplicated')).toHaveTextContent('Could not be read')
     expect(cellOf('vazio.txt', 'Duplicated')).toHaveTextContent('')
@@ -164,7 +164,7 @@ describe('Map duplication', () => {
       vi.restoreAllMocks()
     })
 
-    it('hides Duplicated after Changed and Suggestion', async () => {
+    it('hides Changed and Suggestion first', async () => {
       stubApi(routes())
       width = 52 * 16
       renderApp('/map/1')
@@ -175,13 +175,22 @@ describe('Map duplication', () => {
       )
     })
 
-    it('keeps name, size, and category longest', async () => {
+    it('hides Decision before Duplicated, keeping name, size, and category longest', async () => {
       stubApi(routes())
       width = 45 * 16
       renderApp('/map/1')
       await screen.findByRole('table', { name: 'Contents of Fotos' })
       const headers = () => screen.getAllByRole('columnheader').map((header) => header.textContent)
-      await waitFor(() => expect(headers()).toEqual(['Name', 'Size▼', 'Files', 'Type or category', 'Decision']))
+      await waitFor(() => expect(headers()).toEqual(['Name', 'Size▼', 'Files', 'Type or category', 'Duplicated']))
+    })
+
+    it('hides Duplicated after Decision', async () => {
+      stubApi(routes())
+      width = 40 * 16
+      renderApp('/map/1')
+      await screen.findByRole('table', { name: 'Contents of Fotos' })
+      const headers = () => screen.getAllByRole('columnheader').map((header) => header.textContent)
+      await waitFor(() => expect(headers()).toEqual(['Name', 'Size▼', 'Files', 'Type or category']))
     })
   })
 
@@ -237,7 +246,8 @@ describe('Map inside archives', () => {
     expect(router.state.location.pathname).toBe('/map/61')
     expect(await screen.findByRole('table', { name: 'Contents of eMule0.47c-Installer.zip' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'emule-0.47c' })).toHaveAttribute('href', '/map/m70')
-    expect(cellOf('readme.txt', 'Decision')).toHaveTextContent('Keep (with its archive)')
+    expect(cellOf('readme.txt', 'Decision')).toHaveTextContent('With archive')
+    expect(within(cellOf('readme.txt', 'Decision')!).getByTitle('Keep (with its archive)')).toBeInTheDocument()
     // Search has no items inside archives.
     expect(screen.queryByRole('link', { name: 'Search in this folder' })).not.toBeInTheDocument()
   })

@@ -16,6 +16,8 @@ export type DupFilter = 'copies' | 'elsewhere' | 'unique' | 'unchecked'
 
 export const dupFilters: DupFilter[] = ['copies', 'elsewhere', 'unique', 'unchecked']
 
+// state=unreadable lists the folders and files that could not be read; it
+// is the only value the server takes (r2b design D9).
 export const searchSingleParams = [
   'source',
   'name',
@@ -23,6 +25,7 @@ export const searchSingleParams = [
   'max_size',
   'year_from',
   'year_to',
+  'state',
   'within',
   'sort',
   'order',
@@ -34,10 +37,11 @@ type SingleParam = (typeof searchSingleParams)[number]
 // SearchCount is exact up to 10,000 and "10000+" beyond.
 export type SearchCount = number | '10000+'
 
+// SearchPage is one page of results. The count comes from its own request
+// (r2b design D8), which may arrive after the page.
 export interface SearchPage {
   items: EntryRow[]
   next_cursor: string | null
-  count: SearchCount
 }
 
 // SelectionQuery is a search in the JSON form create-selection takes: the
@@ -78,6 +82,12 @@ export function searchQueryKey(filters: URLSearchParams) {
   return ['search', filters.toString()] as const
 }
 
+// searchCountQueryKey sits under searchQueryKey, so whatever refreshes a
+// search refreshes its count too.
+export function searchCountQueryKey(filters: URLSearchParams) {
+  return ['search', filters.toString(), 'count'] as const
+}
+
 export function fetchSearch(
   filters: URLSearchParams,
   cursor: string | null,
@@ -88,6 +98,14 @@ export function fetchSearch(
     params.set('cursor', cursor)
   }
   return apiGet<SearchPage>(`/api/search?${params}`, signal)
+}
+
+// fetchSearchCount asks for the match count alone (count=only).
+export async function fetchSearchCount(filters: URLSearchParams, signal?: AbortSignal): Promise<SearchCount> {
+  const params = new URLSearchParams(filters)
+  params.set('count', 'only')
+  const { count } = await apiGet<{ count: SearchCount }>(`/api/search?${params}`, signal)
+  return count
 }
 
 // selectionQuery turns search parameters into the query of create-selection.

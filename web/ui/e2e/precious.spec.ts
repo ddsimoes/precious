@@ -248,7 +248,7 @@ test('R1.7: discarding a folder decides its subtree and changes Home', async () 
   await page.getByRole('table', { name: /^Contents of / }).getByRole('link', { name: backup, exact: true }).click()
   const inside = page.getByRole('table', { name: `Contents of ${backup}` })
   const drive = inside.getByRole('row').filter({ has: page.getByRole('link', { name: 'C', exact: true }) })
-  await expect(drive.getByRole('cell').last()).toHaveText('Discard (inherited)')
+  await expect(drive.getByRole('cell').last()).toHaveText('Discard ↑')
 
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home' }).click()
   await expect(decisions.getByRole('listitem').filter({ hasText: /^Discard/ })).toHaveText(spaced(discarded))
@@ -498,7 +498,8 @@ test('browsing inside the pendrive zip in the Map shows its members, decided wit
     const name = photo.path.slice(folder.length + 1)
     const row = inside.getByRole('row').filter({ has: page.getByRole('link', { name, exact: true }) })
     await expect(row.getByRole('cell').nth(1), name).toHaveText(bytes(photo.size ?? 0))
-    await expect(row.getByRole('cell').last(), name).toHaveText('Undecided (with its archive)')
+    // A member that follows an undecided archive leaves Decision blank.
+    await expect(row.getByRole('cell').last(), name).toHaveText('')
     await expect(
       areas.getByRole('button', { name: `Details of ${name} (${bytes(photo.size ?? 0)})`, exact: true }),
     ).toBeAttached()

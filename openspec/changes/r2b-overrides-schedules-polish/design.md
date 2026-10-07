@@ -228,3 +228,31 @@ The panel words each reason, and says that what is inside is not checked for cop
 - **M5.** The domain's unsupported archive extensions are 7z, rar, xz, txz, lz, lzma, zst, z, cab, arj, lzh, lha, ace, cpio, jar, and war, matched on the last extension, ASCII case-insensitively; a test proves the archive package opens none of them. Disk images (iso, img) stay out: they are not archives the owner expects to browse. `nested` applies to a member whose name is an opened or an unsupported archive. `not_listed` applies only to a present file: a missing or unreadable one already says why.
 - **M6.** An archive with a listing that stopped (partial, encrypted, damaged, …) also says that what is inside is not checked for copies. For a complete archive, Show in Map now opens the folder holding the archive, since Open as a folder opens the archive itself.
 - **M7.** `Dialog` reads its opener once per mount, so React's development double effect does not record the focus inside the dialog. The event stream's "first open" is the first connection after `start()`; a retry after a failed first connection refreshes everything.
+- **Q1. `0004_search.sql` holds only `entries_unreadable`.** None of D8's size indexes is added. Measured on a 391,615-entry walkbench of `/usr`, `entries(total_bytes, id)` with `entries(source_id, total_bytes, id)` slowed the scan from about 24 s to 28.5–36.7 s, which fails R1.14. Neither is needed:
+  - a page by bytes that `dup` drives merges ranges of the existing `file_content_by_source(source_id, state, size)` (Q2);
+  - the first page with no filter reads `entries` once: 0.27 s at 2 million entries, 0.29 s with a source (p95), against the 1 s target.
+
+  `entries_unreadable` is named with `INDEXED BY`, because without statistics SQLite took `entries_by_source_size` or another `(source_id, …)` index and read the whole source (2.7 s at 2 million). With only this partial index the walkbench of `/usr` shows no regression: scan 12.5 / 15.2 / 21.4 s with it against 16.4 / 14.4 / 20.4 s without, alternating runs on a shared, noisy machine (walk/scan ratios 8.6–17.7 either way; reference about 11.6).
+- **Q2. A `dup` page by bytes merges size-ordered ranges.** Each (source, content state) range of `file_content_by_source` is in size order. `file_content.size` is the entry's size: hashing copies it at insert, and the scan drops the row when the file changes. A file's `total_bytes` is its size, so the arms of a `UNION ALL … ORDER BY size, entry_id` compound are each in the page's order. SQLite merges them (`MERGE (UNION ALL)` in the plan) and stops after the page, with the exact copy test on the rows read only. Other orders, and `dup` combined with a stronger driver (name, Within, tags, unreadable), select the matches and sort them.
+- **Q3. Counts.** `copies` and `elsewhere` count from the contents with two or more file rows or an archive member, grouped as they stream over `file_content_by_content` (D8). `unique` and `unchecked` read their (state, source) ranges in turn, with the states that need no copy test first and `hashed` last, so a capped count stops in the cheap ranges. A first version that drove `unique` through `state IN (…)` read `hashed` first, the order SQLite gives an `IN` list, and counted in 1.08 s.
+- **Q4. `state` takes only `unreadable`,** single-valued, and it drives before a name: there are few unreadable entries. In a selection's JSON it is `"state":"unreadable"`. Entries that could not be read are folders. The scanner marks no file entry unreadable: a file it cannot read is a content state, which `dup=unchecked` finds.
+- **Q5. `count=only`** takes the same parameters as the page and ignores `cursor` and `limit`. Its only value is `only`, given once (`400` otherwise). A page carries no `count` any more. `TestDupFilter` changed one line, because it read the removed `Result.Count`; it now reads the number of rows.
+- **Q6. The 2-million-entry slow test** (`TestSearchStaysFastAt2MillionEntries`, `internal/web/api`) generates its index in SQL, as R2's review test does, instead of scanning: two sources of 1,000 folders of 999 files. By file: 50% unique by size, 5% sampled, 25% hashed with a copy on the other source, 5% hashed unique, 15% unchecked. Ten unreadable folders per source. It times through the handler, 20 runs each. Figures without the race detector, p95:
+
+  | Search | First page | Count |
+  |---|---|---|
+  | no filter | 274 ms | 0.4 ms |
+  | `dup=copies` | 11 ms | 52 ms |
+  | `dup=unique` | 12 ms | 40 ms |
+  | `dup=unchecked` | 8 ms | 38 ms |
+  | `state=unreadable` | 1 ms | 0.2 ms |
+
+  With `source=a`, the same searches take 286 ms, 12 ms, 11 ms, 8 ms, and 1 ms for the first page, and 1 ms, 66 ms, 42 ms, 38 ms, and 0.2 ms for the count. `within=<root of a>&dup=elsewhere` takes 11 ms and 75 ms. Over all 220 pages, p95 is 220 ms with a maximum of 301 ms; over all 220 counts, p95 is 61 ms with a maximum of 75 ms.
+
+  The test skips under the race detector (`raceEnabled`, new in package `api`) and runs in `make test-slow`'s second pass.
+- **Q7. The UI's remembered source** is read through `useSourceParam` (`web/ui/src/lib/sourceParams.ts`):
+  - `?source=` wins, and an empty value means all sources;
+  - otherwise it uses the remembered source, unless the sources list has loaded without that source, so a removed source cannot leave a screen stuck on it;
+  - `SourceFilter` writes the choice;
+  - a link that names a source, such as Home's partial notice, does not change the remembered choice.
+- **Q8. Schema version 4.** The R2 binary now refuses `version 4`. The upgrade notes say so.

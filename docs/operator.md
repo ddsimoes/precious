@@ -340,13 +340,13 @@ To roll back, stop Precious, reinstall the R1 binary or image, [restore](#restor
 
 ### Upgrading from R2
 
-The update after R2 adds the owner's category overrides and group marks, scheduled rescans, and the Search, Map, and Compare improvements. Its migration `0003_owner` adds the table of overrides and the schedule columns of each source, both empty, and rebuilds the name index so that a search ignores accents. The rebuild reads every name once, which takes seconds per 100,000 entries. Every entry, decision, tag, digest, and listing stays as it was, and no rescan is needed.
+The update after R2 adds the owner's category overrides and group marks, scheduled rescans, and the Search, Map, and Compare improvements. Its migration `0003_owner` adds the table of overrides and the schedule columns of each source, both empty, and rebuilds the name index so that a search ignores accents. The rebuild reads every name once, which takes seconds per 100,000 entries. Migration `0004_search` adds a small index of the entries that could not be read. Every entry, decision, tag, digest, and listing stays as it was, and no rescan is needed.
 
 1. **Back up first** with the R2 binary still running: `precious backup`.
 2. **Check the configuration** with the new binary; an R2 configuration stays valid.
 3. **Replace and restart.** The migrations apply at startup, each in one transaction.
 
-To roll back, stop Precious, reinstall the R2 binary, [restore](#restoring) the backup, and start it. The R2 binary refuses the migrated database (`database has version 3, binary supports up to 2`) and leaves it unmodified. Overrides, group marks, and schedules set after the upgrade are lost with it.
+To roll back, stop Precious, reinstall the R2 binary, [restore](#restoring) the backup, and start it. The R2 binary refuses the migrated database (`database has version 4, binary supports up to 2`) and leaves it unmodified. Overrides, group marks, and schedules set after the upgrade are lost with it.
 
 ### Moving from curator to precious
 
@@ -962,7 +962,7 @@ The interface reads the index through a small JSON API under `/api`. The same en
 | `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). |
 | `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable). |
 | `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. |
-| `GET /api/search?…` | One page of search results, with the match count. See [Search parameters](#search-parameters). |
+| `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
 | `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text` | A file's content, and its text decoded. See [Viewer safety](#viewer-safety). |
 
@@ -990,7 +990,7 @@ Errors use the usual envelope, `{"error":{"code","message"}}`:
 | Parameter | Matches |
 |---|---|
 | `source=ID` | Entries of one source. |
-| `name=TEXT` | Names containing the text, ignoring letter case, matched against the displayed name. |
+| `name=TEXT` | Names containing the text, ignoring letter case, matched against the displayed name. A text of three characters or more also ignores accents: `confraternizacao` finds `Confraternização 2018`. A shorter one matches its accented letters only as typed (`ão` finds `Leilão`, `ao` does not). |
 | `ext=X` (repeats) | Files with the extension, with or without its dot, ignoring letter case. |
 | `file_kind=K` (repeats) | `image`, `video`, `audio`, `document`, `source`, `archive`, `installer`, `executable`, `system`, or `other`. |
 | `min_size=N`, `max_size=N` | Size in bytes, both limits included. A folder's size is everything inside it. |
@@ -1000,16 +1000,19 @@ Errors use the usual envelope, `{"error":{"code","message"}}`:
 | `decision=D` (repeats) | The effective decision: `undecided`, `keep`, `discard`, or `later`, set on the entry or followed from a folder above it. |
 | `tag=ID` (repeats) | Entries carrying the tag, and everything inside them. |
 | `within=ID` | Everything inside the folder, not the folder itself. |
+| `state=unreadable` | The folders and files that could not be read, which make Home's figures partial. It is the only state to search for. |
 | `sort`, `order` | As for children; by default by bytes, largest first. |
 | `cursor`, `limit` | As for children: 200 rows by default, at most 1,000. |
+| `count=only` | Answer `{"count":…}`, the number of matches, instead of a page; `cursor` and `limit` are then ignored. |
 
 Speed depends on the filters:
 
 - A `name` of three characters or more is looked up in a name index, and is fast on any index size.
 - A `name` of one or two characters cannot use that index. It is tested on each entry that the other filters select, so on its own it reads every entry, which takes seconds on millions of entries. Add a `within`, `tag`, `source`, or `decision` filter to narrow it.
-- `within`, `tag`, and `decision` also use indexes. Extension, file kind, size, year, category, and triage do not: on their own they read every entry of the source, or of every source.
+- `within`, `tag`, `decision`, `dup`, and `state=unreadable` also use indexes. Extension, file kind, size, year, category, and triage do not: on their own they read every entry of the source, or of every source.
+- On 2 million entries, the first page by bytes (the default order) arrives within a second, and its count within two, with no filter, with any `dup` value, and with or without a source. Other orders on a broad search sort every match, which takes longer.
 
-Results include entries in every state, and each row says whether it is present, missing, or unreadable. `count` is the exact number of matches up to 10,000, and the string `"10000+"` beyond that. A search that lists more than you need is best narrowed rather than paged to the end. "Select all results" works on up to 1,000,000 matches; see [Selecting all the results of a search](#selecting-all-the-results-of-a-search).
+Results include entries in every state, and each row says whether it is present, missing, or unreadable. A page does not carry the number of matches: ask for it with the same parameters and `count=only`, which answers `{"count":1234}`, exact up to 10,000, and `{"count":"10000+"}` beyond that. The Search screen sends both requests at once and shows the results as soon as they arrive, with "Counting…" until the count follows. A search that lists more than you need is best narrowed rather than paged to the end. "Select all results" works on up to 1,000,000 matches; see [Selecting all the results of a search](#selecting-all-the-results-of-a-search).
 
 ### Viewer safety
 
@@ -1073,7 +1076,7 @@ What hashing learns (see [Hashing](#hashing), [Duplicates and Compare](#duplicat
 | `dup=unique` | Files with no other copy: a unique size, a unique sample, or hashed with one copy. |
 | `dup=unchecked` | Files not checked yet, changed while read, or unreadable. |
 
-The filter has no index of its own: it is tested on each entry the other filters select, so combine it with `within`, `tag`, `source`, or a name. A selection stores the filter like the others, so "Select all results" on, for example, `within=ID&dup=elsewhere` selects the copies of that folder that have another copy outside it, ready to be discarded in one confirmed change.
+The filter uses the index of each file's content state (`unique`, `unchecked`, and pages by bytes) or of the contents with more than one copy (`copies`, `elsewhere`), and tests the exact copies of those files only. A selection stores the filter like the others, so "Select all results" on, for example, `within=ID&dup=elsewhere` selects the copies of that folder that have another copy outside it, ready to be discarded in one confirmed change.
 
 **Viewing a member.** `/content` and `/text` serve a file member under the [viewer's rules](#viewer-safety): the type comes from the member's own name, the same sandbox applies, and HTML is only a download. The member is read from the archive in memory: nothing is written to the state directory, to `TMPDIR`, or to the source. The archive file must still match the index and its listing, else `409 invalid_entry_state` until a rescan; its source must be online, else `source_offline`. A member stored without compression in a zip, and a compressed one up to `archives.view_max_bytes`, answers range requests; a larger one, and every member of a tar-family or gzip archive, is streamed whole without ranges (see [Viewing members](#viewing-members)). A member folder answers `invalid_entry_state`, like a folder.
 
@@ -1187,14 +1190,17 @@ The address keeps the folder, the order, the coloring, and the open details, so 
 
 Search finds files and folders anywhere in the index, including inside groups (see [Groups](#groups)). The filters are:
 
-- **Name contains:** part of the name, ignoring letter case.
+- **Name contains:** part of the name, ignoring letter case, and accents too from three characters on: `confraternizacao` finds `Confraternização 2018`. One or two characters match accented letters only as typed.
 - **Extensions:** one or more, separated by spaces, such as `jpg png`.
 - **Size:** at least and at most, in B, KiB, MiB, or GiB. A folder's size includes everything inside it.
 - **Year of last change:** from and to.
 - **File type, Category, Decision, Suggestion, and Tags:** tick any number in each list. Decision and Tags match what an item follows from its folders too: searching for the tag `familia` finds the folders tagged `familia` and everything inside them.
 - **Only inside a folder,** set by Search in this folder on the Map or in the detail panel. **Search everywhere** removes it.
+- **Could not be read:** only the folders and files the scan could not read. Home's notice that its figures are partial links here, with Home's source.
 
-Choose **Search** to apply the filters, or **Clear filters** to start again. The filters live in the address, so a search can be bookmarked. The results show how many items match, exactly up to 10,000 and as "More than 10,000 results" beyond. Sort them by clicking a column title, and click a row to open its details.
+The **Source** choice above the results limits the search to one source, or searches all of them. It is remembered in the browser: Home, Opportunities, the review lists, Gems, Search, and the Map's start use the source you chose last on any of them, until you choose another or all sources. A link that names a source, such as Home's partial notice, opens on that source without changing your choice.
+
+Choose **Search** to apply the filters, or **Clear filters** to start again. The filters live in the address, so a search can be bookmarked. The results appear first, and the count follows: "Counting…" shows until it arrives, then how many items match, exactly up to 10,000 and as "More than 10,000 results" beyond. Each result shows under its name the folder that holds it, cut from the left when long, after its source's name when all sources are searched; a source's top folder is listed under the source's name. The Duplicated column says, for a checked file, "3 copies" (this one included) or "No other copy", and for a folder the share of it that is duplicated. An item that could not be read says "Could not be read" and shows "—" for its size, files, and duplicated share. Sort the results by clicking a column title, and click a row to open its details.
 
 To change many items at once:
 

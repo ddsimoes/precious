@@ -3,17 +3,23 @@ import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router'
 
 import { useSources } from '@/api/sources'
+import { rememberSource } from '@/app/sourceChoice'
 import { Label } from '@/components/ui/label'
+import { useSourceParam } from '@/lib/sourceParams'
 
 // SourceFilter chooses one source or all of them, kept in the address as
-// ?source=, with the screen's other parameters kept.
+// ?source=, with the screen's other parameters kept, and remembered for the
+// screens opened without one (r2b design D9). It shows the source the
+// screen uses, from the address or remembered.
 export function SourceFilter() {
   const { t } = useTranslation()
   const [params, setParams] = useSearchParams()
+  const source = useSourceParam()
   const sources = useSources()
   const id = useId()
 
   const choose = (value: string) => {
+    rememberSource(value === '' ? null : value)
     const next = new URLSearchParams(params)
     if (value === '') {
       next.delete('source')
@@ -28,7 +34,7 @@ export function SourceFilter() {
       <Label htmlFor={id}>{t('home.filter')}</Label>
       <select
         id={id}
-        value={params.get('source') ?? ''}
+        value={source ?? ''}
         onChange={(event) => choose(event.target.value)}
         className="h-9 rounded-md border border-input bg-card px-2 text-sm"
       >

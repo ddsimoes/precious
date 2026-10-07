@@ -134,12 +134,12 @@ func TestR1_3SearchFindsFilesAnywhere(t *testing.T) {
 					len(got), len(want), difference(want, got), difference(got, want))
 			}
 
-			var first struct {
+			var count struct {
 				Count any `json:"count"`
 			}
-			e.get(t, base+"&limit=1", 200, &first)
-			if fmt.Sprint(first.Count) != fmt.Sprint(len(want)) {
-				t.Errorf("count %v, want %d", first.Count, len(want))
+			e.get(t, base+"&count=only", 200, &count)
+			if fmt.Sprint(count.Count) != fmt.Sprint(len(want)) {
+				t.Errorf("count %v, want %d", count.Count, len(want))
 			}
 		})
 	}
