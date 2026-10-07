@@ -11,6 +11,9 @@ import (
 	"net/http"
 	"net/netip"
 	"time"
+	// Rescan schedules name IANA zones (r2b design D6); the embedded
+	// database resolves them where the system has none, such as Windows.
+	_ "time/tzdata"
 
 	"precious/internal/auth"
 	"precious/internal/clock"
