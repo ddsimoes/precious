@@ -15,8 +15,8 @@ const downloads = { id: '5', path: 'Downloads', path_b64: btoa('Downloads') }
 function setupExe(overrides: Partial<EntryDetail> = {}): EntryDetail {
   return entryDetail(entryRow({ eff_decision: 'discard', tag_ids: [7] }), {
     ancestors: [
-      { id: '1', name: '', name_b64: '' },
-      { id: '5', name: 'Downloads', name_b64: btoa('Downloads') },
+      { id: '1', name: '', name_b64: '', only_child: false },
+      { id: '5', name: 'Downloads', name_b64: btoa('Downloads'), only_child: false },
     ],
     classification: {
       category: 'installer_download',

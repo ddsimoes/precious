@@ -79,6 +79,11 @@ export interface ArchiveInfo {
   unpacked_bytes: number
 }
 
+// ArchiveNote says why an archive file has no archive (r2b design D10): a
+// format Precious does not open, an archive inside an archive, or a format
+// it opens that was not listed yet.
+export type ArchiveNote = 'unsupported' | 'nested' | 'not_listed'
+
 export interface CopiesPage {
   items: Copy[]
   next_cursor: string | null
