@@ -24,6 +24,7 @@ import { FormControl, FormField, FormLabel } from '@/components/ui/form-field'
 import { Input } from '@/components/ui/input'
 import { useFormat } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { ScheduleForm, ScheduleLines } from '@/sources/ScheduleForm'
 
 const stateStyles: Record<Source['state'], string> = {
   online: 'bg-emerald-100 text-emerald-900',
@@ -32,7 +33,8 @@ const stateStyles: Record<Source['state'], string> = {
 }
 
 // SourceCard shows one source with its state, volume, file system, totals,
-// and scan, and its commands: Scan now, rename, and remove.
+// scan, and rescan schedule, and its commands: Scan now, change the
+// schedule, rename, and remove.
 export function SourceCard({ source }: { source: Source }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -40,6 +42,7 @@ export function SourceCard({ source }: { source: Source }) {
   const csrfToken = useCsrfToken()
   const headingId = useId()
   const [renaming, setRenaming] = useState(false)
+  const [scheduling, setScheduling] = useState(false)
   const [confirmingRemove, setConfirmingRemove] = useState(false)
 
   const scan = useMutation({
@@ -106,6 +109,7 @@ export function SourceCard({ source }: { source: Source }) {
           <dd>
             {source.last_scan_at === null ? t('sources.neverScanned') : fmt.dateTime(source.last_scan_at)}
           </dd>
+          <ScheduleLines source={source} />
         </dl>
 
         <CapabilityList capabilities={source.capabilities} />
@@ -133,6 +137,9 @@ export function SourceCard({ source }: { source: Source }) {
           <Button variant="outline" asChild>
             <Link to={`/map/${source.root_entry_id}`}>{t('sources.openInMap')}</Link>
           </Button>
+          <Button variant="outline" onClick={() => setScheduling(true)} disabled={scheduling}>
+            {t('sources.schedule.change')}
+          </Button>
           <Button variant="outline" onClick={() => setRenaming(true)} disabled={renaming}>
             {t('sources.rename')}
           </Button>
@@ -142,6 +149,7 @@ export function SourceCard({ source }: { source: Source }) {
           {!online && <p className="text-sm text-muted-foreground">{t('sources.scanNeedsDisk')}</p>}
         </div>
 
+        {scheduling && <ScheduleForm source={source} onDone={() => setScheduling(false)} />}
         {renaming && <RenameForm source={source} onDone={() => setRenaming(false)} />}
       </article>
       {confirmingRemove && (

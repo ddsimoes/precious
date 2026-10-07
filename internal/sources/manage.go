@@ -30,6 +30,9 @@ const (
 	AuditSourceAdded   = "source_added"
 	AuditSourceRenamed = "source_renamed"
 	AuditSourceRemoved = "source_removed"
+	// AuditSourceScheduleSet records set-source-schedule with the previous
+	// and the new schedule (r2b design D6).
+	AuditSourceScheduleSet = "source_schedule_set"
 )
 
 // MaxLabelLen bounds a source label, in characters.
@@ -222,6 +225,43 @@ func (s *Service) Rename(ctx context.Context, tx *sql.Tx, id domain.SourceID, la
 		return err
 	}
 	return s.audit(ctx, tx, AuditSourceRenamed, map[string]any{"source_id": id, "label": label, "previous_label": prev})
+}
+
+// SetSchedule sets the rescan schedule of source id, in tx, with the
+// source_schedule_set audit event naming the previous and the new schedule
+// (r2b design D6). The next scan of a schedule is its first time after the
+// clock's now; nil turns the schedule off and clears the next scan. A
+// malformed schedule is invalid_request and an unknown ID unknown_source.
+func (s *Service) SetSchedule(ctx context.Context, tx *sql.Tx, id domain.SourceID, sch *domain.Schedule) error {
+	var value, next any
+	if sch != nil {
+		at, err := sch.Next(s.clk.Now())
+		if err != nil {
+			return err
+		}
+		b, err := json.Marshal(sch)
+		if err != nil {
+			return err
+		}
+		value, next = string(b), clock.Millis(at)
+	}
+	var prev sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT scan_schedule FROM sources WHERE id = ?`, string(id)).Scan(&prev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Errorf(domain.CodeUnknownSource, "unknown source %q", id)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sources SET scan_schedule = ?, next_scan_at = ? WHERE id = ?`,
+		value, next, string(id)); err != nil {
+		return err
+	}
+	var previous any
+	if prev.Valid {
+		previous = json.RawMessage(prev.String)
+	}
+	return s.audit(ctx, tx, AuditSourceScheduleSet, map[string]any{"source_id": id, "schedule": sch, "previous_schedule": previous})
 }
 
 // Remove deletes source id and its whole index (entries, folder aggregates,

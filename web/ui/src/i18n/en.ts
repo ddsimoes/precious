@@ -160,6 +160,30 @@ export const en = {
     removeBody:
       'Precious will forget this source and everything recorded about it, including your decisions and tags. No file on the disk is changed or deleted.',
     removeStopsScan: 'Its scan in progress will be stopped first.',
+    schedule: {
+      label: 'Rescan',
+      off: 'Off',
+      daily: 'Daily at {{time}}',
+      weekly: 'Weekly on {{weekday}} at {{time}}',
+      inZone: '{{schedule}} ({{zone}} time)',
+      next: 'Next scan',
+      lastSkipped: 'Last scheduled scan',
+      skipped: {
+        offline: 'Skipped on {{when}}: the disk was not connected.',
+        unavailable: 'Skipped on {{when}}: the folder could not be read.',
+        invalid_schedule: 'Skipped on {{when}}: the schedule is no longer valid. Set it again.',
+        other: 'Skipped on {{when}}.',
+      },
+      change: 'Change schedule',
+      formTitle: 'Rescan schedule',
+      every: 'Rescan',
+      everyOff: 'Off',
+      everyDay: 'Daily',
+      everyWeek: 'Weekly',
+      weekday: 'Day',
+      time: 'Time',
+      zoneNote: 'At this time in your time zone, {{zone}}. A disk that is not connected then is skipped until the next time.',
+    },
     picker: {
       title: 'Add a source',
       description:

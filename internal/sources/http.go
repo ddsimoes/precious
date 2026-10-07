@@ -135,6 +135,18 @@ type sourceJSON struct {
 	Totals       totalsJSON            `json:"totals"`
 	LastScanAt   *time.Time            `json:"last_scan_at"`
 	ActiveJob    *activeJobJSON        `json:"active_job"`
+	// Schedule is null when off, and NextScanAt then too (r2b design D6).
+	Schedule   *domain.Schedule `json:"schedule"`
+	NextScanAt *time.Time       `json:"next_scan_at"`
+	// ScheduleSkipped is the last due time when it was skipped, null when it
+	// ran.
+	ScheduleSkipped *scheduleSkipJSON `json:"schedule_skipped"`
+}
+
+type scheduleSkipJSON struct {
+	At time.Time `json:"at"`
+	// Reason is the source's state at that time: offline or unavailable.
+	Reason string `json:"reason"`
 }
 
 type volumeJSON struct {
@@ -172,6 +184,11 @@ func describe(ctx context.Context, q store.Queryer, src Source, mounts []fsacces
 		},
 		Capabilities: src.Caps,
 		LastScanAt:   src.LastScanAt,
+		Schedule:     src.Schedule,
+		NextScanAt:   src.NextScanAt,
+	}
+	if src.SkippedAt != nil {
+		j.ScheduleSkipped = &scheduleSkipJSON{At: *src.SkippedAt, Reason: src.SkipReason}
 	}
 	// A source with a mount point is reached through a mount of its volume
 	// that holds its root folder; for a bind mount that is not simply the
