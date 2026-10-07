@@ -51,6 +51,18 @@ func TestR1_10MapPagesStayFastAt2MillionEntries(t *testing.T) {
 	}
 	t.Logf("scan of %d entries: %s (%.0f entries/s)", n, scan.Round(time.Millisecond), float64(n)/scan.Seconds())
 
+	// The R2 figures every row now reads (R2 design D16, D20): every file
+	// hashed, two copies per content, so each file row counts its copies,
+	// and every folder's dir_dups row, as a relate pass leaves them.
+	start = time.Now()
+	e.exec(t, `INSERT INTO contents (id, sha256, size)
+		SELECT id / 2, randomblob(32), 1 FROM entries WHERE kind = 'file' GROUP BY id / 2`)
+	e.exec(t, `INSERT INTO file_content (entry_id, source_id, state, size, content_id, checked_at)
+		SELECT id, source_id, 'hashed', size, id / 2, 0 FROM entries WHERE kind = 'file'`)
+	e.exec(t, `INSERT INTO dir_dups (entry_id, candidate_bytes, checked_bytes, duplicated_bytes, duplicated_files)
+		SELECT id, total_bytes, total_bytes, total_bytes / 2, total_files / 2 FROM entries WHERE kind = 'directory'`)
+	t.Logf("content and dir_dups rows seeded in %s", time.Since(start).Round(time.Millisecond))
+
 	var top page
 	e.get(t, fmt.Sprintf("/api/entries/%s/children?sort=name", rootID), 200, &top)
 	folder := map[string]string{}

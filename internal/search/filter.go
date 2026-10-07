@@ -173,6 +173,9 @@ func buildFilter(ctx context.Context, q store.Queryer, query Query) (filter, err
 	if len(query.Tags) > 0 {
 		tagFilter(&b, tags, query.Tags)
 	}
+	if len(query.Dup) > 0 {
+		dupFilter(&b, query.Dup, &withinRange{source: withinSource, path: withinPath})
+	}
 	if len(b.conds) == 0 {
 		return filter{where: `1`}, nil
 	}

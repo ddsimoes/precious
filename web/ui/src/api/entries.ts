@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 
+import type { ArchiveInfo, Coverage, EntryContent, Relation } from '@/api/content'
 import type { Decision, Family, FamilyAmount, FileKind, KindAmount, YearAmount } from '@/api/home'
 import { isTerminal, scanKind, type JobEvent } from '@/api/jobs'
 import { searchQueryRoot } from '@/api/search'
@@ -88,6 +89,22 @@ export type Trait =
   | 'contains_vcs'
   | 'possible_generated_content'
 
+// ContentState is what hashing knows about a file or a file member (R2
+// design D3).
+export type ContentState = 'unique_size' | 'pending' | 'sampled' | 'hashed' | 'changed' | 'unreadable'
+
+// ArchiveState is an archive file's listing outcome (R2 design D7).
+export type ArchiveState =
+  | 'listing'
+  | 'complete'
+  | 'partial'
+  | 'rejected'
+  | 'encrypted'
+  | 'corrupt'
+  | 'unsupported'
+  | 'changed'
+  | 'unreadable'
+
 // EntryRow is the row of children, treemap, and search responses. name and
 // path are escaped display strings; name_b64 and path_b64 are the raw bytes.
 // Times are RFC 3339 or null.
@@ -109,6 +126,8 @@ export interface EntryRow {
   size: number
   total_bytes: number
   total_files: number
+  // The dates are null when unknown: none recorded, or at or before the Unix
+  // epoch. A folder's newest and oldest leave such files out.
   mtime: string | null
   newest: string | null
   oldest: string | null
@@ -125,6 +144,18 @@ export interface EntryRow {
   // holding nothing are omitted; the order is that of families. A server
   // older than D21 omits the field.
   composition?: FamilyAmount[]
+  // The R2 content fields (R2 design D16), null where they do not apply:
+  // content_state and copies for files and file members; candidate_bytes,
+  // checked_bytes, and duplicated_bytes for folders; archive_state for an
+  // archive file (null when unlisted); archive_id for a member, whose id is
+  // "m<id>".
+  content_state: ContentState | null
+  copies: number | null
+  candidate_bytes: number | null
+  checked_bytes: number | null
+  duplicated_bytes: number | null
+  archive_state: ArchiveState | null
+  archive_id: string | null
 }
 
 export interface Ancestor {
@@ -212,6 +243,13 @@ export interface EntryDetail {
   intent: Intent
   // stats is null for anything but a folder.
   stats: FolderStats | null
+  // The R2 fields (R2 design D16): content for a file or file member,
+  // up to 20 relations of a folder or archive, the archive of an archive
+  // file Precious opened, and the coverage of every source together.
+  content: EntryContent | null
+  relations: Relation[]
+  archive: ArchiveInfo | null
+  coverage: Coverage
 }
 
 export type ChildSort = 'bytes' | 'files' | 'newest' | 'name'
@@ -316,6 +354,55 @@ export function displayKind(entry: Pick<EntryRow, 'kind' | 'file_kind' | 'main_k
 // lastChange is the newest modification inside a folder, or a file's own.
 export function lastChange(entry: Pick<EntryRow, 'kind' | 'mtime' | 'newest'>): string | null {
   return entry.kind === 'directory' ? entry.newest : entry.mtime
+}
+
+// changeDates are a row's oldest and newest change: a folder's range, or a
+// file's own last change at both ends. A null end is unknown.
+export function changeDates(entry: Pick<EntryRow, 'kind' | 'mtime' | 'newest' | 'oldest'>): [string | null, string | null] {
+  return entry.kind === 'directory' ? [entry.oldest, entry.newest] : [entry.mtime, entry.mtime]
+}
+
+// isMember reports whether a row is a member of an archive ("m<id>"), which
+// has no decision or tags of its own: it is decided with its archive.
+export function isMember(entry: Pick<EntryRow, 'archive_id'>): boolean {
+  return entry.archive_id !== null
+}
+
+// isDrillable reports whether a row opens as a folder: a folder, a folder
+// inside an archive, or an archive Precious read completely.
+export function isDrillable(entry: Pick<EntryRow, 'kind' | 'archive_state'>): boolean {
+  return entry.kind === 'directory' || entry.archive_state === 'complete'
+}
+
+// uncheckedStates are the content states of files not checked yet.
+export const uncheckedStates: Partial<Record<ContentState, true>> = { pending: true, changed: true, unreadable: true }
+
+// Duplication is the share of an entry's bytes that have another copy, and
+// whether everything in it that could have a copy was checked.
+export interface Duplication {
+  fraction: number
+  checked: boolean
+}
+
+// duplicationOf gives a folder its duplicated bytes over its size, and a
+// file 0 or 100% from its copies (R2 design D10); null for what has no
+// content to compare, such as an empty file or a link. A folder whose
+// figures are not computed yet counts as not checked.
+export function duplicationOf(entry: EntryRow): Duplication | null {
+  if (entry.kind === 'directory') {
+    const { candidate_bytes: candidate, checked_bytes: checked, duplicated_bytes: duplicated } = entry
+    return {
+      fraction: entry.total_bytes > 0 ? (duplicated ?? 0) / entry.total_bytes : 0,
+      checked: candidate !== null && checked !== null && checked >= candidate,
+    }
+  }
+  if (entry.content_state === null) {
+    return null
+  }
+  if (uncheckedStates[entry.content_state]) {
+    return { fraction: 0, checked: false }
+  }
+  return { fraction: (entry.copies ?? 1) > 1 ? 1 : 0, checked: true }
 }
 
 // applyJobEventToEntries refetches every entry response and search result

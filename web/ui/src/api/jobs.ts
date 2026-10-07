@@ -45,6 +45,22 @@ export interface StartScanResult {
 
 export const scanKind = 'scan'
 
+// The R2 jobs (R2 design D5): hashing a source in the background (`hash`),
+// hashing chosen folders first (`hash_now`), and recomputing the folder
+// relations and review lists (`relate`). A hashing job reports `phase` (1
+// listing archives, 2 large files, 3 small files), `candidate_files`,
+// `candidate_bytes`, `checked_files`, `checked_bytes`, `read_bytes`,
+// `archives_listed`, and `unreadable`; `relate` reports `phase` and `folders`.
+export const hashKind = 'hash'
+export const hashNowKind = 'hash_now'
+export const relateKind = 'relate'
+
+export type HashKind = typeof hashKind | typeof hashNowKind
+
+export function isHashKind(kind: string): kind is HashKind {
+  return kind === hashKind || kind === hashNowKind
+}
+
 export function isTerminal(state: JobState): boolean {
   return state === 'succeeded' || state === 'failed' || state === 'cancelled'
 }

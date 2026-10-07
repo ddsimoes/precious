@@ -20,16 +20,19 @@
 //
 // A rescan reads each stored folder's children before listing it and writes
 // only what changed: an unchanged entry (same kind and size, a modification
-// time within the filesystem's tolerance, design D8, and on filesystems with
-// stable identity the same object) is not written. A changed entry is
-// updated, a new one inserted, and a stored one that a complete listing no
-// longer shows goes missing with its subtree; it keeps its ID, decision, and
+// time and, when both are known, a change time within the filesystem's
+// tolerance, design D8 and R2 D4, and on filesystems with stable identity
+// the same object) is not written. A changed entry is updated, a new one
+// inserted, and a stored one that a complete listing no longer shows goes
+// missing with its subtree; it keeps its ID, decision, and
 // tags, and returns under the same ID. A different kind at the same path is
 // a different entry: the old row and its subtree are deleted. A folder whose
 // listing fails is unreadable, keeps its stored children, and makes its
 // ancestors partial. A cancelled scan keeps the rows it wrote and marks the
 // folders it had not finished partial; the next scan starts again at the
-// root.
+// root. An update of a file whose own facts changed also deletes its
+// file_content and archives rows in the same batch (R2 D4), and a scan that
+// finishes successfully runs the OnScanDone hook.
 package index
 
 import (
@@ -57,6 +60,8 @@ type Handler struct {
 	pol *rules.Policy
 	clk clock.Clock
 	cfg config.Scan
+	// done, when set, runs after each successful scan (OnScanDone).
+	done func(ctx context.Context, src domain.SourceID)
 }
 
 var _ jobs.Handler = (*Handler)(nil)
@@ -81,6 +86,14 @@ func NewHandler(st *store.Store, src *sources.Service, pol *rules.Policy, clk cl
 // (design D15). Call it before r.Start.
 func (h *Handler) Register(r *jobs.Runner) {
 	r.RegisterClass(jobs.KindScan, h, jobs.ClassReconciliation)
+}
+
+// OnScanDone sets fn to run once after each scan that finishes successfully,
+// never after a failed or cancelled one (R2 design D5: serve wires it to
+// the hashing service, so index imports neither content nor relations).
+// Call it before Register.
+func (h *Handler) OnScanDone(fn func(ctx context.Context, src domain.SourceID)) {
+	h.done = fn
 }
 
 // Run scans the job's source.
@@ -135,7 +148,13 @@ func (h *Handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error 
 	s.report()
 	s.progress[ProgressPhase] = PhaseFinishing
 	rt.Progress(s.progress)
-	return w.finishScan(ctx, h.pol.Version())
+	if err := w.finishScan(ctx, h.pol.Version()); err != nil {
+		return err
+	}
+	if h.done != nil {
+		h.done(ctx, job.SourceID)
+	}
+	return nil
 }
 
 // cmpErr returns the first non-nil error.

@@ -61,6 +61,10 @@ type op struct {
 	// hasLink distinguishes an empty link text from none.
 	hasLink bool
 	root    bool
+	// dropContent, on an opUpdate, deletes the entry's file_content and
+	// archives rows: its own facts changed, so a digest or listing read
+	// from the old file no longer applies (R2 design D4).
+	dropContent bool
 	// self and subtree select what opMissing and opDelete touch.
 	self, subtree bool
 	// token, when not 0, records the ID an insert assigns for the indicator
@@ -194,6 +198,8 @@ const (
 	stDeleteSubNames
 	stDeleteNames
 	stPartial
+	stDropContent
+	stDropArchive
 	nStmts
 )
 
@@ -230,6 +236,8 @@ var writerQueries = [nStmts]string{
 		(SELECT id FROM entries WHERE source_id = ? AND path >= ? AND path < ?)`,
 	`DELETE FROM entry_names WHERE rowid = ?`,
 	`UPDATE OR FAIL entries SET partial = 1 WHERE id = ? AND partial = 0`,
+	`DELETE FROM file_content WHERE entry_id = ?`,
+	`DELETE FROM archives WHERE entry_id = ?`,
 }
 
 func newWriter(ctx context.Context, st *store.Store, job jobs.Job, gen, now int64, stopWalk context.CancelCauseFunc) (*writer, error) {
@@ -396,11 +404,19 @@ func (w *writer) apply(t *txStmts, b *batch, o *op) error {
 		return w.insert(t, b, o)
 	case opUpdate:
 		w.args = o.row.args(w.args[:0], w.link(b, o))
-		_, err := t.exec(stUpdate, append(w.args, w.now, w.gen, int64(o.id))...)
-		if err == nil {
-			w.written.Add(1)
+		if _, err := t.exec(stUpdate, append(w.args, w.now, w.gen, int64(o.id))...); err != nil {
+			return err
 		}
-		return err
+		w.written.Add(1)
+		if o.dropContent {
+			if _, err := t.exec(stDropContent, int64(o.id)); err != nil {
+				return err
+			}
+			if _, err := t.exec(stDropArchive, int64(o.id)); err != nil {
+				return err
+			}
+		}
+		return nil
 	case opFinish:
 		return w.finish(t, b, o)
 	case opMissing:

@@ -1,17 +1,22 @@
 import { useQuery } from '@tanstack/react-query'
 import { useId, type ReactNode } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
-import { Link, useSearchParams } from 'react-router'
+import { Link } from 'react-router'
 
 import { fetchHome, homeQueryKey, type Decision, type Family, type Home } from '@/api/home'
 import { useSources, type Source } from '@/api/sources'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { PageTitle } from '@/app/PageTitle'
 import { ScanProgress } from '@/app/ScanProgress'
+import { CoverageFigures } from '@/components/CoverageFigures'
+import { SourceFilter } from '@/components/SourceFilter'
 import { Card } from '@/components/ui/card'
-import { Label } from '@/components/ui/label'
 import { BarList } from '@/home/BarList'
+import { HashingProgress } from '@/home/HashingProgress'
+import { yearBars } from '@/home/yearBars'
 import { useFormat } from '@/lib/format'
+import { useSourceParam } from '@/lib/sourceParams'
+import { CardList } from '@/opportunities/CardList'
 
 const families: Family[] = ['personal', 'programs', 'disposable', 'containers']
 const decisions: Decision[] = ['keep', 'discard', 'later', 'undecided']
@@ -20,19 +25,13 @@ const decisions: Decision[] = ['keep', 'discard', 'later', 'undecided']
 // one chosen in the filter (kept in the address as ?source=).
 export function HomePage() {
   const { t } = useTranslation()
-  const [params, setParams] = useSearchParams()
-  const source = params.get('source')
+  const source = useSourceParam()
   const sources = useSources()
-  const filterId = useId()
 
   const home = useQuery({
     queryKey: homeQueryKey(source),
     queryFn: ({ signal }) => fetchHome(source, signal),
   })
-
-  const choose = (id: string) => {
-    setParams(id === '' ? {} : { source: id })
-  }
 
   if (sources.data?.sources.length === 0) {
     return (
@@ -52,22 +51,7 @@ export function HomePage() {
     <div className="grid gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <PageTitle>{t('pages.home')}</PageTitle>
-        <div className="flex items-center gap-2">
-          <Label htmlFor={filterId}>{t('home.filter')}</Label>
-          <select
-            id={filterId}
-            value={source ?? ''}
-            onChange={(event) => choose(event.target.value)}
-            className="h-9 rounded-md border border-input bg-card px-2 text-sm"
-          >
-            <option value="">{t('home.allSources')}</option>
-            {sources.data?.sources.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </div>
+        <SourceFilter />
       </div>
 
       {sources.isError && <ErrorBanner error={sources.error} onRetry={() => void sources.refetch()} />}
@@ -77,12 +61,14 @@ export function HomePage() {
         </p>
       )}
       {home.isError && <ErrorBanner error={home.error} onRetry={() => void home.refetch()} />}
-      {home.data !== undefined && <HomeFigures home={home.data} sources={sources.data?.sources ?? []} />}
+      {home.data !== undefined && (
+        <HomeFigures home={home.data} source={source} sources={sources.data?.sources ?? []} />
+      )}
     </div>
   )
 }
 
-function HomeFigures({ home, sources }: { home: Home; sources: Source[] }) {
+function HomeFigures({ home, source, sources }: { home: Home; source: string | null; sources: Source[] }) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const sourceLabel = (id: string) => sources.find((s) => s.id === id)?.label ?? id
@@ -99,9 +85,7 @@ function HomeFigures({ home, sources }: { home: Home; sources: Source[] }) {
   const byKind = [...home.by_kind]
     .sort((a, b) => b.bytes - a.bytes)
     .map((a) => ({ key: a.kind, label: t(`home.kind.${a.kind}`), bytes: a.bytes, files: a.files }))
-  const byYear = [...home.by_year]
-    .sort((a, b) => a.year - b.year)
-    .map((a) => ({ key: String(a.year), label: String(a.year), bytes: a.bytes, files: a.files }))
+  const byYear = yearBars(home.by_year, t)
   const byDecision = decisions.map((decision) => ({
     key: decision,
     label: t(`home.decision.${decision}`),
@@ -138,7 +122,33 @@ function HomeFigures({ home, sources }: { home: Home; sources: Source[] }) {
         </Section>
       )}
 
+      {home.hashing.length > 0 && (
+        <Section title={t('hashing.title')}>
+          <ul className="grid gap-3">
+            {home.hashing.map((job) => (
+              <li key={job.job_id} className="grid gap-1">
+                <span className="text-sm font-medium">{sourceLabel(job.source_id)}</span>
+                <HashingProgress job={job} label={sourceLabel(job.source_id)} />
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      <Section title={t('opportunities.title')}>
+        <CardList cards={home.cards} source={source} />
+        <Link
+          to={{ pathname: '/opportunities', search: source === null ? '' : `?${new URLSearchParams({ source })}` }}
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          {t('opportunities.all')}
+        </Link>
+      </Section>
+
       <div className="grid gap-4 lg:grid-cols-2">
+        <Section title={t('coverage.title')}>
+          <CoverageFigures coverage={home.coverage} />
+        </Section>
         <Section title={t('home.decisions')}>
           <BarList label={t('home.decisions')} bars={byDecision} whole={home.totals.bytes} />
         </Section>

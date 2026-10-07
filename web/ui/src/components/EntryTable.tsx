@@ -4,7 +4,16 @@ import { createContext, use, useEffect, useMemo, useRef, useState, type ReactNod
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, type To } from 'react-router'
 
-import { displayKind, lastChange, type ChildSort, type EntryRow, type SortOrder } from '@/api/entries'
+import {
+  changeDates,
+  displayKind,
+  duplicationOf,
+  isDrillable,
+  isMember,
+  type ChildSort,
+  type EntryRow,
+  type SortOrder,
+} from '@/api/entries'
 import { CompositionBar } from '@/components/CompositionBar'
 import { Button } from '@/components/ui/button'
 import { useEntryLink } from '@/detail/useEntryLink'
@@ -98,7 +107,7 @@ function NameCell({ row }: CellProps) {
   const { t } = useTranslation()
   const { entryLink, folderLink } = useRowLinks()
   const entry = row.original
-  if (entry.kind !== 'directory') {
+  if (!isDrillable(entry)) {
     return (
       <Link
         to={{ search: entryLink(entry.id) }}
@@ -111,9 +120,16 @@ function NameCell({ row }: CellProps) {
   }
   return (
     <span className="flex min-w-0 items-center gap-1">
-      <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4 shrink-0 fill-amber-400">
-        <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.6l1.5 1.5h5.9A1.5 1.5 0 0 1 15 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5z" />
-      </svg>
+      {entry.kind === 'directory' ? (
+        <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4 shrink-0 fill-amber-400">
+          <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.6l1.5 1.5h5.9A1.5 1.5 0 0 1 15 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5z" />
+        </svg>
+      ) : (
+        // An archive Precious read completely opens as a folder.
+        <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4 shrink-0 fill-amber-700">
+          <path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5zM7 2v2h2V2zm0 3v2h2V5zm0 3v2h2V8z" />
+        </svg>
+      )}
       <Link
         to={folderLink(entry)}
         className="truncate font-medium text-primary hover:underline"
@@ -171,16 +187,14 @@ function KindCell({ row }: CellProps) {
   return <span title={text}>{text}</span>
 }
 
+// DatesCell leaves a folder with no file inside blank: it has no change
+// dates, unlike a folder whose files' dates are unknown.
 function DatesCell({ row }: CellProps) {
+  const { t } = useTranslation()
   const fmt = useFormat()
   const entry = row.original
-  if (entry.kind !== 'directory' || entry.oldest === null || entry.newest === null) {
-    const time = lastChange(entry)
-    return time === null ? '' : fmt.date(time)
-  }
-  const oldest = fmt.date(entry.oldest)
-  const newest = fmt.date(entry.newest)
-  return oldest === newest ? newest : `${oldest} – ${newest}`
+  const empty = entry.kind === 'directory' && entry.total_files === 0
+  return fmt.dateSpan(...changeDates(entry)) ?? (empty ? '' : t('entry.unknownDate'))
 }
 
 function TriageCell({ row }: CellProps) {
@@ -188,12 +202,34 @@ function TriageCell({ row }: CellProps) {
   return row.original.triage === null ? '' : t(`entry.triage.${row.original.triage}`)
 }
 
+// DuplicatedCell shows the share of the bytes that have another copy: a
+// folder's from its figures, a file's 0 or 100% (R2 design D10).
+function DuplicatedCell({ row }: CellProps) {
+  const { t } = useTranslation()
+  const fmt = useFormat()
+  // An unreadable file never gets checked: "Not checked" would promise it.
+  if (row.original.content_state === 'unreadable') {
+    return t('map.dupCell.unreadable')
+  }
+  const duplication = duplicationOf(row.original)
+  if (duplication === null) {
+    return ''
+  }
+  const percent = fmt.percent(duplication.fraction)
+  if (duplication.checked) {
+    return percent
+  }
+  return duplication.fraction === 0 ? t('map.dupCell.unchecked') : t('map.dupCell.partial', { percent })
+}
+
 function DecisionCell({ row }: CellProps) {
   const { t } = useTranslation()
   const entry = row.original
-  return entry.decision === null
-    ? t('entry.inherited', { decision: t(`home.decision.${entry.eff_decision}`) })
-    : t(`home.decision.${entry.decision}`)
+  const effective = t(`home.decision.${entry.eff_decision}`)
+  if (isMember(entry)) {
+    return t('entry.withArchive', { decision: effective })
+  }
+  return entry.decision === null ? t('entry.inherited', { decision: effective }) : t(`home.decision.${entry.decision}`)
 }
 
 const features = tableFeatures({})
@@ -207,11 +243,12 @@ const allColumns = helper.columns([
   helper.display({ id: 'files', cell: FilesCell }),
   helper.display({ id: 'kind', cell: KindCell }),
   helper.display({ id: 'dates', cell: DatesCell }),
+  helper.display({ id: 'duplicated', cell: DuplicatedCell }),
   helper.display({ id: 'triage', cell: TriageCell }),
   helper.display({ id: 'decision', cell: DecisionCell }),
 ])
 
-type ColumnId = 'select' | 'name' | 'size' | 'files' | 'kind' | 'dates' | 'triage' | 'decision'
+type ColumnId = 'select' | 'name' | 'size' | 'files' | 'kind' | 'dates' | 'duplicated' | 'triage' | 'decision'
 
 function isColumnId(id: string | undefined): id is ColumnId {
   return id !== undefined && Object.hasOwn(columnLayout, id)
@@ -219,17 +256,18 @@ function isColumnId(id: string | undefined): id is ColumnId {
 
 // columnLayout gives each column its grid track and its narrowest width, in
 // rem. Columns with a hide rank hide in that order when the card is too
-// narrow for every column: Changed and Suggestion first; name, size, and
-// type or category always stay.
+// narrow for every column: Changed and Suggestion first, then Duplicated;
+// name, size, and type or category always stay.
 const columnLayout: Record<ColumnId, { track: string; min: number; hide?: number }> = {
   select: { track: '2rem', min: 2 },
   name: { track: 'minmax(12rem, 1.5fr)', min: 12 },
   size: { track: '6rem', min: 6 },
-  files: { track: '5rem', min: 5, hide: 4 },
+  files: { track: '5rem', min: 5, hide: 5 },
   kind: { track: 'minmax(9rem, 2fr)', min: 9 },
   dates: { track: 'minmax(9rem, 1.5fr)', min: 9, hide: 1 },
+  duplicated: { track: '6rem', min: 6, hide: 3 },
   triage: { track: '6rem', min: 6, hide: 2 },
-  decision: { track: '9rem', min: 9, hide: 3 },
+  decision: { track: '9rem', min: 9, hide: 4 },
 }
 // A row's column gap and side padding (gap-2, px-3), in rem.
 const columnGap = 0.5

@@ -41,7 +41,7 @@ func buildCorpus() *Tree {
 	d.phone()
 	d.media()
 	d.private()
-	return d.finish(expectations)
+	return d.finish(expectations, relationDecls, gemDeclarations)
 }
 
 // sized is a file name and its size.
@@ -180,7 +180,7 @@ func (d *def) downloads() {
 			pendrive = append(pendrive, zipMember{name: rel, data: it.data, mtime: it.mtime})
 		}
 	}
-	d.file("Downloads/fotos_2005_do_pendrive.zip", at(2006, 2, 10, 13, 0), zipArchive(pendrive))
+	d.zip("Downloads/fotos_2005_do_pendrive.zip", at(2006, 2, 10, 13, 0), pendrive)
 	d.copyTree("Fotos/2005", "Downloads/fotos_2005_do_pendrive")
 
 	d.binaries("Downloads", at(2004, 4, 2, 20, 0),
@@ -190,6 +190,9 @@ func (d *def) downloads() {
 	setup := d.file("Downloads/Setup.exe", at(2005, 6, 1, 15, 0), pe("Setup.exe", 210_000))
 	d.file("Downloads/Setup(1).exe", at(2005, 6, 1, 15, 3), setup)
 	d.file("Downloads/pacote.msi", at(2006, 9, 9, 9, 9), ole("pacote.msi", 260_000))
+	// Two files of one size, with different content (R2 hashing).
+	d.file("Downloads/driver_impressora.exe", at(2006, 4, 3, 19, 0), pe("driver impressora", 333_333))
+	d.file("Downloads/driver_scanner.exe", at(2006, 4, 3, 19, 5), pe("driver scanner", 333_333))
 
 	emule := "Downloads/emule-0.47c"
 	unpacked := at(2006, 11, 4, 22, 0)
@@ -203,7 +206,7 @@ func (d *def) downloads() {
 			members = append(members, zipMember{name: strings.TrimPrefix(it.path, "Downloads/"), data: it.data, mtime: it.mtime})
 		}
 	}
-	d.file("Downloads/eMule0.47c-Installer.zip", at(2006, 11, 4, 21, 55), zipArchive(members))
+	d.zip("Downloads/eMule0.47c-Installer.zip", at(2006, 11, 4, 21, 55), members)
 
 	d.file("Downloads/filme.avi.part", at(2007, 8, 30, 3, 12), avi("filme.avi", 800_000))
 
@@ -248,6 +251,8 @@ func (d *def) documents() {
 	d.file("Documentos/LEIAME.TXT", at(2003, 2, 1, 12, 0), []byte(leiameUpper))
 	d.file("Documentos/leiame.txt", at(2009, 2, 1, 12, 0), []byte(leiameLower))
 	d.file("Documentos/f\xe9.txt", at(2005, 5, 5, 5, 5), []byte(latin1Name))
+	d.gzip("Documentos/notas_2007.txt.gz", at(2007, 12, 30, 22, 0), []byte(notas2007))
+	d.bzip2("Documentos/notas_antigas.txt.bz2", at(2006, 6, 6, 18, 0), notesBZ2)
 }
 
 // projects are source projects with .git, a copy with one changed file, Java
@@ -272,6 +277,7 @@ func (d *def) projects() {
 
 	d.copyTree(site, "Projetos/site_antigo_copia", "contato.php")
 	d.file("Projetos/site_antigo_copia/contato.php", at(2009, 1, 10, 20, 0), []byte(contatoPHPChanged))
+	d.tarGzipOf("Projetos/site_antigo_2006.tar.gz", at(2008, 9, 2, 10, 0), site)
 
 	java := "Projetos/tcc_java"
 	coded := at(2005, 10, 2, 22, 0)
@@ -378,6 +384,12 @@ func (d *def) media() {
 	d.file("Midia/carta_1252.txt", saved, []byte(carta1252))
 	d.file("Midia/pagina.html", saved, []byte(paginaHTML))
 	d.file("Midia/desenho.svg", saved, []byte(desenhoSVG))
+	// A zip whose video is stored, so it can be served with ranges (R2.8),
+	// next to a deflated text.
+	d.zip("Midia/videos.zip", saved, []zipMember{
+		{name: "ferias/video.mp4", data: videoMP4, mtime: saved},
+		{name: "ferias/leia-me.txt", data: []byte(feriasTXT), mtime: saved, deflate: true},
+	})
 }
 
 // private is the unreadable folder.

@@ -1,10 +1,12 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -653,5 +655,61 @@ func TestStopRequeuesInterruptedJob(t *testing.T) {
 	start(t, next)
 	if job := recv(t, entered, "attempt after restart"); job.Attempt != 1 {
 		t.Fatalf("attempt after graceful restart = %d, want 1", job.Attempt)
+	}
+}
+
+// lockedBuffer is a buffer safe for the runner's goroutines.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A running job whose source is removed (remove-source cancels the job and
+// its row goes away with the source) ends quietly: its attempt is cancelled
+// and its outcome discarded, with no error logged.
+func TestJobRemovedWhileRunning(t *testing.T) {
+	e := newEnv(t)
+	addSource(t, e.st, "a")
+	entered := make(chan struct{})
+	h := handlerFunc(func(ctx context.Context, _ Job, _ Runtime) error {
+		close(entered)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	var logs lockedBuffer
+	r := e.runner(t, map[Kind]Handler{"hash": h}, func(o *Options) {
+		o.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError}))
+	})
+	start(t, r)
+	rec := enqueue(t, r, Spec{Kind: "hash", SourceID: "a"})
+	recv(t, entered, "attempt")
+	if err := r.Write(context.Background(), func(tx *Tx) error {
+		if _, err := tx.Cancel(rec.ID); err != nil {
+			return err
+		}
+		_, err := tx.SQL().Exec(`DELETE FROM sources WHERE id = 'a'`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	if err := r.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := logs.String(); got != "" {
+		t.Errorf("errors logged: %s", got)
 	}
 }

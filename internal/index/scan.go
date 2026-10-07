@@ -66,10 +66,11 @@ type frame struct {
 
 	listed, unreadable, boundary bool
 
-	// The subtree's facts.
+	// The subtree's facts. newest and oldest span the files with a known
+	// time (dated, domain.KnownModTime).
 	files, bytes                               int64
 	newest, oldest                             int64
-	hasFiles                                   bool
+	dated                                      bool
 	dirs, symlinks, specials, unreadableN, mts int64
 	partial                                    bool
 	byKind                                     map[domain.FileKind]rules.KindTotals
@@ -111,22 +112,37 @@ func (f *frame) reset() {
 }
 
 func (f *frame) addRange(oldest, newest int64) {
-	if !f.hasFiles {
-		f.oldest, f.newest, f.hasFiles = oldest, newest, true
+	if !f.dated {
+		f.oldest, f.newest, f.dated = oldest, newest, true
 		return
 	}
 	f.oldest = min(f.oldest, oldest)
 	f.newest = max(f.newest, newest)
 }
 
+// unknownYear is the by_year key of the files without a known time.
+const unknownYear = 0
+
+// ownRange is a file's or leaf's own newest and oldest time: its
+// modification time when known, else none.
+func ownRange(mtime opt) (newest, oldest opt) {
+	if !mtime.ok || !domain.KnownModTime(mtime.v) {
+		return opt{}, opt{}
+	}
+	return mtime, mtime
+}
+
 // addFile counts one regular file of the subtree under its file family.
 func (f *frame) addFile(kind domain.FileKind, size, mtime int64, family domain.Family) {
 	f.files++
 	f.bytes += size
-	f.addRange(mtime, mtime)
+	y := unknownYear
+	if domain.KnownModTime(mtime) {
+		f.addRange(mtime, mtime)
+		y = time.Unix(0, mtime).UTC().Year()
+	}
 	kt := f.byKind[kind]
 	f.byKind[kind] = rules.KindTotals{Files: kt.Files + 1, Bytes: kt.Bytes + size}
-	y := time.Unix(0, mtime).UTC().Year()
 	c := f.byYear[y]
 	c.add(counts{files: 1, bytes: size})
 	f.byYear[y] = c
@@ -475,10 +491,15 @@ func (s *walk) entry(f *frame, name []byte, info *fsaccess.EntryInfo) error {
 
 // unchanged reports whether a stored entry's own facts match an Lstat under
 // the source's capabilities (design D8): same size, a modification time
-// within the tolerance, and, where identity is stable, the same object.
+// within the tolerance, a change time within the same tolerance when both
+// are known (R2 design D4: a restored modification time does not hide a
+// change), and, where identity is stable, the same object.
 func (s *walk) unchanged(old *stored, info *fsaccess.EntryInfo) bool {
 	r := &old.row
 	if r.size != info.Size || r.boundary != info.MountBoundary || !sameTime(&s.caps, r.mtime, info.ModTime) {
+		return false
+	}
+	if r.ctime.ok && r.ctime.v != 0 && !info.Ctime.IsZero() && !sameTime(&s.caps, r.ctime, info.Ctime) {
 		return false
 	}
 	return !s.caps.StableIdentity ||
@@ -500,19 +521,19 @@ func (s *walk) facts(r *row, c *child) bool {
 // file processes a regular file of kind.
 func (s *walk) file(f *frame, c *child, kind domain.FileKind) error {
 	r := row{kind: string(domain.EntryFile), state: "present"}
-	s.facts(&r, c)
+	same := s.facts(&r, c)
 	res := s.pol.ClassifyFile(rules.FileFacts{Name: c.name, Kind: kind, Size: r.size, SiblingStems: f.stems})
 	r.classify(&res, s.codec)
 	r.fileKind = text(kind)
 	r.ext = s.codec.ext(c.name)
 	r.totalBytes, r.totalFiles = r.size, 1
-	r.newest, r.oldest = r.mtime, r.mtime
+	r.newest, r.oldest = ownRange(r.mtime)
 	family := domain.FileFamily(res.Category, kind)
 	f.addFile(kind, r.size, r.mtime.v, family)
 	s.notableFile(f, c, &r, family)
 	s.files++
 	s.bytes += r.size
-	return s.write(f, c, &r, nil, false)
+	return s.write(f, c, &r, nil, false, !same)
 }
 
 // notableFile offers the file c of f, with row r, to the inside lists of the
@@ -548,7 +569,7 @@ func (s *walk) leaf(f *frame, c *child) error {
 	r.kind, r.special = kindColumn(c.info.Kind)
 	r.state = "present"
 	same := s.facts(&r, c)
-	r.newest, r.oldest = r.mtime, r.mtime
+	r.newest, r.oldest = ownRange(r.mtime)
 	var link []byte
 	hasLink := false
 	if c.info.Kind == domain.EntrySymlink {
@@ -566,11 +587,13 @@ func (s *walk) leaf(f *frame, c *child) error {
 	} else {
 		f.specials++
 	}
-	return s.write(f, c, &r, link, hasLink)
+	return s.write(f, c, &r, link, hasLink, false)
 }
 
 // write inserts a new leaf, or rewrites a stored one whose row differs.
-func (s *walk) write(f *frame, c *child, r *row, link []byte, hasLink bool) error {
+// refacts reports that a stored file's own facts changed: the update then
+// drops the file's content rows (R2 design D4).
+func (s *walk) write(f *frame, c *child, r *row, link []byte, hasLink, refacts bool) error {
 	if c.old != nil && c.old.row == *r && (!hasLink || string(c.old.link) == string(link)) {
 		return nil
 	}
@@ -581,6 +604,7 @@ func (s *walk) write(f *frame, c *child, r *row, link []byte, hasLink bool) erro
 	}
 	if c.old != nil {
 		o.id = c.old.id
+		o.dropContent = refacts
 	} else {
 		o.kind, o.id, o.token = opInsert, f.id, c.token
 		o.path, o.name = b.join(f.path, c.name), b.add(c.name)
@@ -620,8 +644,10 @@ func (s *walk) finish(f *frame) error {
 	s.facts(&r, &c)
 	r.classify(&res, s.codec)
 	r.totalBytes, r.totalFiles = f.bytes, f.files
-	if f.hasFiles {
+	if f.dated {
 		r.newest, r.oldest = some(f.newest), some(f.oldest)
+	}
+	if f.files > 0 {
 		r.mainKind = mainKind(f.byKind)
 	}
 	// Its composition is its content's (design D21); what it adds to its
@@ -655,7 +681,7 @@ func (s *walk) finish(f *frame) error {
 		p.partial = p.partial || f.partial || f.unreadable
 		p.files += f.files
 		p.bytes += f.bytes
-		if f.hasFiles {
+		if f.dated {
 			p.addRange(f.oldest, f.newest)
 		}
 		for k, t := range f.byKind {

@@ -12,7 +12,8 @@ import (
 //
 //	source=ID  name=TEXT  ext=X…  file_kind=K…  min_size=N  max_size=N
 //	year_from=Y  year_to=Y  category=C…  triage=T…  tag=ID…  decision=D…
-//	within=ENTRY_ID  sort=bytes|files|newest|name  order=desc|asc
+//	dup=copies|elsewhere|unique|unchecked…  within=ENTRY_ID
+//	sort=bytes|files|newest|name  order=desc|asc
 //
 // Parameters marked … repeat, one value each. An empty value is the same as
 // an absent parameter. cursor and limit are the caller's and ignored here.
@@ -60,6 +61,8 @@ func Parse(v url.Values) (Query, error) {
 			q.Triages = appendValues(q.Triages, vals)
 		case "decision":
 			q.Decisions = appendValues(q.Decisions, vals)
+		case "dup":
+			q.Dup = appendValues(q.Dup, vals)
 		case "tag":
 			for _, s := range vals {
 				if s == "" {
@@ -182,6 +185,14 @@ func (q Query) validate() error {
 	}
 	if q.Within != nil && *q.Within <= 0 {
 		return invalid("within must be an entry id")
+	}
+	for _, d := range q.Dup {
+		if !d.Valid() {
+			return invalid("unknown dup %q", d)
+		}
+		if d == domain.DupElsewhere && q.Within == nil {
+			return invalid("dup=elsewhere needs within")
+		}
 	}
 	switch q.Sort {
 	case "", SortBytes, SortFiles, SortNewest, SortName:

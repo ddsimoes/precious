@@ -1,13 +1,16 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"precious/internal/corpus"
@@ -75,6 +78,13 @@ func countWalk(t *testing.T, dir string, g corpus.GroundTruth) {
 			if info.Size() != *e.Size {
 				t.Errorf("%s: %d bytes, ground truth says %d", e.Path, info.Size(), *e.Size)
 			}
+			b, err := os.ReadFile(name)
+			if err != nil {
+				return err
+			}
+			if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != e.SHA256 {
+				t.Errorf("%s: sha256 %x, ground truth says %s", e.Path, sum, e.SHA256)
+			}
 		}
 		if e.Unreadable {
 			return filepath.SkipDir
@@ -91,10 +101,20 @@ func countWalk(t *testing.T, dir string, g corpus.GroundTruth) {
 
 func TestCorpusMatchesGroundTruth(t *testing.T) {
 	dir, g := generate(t)
-	if want := corpus.Corpus().GroundTruth(); len(g.Entries) != len(want.Entries) {
+	want := corpus.Corpus().GroundTruth()
+	if len(g.Entries) != len(want.Entries) {
 		t.Fatalf("ground_truth.json lists %d entries, the corpus %d", len(g.Entries), len(want.Entries))
 	}
 	countWalk(t, dir, g)
+	// The R2 sections (design D19) round-trip through the file.
+	if len(g.Duplicates) == 0 || len(g.Members) == 0 || len(g.Relations) == 0 ||
+		len(g.Gems.Unique) == 0 || len(g.Gems.Rescue) == 0 || len(g.Gems.OnlyInCopy) == 0 {
+		t.Errorf("ground_truth.json lacks R2 sections: %d duplicates, %d archives, %d relations, gems %d/%d/%d",
+			len(g.Duplicates), len(g.Members), len(g.Relations), len(g.Gems.Unique), len(g.Gems.Rescue), len(g.Gems.OnlyInCopy))
+	}
+	if !reflect.DeepEqual(g, want) {
+		t.Error("ground_truth.json differs from the corpus's ground truth")
+	}
 
 	assertedVeto := false
 	for _, e := range g.Entries {

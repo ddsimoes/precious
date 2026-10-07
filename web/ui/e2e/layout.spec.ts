@@ -3,12 +3,14 @@ import { fileURLToPath } from 'node:url'
 
 import { devices, expect, test, type BrowserContext, type Page } from '@playwright/test'
 
+import { awaitDuplicates } from './duplicates'
 import { adminPassword, corpusPath, origin } from './env'
 
 // Screens fit the window (design D23): at 1366×768 and 1920×1080, on the Map
-// (with and without the detail panel), on Search, and on the panel itself,
-// nothing extends past its card or the window and no two controls overlap.
-// Each screen is also saved under test-results/layout/ for review.
+// (with and without the detail panel), on Search, on the panel itself, and
+// on Opportunities, a review list, Compare, and Gems, nothing extends past
+// its card or the window and no two controls overlap. Each screen is also
+// saved under test-results/layout/ for review.
 //
 // Files run in alphabetical order, so this one runs before precious.spec.ts,
 // which starts from an index without sources and adds the corpus itself.
@@ -85,6 +87,12 @@ test.beforeAll(async ({ browser }) => {
       { timeout: 60_000 },
     )
     .toBe(true)
+  // The duplicates screens need hashing and relations to have run.
+  await awaitDuplicates(page.request, async () => {
+    const started = await command<{ job_id: string }>('start-hash', { source_id: sourceId })
+    expect(started.status).toBe(202)
+    return started.body.job_id
+  })
 })
 
 test.afterEach(async () => {
@@ -153,6 +161,37 @@ for (const viewport of viewports) {
     await expect(page.getByRole('complementary', { name: 'foto.jpg' })).toBeVisible()
     await expect(page.getByRole('complementary').getByRole('region', { name: 'Classification' })).toBeVisible()
     await checkLayout(`search-panel-file-${size}`)
+  })
+
+  test(`Opportunities, a review list, Compare, and Gems fit at ${size}`, async () => {
+    await page.setViewportSize(viewport)
+    await page.goto('/opportunities')
+    await expect(page.getByRole('list', { name: 'Opportunity cards' }).getByRole('listitem')).toHaveCount(7)
+    await checkLayout(`opportunities-${size}`)
+
+    // A duplicates list with a group's copies and a relation's sides shown.
+    await page.goto('/opportunities/duplicates')
+    const rows = page.getByRole('list', { name: 'Rows of Duplicate folders and files' }).locator(':scope > li')
+    for (const row of [rows.filter({ hasText: /copies of/ }).first(), rows.filter({ hasNotText: /copies of/ }).first()]) {
+      await row.getByRole('button', { name: 'Show copies' }).click()
+      await expect(row.getByRole('list', { name: 'Copies' })).toBeVisible()
+    }
+    await checkLayout(`review-duplicates-${size}`)
+    await page.goto('/opportunities/programs')
+    await expect(page.getByRole('list', { name: 'Rows of Installed programs and system copies' }).locator(':scope > li').first()).toBeVisible()
+    await checkLayout(`review-programs-${size}`)
+
+    const fotos = await entryAt('Fotos')
+    const copy = await entryAt('Fotos - Copia')
+    await page.goto(`/compare?left=${fotos.id}&right=${copy.id}&bucket=identical`)
+    await expect(page.getByRole('list', { name: 'Files: Identical' }).locator(':scope > li').first()).toBeVisible()
+    await checkLayout(`compare-${size}`)
+
+    await page.goto('/gems')
+    for (const name of ['Personal files with no other copy', 'Files in only one of two similar folders']) {
+      await expect(page.getByRole('list', { name }).locator(':scope > li').first()).toBeVisible()
+    }
+    await checkLayout(`gems-${size}`)
   })
 }
 
@@ -225,7 +264,9 @@ interface Finding {
 // checkLayout saves a screenshot of the window as name, then checks, in the
 // page:
 // - the page does not scroll sideways, and every card (table, filters,
-//   detail panel, treemap) lies inside the window;
+//   detail panel, treemap, and each section and list item of the main area,
+//   such as an opportunity card, a review row, a copy, or a Compare file)
+//   lies inside the window;
 // - every visible element inside a card ends inside that card;
 // - a table's header cells line up with its rows' cells;
 // - no two visible controls or labels inside a card overlap.
@@ -256,7 +297,9 @@ async function checkLayout(name: string) {
     }
 
     const cards = [
-      ...document.querySelectorAll('[role="table"], form[aria-label="Filters"], aside, [role="img"][aria-label^="Treemap"]'),
+      ...document.querySelectorAll(
+        '[role="table"], form[aria-label="Filters"], aside, [role="img"][aria-label^="Treemap"], main section, main li',
+      ),
     ].filter(shown)
     for (const card of cards) {
       const outer = box(card)

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
 import { MockEventSource } from '@/test/eventSource'
-import { fotosSource, homeResponse, scanEvent, usbSource } from '@/test/fixtures'
+import { card, fotosSource, homeResponse, scanEvent, usbSource } from '@/test/fixtures'
 import { errorResponse, jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
 
 const GiB = 1024 ** 3
@@ -44,15 +44,16 @@ describe('Home screen', () => {
       'Disposable5 GiB · 15,000 files',
       'Containers10 GiB · 5,000 files',
     ])
-    // File kinds from the largest down; years in order.
+    // File kinds from the largest down; years in order, the unknown date last.
     expect(rows('Size by file type')).toEqual([
       'Videos60 GiB · 2,000 files',
       'Images40 GiB · 200,000 files',
       'Other20 GiB · 208,000 files',
     ])
     expect(rows('Size by year of last change')).toEqual([
-      '200450 GiB · 110,000 files',
+      '200445 GiB · 109,000 files',
       '202470 GiB · 300,000 files',
+      'Unknown date5 GiB · 1,000 files',
     ])
     expect(rows('Decisions')).toEqual([
       'Keep25 GiB · 60,000 files',
@@ -199,5 +200,94 @@ describe('Home screen', () => {
     fail = false
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('region', { name: 'Totals' })).toBeInTheDocument()
+  })
+
+  it('shows what was checked for copies and follows hashing', async () => {
+    stubApi({
+      'GET /api/session': () => jsonResponse(200, signedIn),
+      'GET /api/sources': () => jsonResponse(200, { sources: [fotosSource()] }),
+      'GET /api/home': () =>
+        jsonResponse(
+          200,
+          homeResponse({
+            hashing: [
+              {
+                source_id: 'fotos',
+                job_id: '50',
+                kind: 'hash',
+                state: 'running',
+                progress: { phase: 2, candidate_bytes: 90 * GiB, checked_bytes: 10 * GiB },
+              },
+            ],
+          }),
+        ),
+    })
+    renderApp('/')
+
+    const coverage = within(await screen.findByRole('region', { name: 'Checked for copies' }))
+    expect(coverage.getByText('80 GiB of 90 GiB checked (89%)')).toBeInTheDocument()
+    expect(coverage.getByText('Not checked yet: 49,000 files (9 GiB)')).toBeInTheDocument()
+    expect(coverage.getByText('Could not be read: 1,000 files (1 GiB)')).toBeInTheDocument()
+
+    const hashing = within(screen.getByRole('region', { name: 'Checking for copies' }))
+    const progress = hashing.getByRole('status', { name: 'Fotos' })
+    expect(progress).toHaveTextContent('Checking for copies · Reading large files10 GiB of 90 GiB checked')
+
+    act(() =>
+      MockEventSource.latest().emit(
+        'job',
+        scanEvent({
+          job_id: '50',
+          kind: 'hash',
+          progress: { phase: 3, candidate_bytes: 90 * GiB, checked_bytes: 45 * GiB },
+        }),
+        '3',
+      ),
+    )
+    await waitFor(() =>
+      expect(progress).toHaveTextContent('Checking for copies · Reading small files45 GiB of 90 GiB checked'),
+    )
+  })
+
+  it('ranks the opportunity cards by bytes and opens their lists', async () => {
+    const requests = stubApi({
+      'GET /api/session': () => jsonResponse(200, signedIn),
+      'GET /api/sources': () => jsonResponse(200, { sources: [fotosSource()] }),
+      'GET /api/home': () =>
+        jsonResponse(
+          200,
+          homeResponse({
+            cards: [
+              card('system_junk', 2 * GiB, 12),
+              card('duplicates', 30 * GiB, 40),
+              card('programs', 10 * GiB, 3),
+            ],
+          }),
+        ),
+      'GET /api/opportunities/system_junk': () =>
+        jsonResponse(200, { card: card('system_junk', 2 * GiB, 12), items: [], next_cursor: null }),
+    })
+    const { router } = renderApp('/?source=fotos')
+    const user = userEvent.setup()
+
+    const cards = within(await screen.findByRole('list', { name: 'Opportunity cards' }))
+    expect(cards.getAllByRole('listitem').map((item) => item.textContent.replace(/\s+/g, ' '))).toEqual([
+      'Duplicate folders and files30 GiB40 items to reviewFolders with the same content, and files with more than one copy.Based on the same content',
+      'Installed programs and system copies10 GiB3 items to reviewInstalled applications and copies of operating systems.Based on the rules',
+      'System junk2 GiB12 items to reviewFiles the system makes and remakes, such as thumbnails and recycle bins.Based on the rules',
+    ])
+    expect(screen.getByRole('link', { name: 'All opportunities' })).toHaveAttribute('href', '/opportunities?source=fotos')
+
+    await user.click(cards.getByRole('link', { name: 'System junk' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'System junk' })).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/opportunities/system_junk')
+    expect(router.state.location.search).toBe('?source=fotos')
+    await waitFor(() =>
+      expect(
+        requests
+          .filter((r) => new URL(r.url).pathname === '/api/opportunities/system_junk')
+          .map((r) => new URL(r.url).search),
+      ).toEqual(['?decided=0&source=fotos']),
+    )
   })
 })

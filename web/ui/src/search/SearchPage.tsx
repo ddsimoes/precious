@@ -29,6 +29,8 @@ export function SearchPage() {
     const next = new URLSearchParams(params)
     next.delete('within')
     next.delete('entry')
+    // "A copy outside this folder" needs the folder.
+    next.delete('dup', 'elsewhere')
     setParams(next)
   }
 

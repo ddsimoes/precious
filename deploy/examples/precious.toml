@@ -101,3 +101,33 @@ allow_insecure_http = true
 
 # Most directory entries one directory read returns (1 to 4096).
 # list_batch = 256
+
+[hashing]
+# Bytes one read call takes when reading a file's content to compare it
+# (64 KiB to 16 MiB).
+# read_chunk_bytes = 1048576
+
+# Bytes a hashing job reads before giving way to scans and pages, even inside
+# one file (1 MiB to 1 GiB).
+# yield_bytes = 67108864
+
+[archives]
+# Budgets for listing and reading one archive. Reaching any of them leaves
+# the archive partial, with no members.
+# Most members (1 to 5000000).
+# max_members = 1000000
+# Most unpacked bytes (1 MiB to 16 TiB; default 1 TiB).
+# max_unpacked_bytes = 1099511627776
+# Highest ratio of unpacked to packed bytes (2 to 100000).
+# max_ratio = 100
+# Longest time spent on one archive (1 minute to 7 days).
+# max_time = "4h"
+
+# Largest compressed zip member the viewer unpacks into memory to serve with
+# ranges (1 MiB to 1 GiB); a larger one is streamed without ranges.
+# view_max_bytes = 67108864
+
+[duplicates]
+# How often duplicate folders and the review lists are recomputed while
+# hashing runs (1 minute to 24 hours).
+# refresh_interval = "10m"

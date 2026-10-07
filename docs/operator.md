@@ -2,7 +2,7 @@
 
 Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks: it never writes to, moves, or deletes anything on them. This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
 
-This release, R1, is the full index and the explorer: sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags. Finding duplicates, organizing files into new folders, and cleanup (quarantine and deletion) come in later releases; nothing in R1 changes a file on a disk. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
+This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, opportunity cards with review lists, and Gems, the valuable files with no other copy. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing files into new folders and cleanup (quarantine and deletion) come in later releases. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
 
 ## Installation
 
@@ -316,7 +316,7 @@ The renamed `pre-restore-*` files still form a matching set; delete them once th
 
 ## Upgrades
 
-This release starts from a fresh database: on first start Precious creates `precious.db` with its baseline schema in the state directory. A database from the earlier release, `curator.db`, is never opened, imported, or changed; when one is in the state directory, Precious logs a line naming it and leaves it as it is.
+Precious R1 started from a fresh database: on first start Precious creates `precious.db` with its baseline schema in the state directory. A database from the earlier release, `curator.db`, is never opened, imported, or changed; when one is in the state directory, Precious logs a line naming it and leaves it as it is.
 
 Upgrade a running installation in this order:
 
@@ -327,6 +327,16 @@ Upgrade a running installation in this order:
 At startup Precious applies pending numbered migrations, each in its own transaction, and records each applied version. If a migration fails, its changes are rolled back, the database stays at the previous version, and Precious exits with the error.
 
 Migrations only move forward. An older binary refuses to start against a database that a newer one has migrated, and leaves the file unmodified; the error reads `store: database schema is newer than this binary supports: database has version N, binary supports up to M`. A database whose recorded migrations have different names from the binary's, such as an older release's database renamed to `precious.db`, is refused the same way. To roll back an upgrade, stop Precious, reinstall the older binary or image, restore the backup taken in step 1, and start it. Never edit `schema_migrations` by hand to get past these checks.
+
+### Upgrading from R1 to R2
+
+R2 adds hashing, archives, duplicates, Compare, opportunities, and Gems. Its migration, `0002_content`, only adds tables: every R1 entry, decision, tag, selection, job, and audit event stays as it was, and no rescan is needed for any of that. One figure does wait for a rescan: R2 treats a modification time on the epoch's first day (before 1970-01-02, the time a disk records when it lost the real one) as unknown, and an R1 folder's newest and oldest dates and its by-year figures leave such files out after the folder's next scan.
+
+1. **Back up first** with the R1 binary still running: `precious backup` (see [Taking a backup](#taking-a-backup)).
+2. **Check the configuration** with the R2 binary. An R1 configuration stays valid: the new `[hashing]`, `[archives]`, and `[duplicates]` sections have defaults (see [Configuration reference](#configuration-reference)), and `[copies]` is still refused.
+3. **Replace and restart.** At startup `0002_content` applies to the R1 database in one transaction, and every online source gets a hashing job, which reads file content in the background (see [Hashing](#hashing)). The first run on a large archive can take hours; scans, pages, and decisions are not blocked while it runs.
+
+To roll back, stop Precious, reinstall the R1 binary or image, [restore](#restoring) the backup taken in step 1, and start it. The R1 binary refuses the migrated database (`database has version 2, binary supports up to 1`) and leaves it unmodified, so the backup is the only way back. Decisions and tags recorded after the upgrade are lost with it.
 
 ### Moving from curator to precious
 
@@ -368,6 +378,14 @@ Durations are strings such as `"30s"`, `"15m"`, or `"12h"`.
 | `sources.allowed_roots` | array of strings | `[]` | Folders the picker offers, and below which sources may be added. Each entry must be the absolute path of an existing directory; entries are cleaned. Empty selects the platform defaults: on Linux the service account's home, `/media`, `/mnt`, `/run/media`, and `/srv`, those that exist. |
 | `scan.batch_size` | integer | `1000` | Most row changes a scan commits in one write transaction, 1 to 10000. |
 | `scan.list_batch` | integer | `256` | Most directory entries one directory read returns, 1 to 4096. |
+| `hashing.read_chunk_bytes` | integer | `1048576` | Bytes one read call takes when Precious reads a file's content to compare it, 65536 (64 KiB) to 16777216 (16 MiB). |
+| `hashing.yield_bytes` | integer | `67108864` | Bytes a hashing job reads before it gives way to scans and pages, even inside one file, 1048576 (1 MiB) to 1073741824 (1 GiB). |
+| `archives.max_members` | integer | `1000000` | Most members Precious lists in one archive, 1 to 5000000. An archive with more is left partial, with no members. |
+| `archives.max_unpacked_bytes` | integer | `1099511627776` | Most unpacked bytes Precious reads from one archive, 1048576 (1 MiB) to 17592186044416 (16 TiB). An archive that unpacks to more is left partial. |
+| `archives.max_ratio` | integer | `100` | Highest ratio of unpacked to packed bytes accepted in one archive, 2 to 100000. A higher ratio, typical of an archive bomb, leaves the archive partial. |
+| `archives.max_time` | duration | `"4h"` | Longest time Precious spends reading one archive, from 1 minute to 7 days. A slower archive is left partial. |
+| `archives.view_max_bytes` | integer | `67108864` | Largest compressed zip member the viewer unpacks into memory to serve with ranges, 1048576 (1 MiB) to 1073741824 (1 GiB). A larger one is streamed without ranges. |
+| `duplicates.refresh_interval` | duration | `"10m"` | How often duplicate folders and the review lists are recomputed while hashing runs, from 1 minute to 24 hours. They are also recomputed when hashing ends and after each scan. |
 
 ## Platform and supported systems
 
@@ -445,7 +463,7 @@ Some folders are refused:
 
 The browser never sends a typed path. Each folder the picker shows carries an opaque handle signed with a key that Precious makes when it starts, and adding a source names that handle. After a restart the old handles are refused, so reopen the picker.
 
-Removing a source deletes its index: its entries, folder totals, decisions, and tag assignments. The tags themselves stay, and no file on the disk is touched. A source cannot be removed while its scan is queued, running, or paused (`job_active`); cancel the scan first.
+Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed while its scan is queued, running, or paused (`job_active`); cancel the scan first. A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
 
 ### Allowed roots
 
@@ -494,7 +512,7 @@ A scan reads a source's folders and records every file, folder, symbolic link, a
 
 A scan lists every folder in batches of `scan.list_batch` entries and reads each entry's metadata (`lstat`): kind, size, modification and change times, permissions, link count, and file identity. It reads no file content. It never writes to the source, never follows a symbolic link (the link is recorded with its target text), never opens a FIFO, socket, or device (recorded as a special file), and never enters a folder where another filesystem is mounted: that folder is recorded as a mount boundary, with no contents. Names are kept byte for byte, including names that are not valid UTF-8, which the interface shows with `\xNN` escapes.
 
-Each folder's totals are complete when its last entry is done, in the same pass: its total bytes and files, the newest and oldest file time, its main file kind, its counts of folders, files, links, special files, unreadable folders, and mount boundaries below it, its bytes by file kind, by year (of the files' modification times, UTC), and by family (its [composition](#what-a-folder-is-made-of)), and the [notable entries inside it](#what-a-folder-is-made-of). Links and special files count no bytes. The rules classify every file as it is listed and every folder once it is complete (see [Classification rules](#classification-rules)); a folder whose discard suggestion is vetoed keeps up to 20 examples of the user material below it.
+Each folder's totals are complete when its last entry is done, in the same pass: its total bytes and files, the newest and oldest file time, its main file kind, its counts of folders, files, links, special files, unreadable folders, and mount boundaries below it, its bytes by file kind, by year (of the files' modification times, UTC), and by family (its [composition](#what-a-folder-is-made-of)), and the [notable entries inside it](#what-a-folder-is-made-of). Links and special files count no bytes. A modification time on the epoch's first day (before 1970-01-02) counts as unknown, since it is what a disk records when it lost the real time: it sets no folder date, and its file is counted under an unknown year, shown after the others. The rules classify every file as it is listed and every folder once it is complete (see [Classification rules](#classification-rules)); a folder whose discard suggestion is vetoed keeps up to 20 examples of the user material below it.
 
 Rows are written in batches of up to `scan.batch_size` changes per database transaction, on a separate writer, so reading the disk and writing the index overlap. When the database falls behind, the scan waits for it rather than holding more of the tree in memory. The index needs roughly 1 to 1.5 GB of space in the state directory for 2 million entries.
 
@@ -508,12 +526,14 @@ One scan per source runs at a time: a second request while a scan is queued, run
 
 Every scan walks the whole source again. It compares each entry with the one stored at the same path and writes only what changed:
 
-- An entry is **unchanged** when it has the same kind and size and a modification time within the filesystem's tolerance (see [Filesystem capabilities](#filesystem-capabilities)): its time resolution, and on a FAT card also a daylight-saving shift of one hour. On filesystems with stable file identity it must also be the same file (device and inode). An unchanged entry is not written, so a rescan of an unchanged disk changes no entry; only the source's record of its last scan is updated.
-- A **changed** entry is updated in place and keeps its ID, decision, and tags.
+- An entry is **unchanged** when it has the same kind and size and a modification time within the filesystem's tolerance (see [Filesystem capabilities](#filesystem-capabilities)): its time resolution, and on a FAT card also a daylight-saving shift of one hour. Where the system reports a change time for both the stored and the observed entry, it must be within the same tolerance too, so a file whose modification time was set back after a change is still seen as changed. On filesystems with stable file identity it must also be the same file (device and inode). An unchanged entry is not written, so a rescan of an unchanged disk changes no entry; only the source's record of its last scan is updated.
+- A **changed** entry is updated in place and keeps its ID, decision, and tags. When its size, times, or identity changed, it also loses what hashing knew about its content and, for an archive, its list of members, in the same write; they are read again by the next hashing job. An entry rewritten only because the rules classify it differently keeps them.
 - A **new** entry is added. It has no decision of its own and takes its folder's effective decision, as read when its row is written: a file appearing inside a discarded folder reads discard.
 - An entry whose **kind changed** at the same path, such as a file replaced by a folder of the same name, is a different entry: the old one, with whatever was below it, is removed from the index together with its decisions and tags, and the new one is added.
 
 Changing the rules between releases does not need anything special: the next scan reclassifies every entry whose classification differs and writes only those.
+
+A scan that finishes successfully starts a hashing job for every online source (see [Hashing](#hashing)); a failed or cancelled scan does not.
 
 ### Missing entries
 
@@ -554,6 +574,140 @@ go run ./tools/walkbench -root /tank/archive [-state DIR] [-cpuprofile FILE] [-o
 It walks the tree once to warm the caches, then times a bare walk (the same batched listing and `lstat` calls the scan makes, without following links or crossing mount points) and a full first scan of the tree into a new database in DIR (by default a temporary directory, removed afterwards; a given DIR must not hold a database yet), run as a scan job. It prints the number of entries, both times, and their ratio; `-cpuprofile` writes a CPU profile of the scan for `go tool pprof`.
 
 Both measurements are warm. A warm walk is the fastest baseline, so the warm ratio is stricter than the cold one the target names: on a tree of many small files on a fast disk, where the warm walk takes a few microseconds per entry while the scan writes an entry row, its name-index row, and six index entries for each, the warm ratio is well above 1.5. For the cold measurement, empty the filesystem caches (on ZFS by exporting and importing the pool, elsewhere with `echo 3 > /proc/sys/vm/drop_caches` as root; walkbench does not do that, because it needs root) and run `-only walk`, then empty them again and run `-only scan` with a fresh `-state` directory. Each run times just that measurement, without warming the caches first; the cold ratio is the scan's time divided by the walk's.
+
+## Hashing
+
+Precious finds copies by reading file content and computing its SHA-256 digest. Hashing only reads; it never writes to a source, and it opens every file read-only, without updating its access time where the filesystem allows that.
+
+### When it runs
+
+- **After every successful scan**, a hashing job starts for every online source, not only the scanned one, because a new file can share its size with a file on another source.
+- **At server start**, every online source gets a hashing job.
+- **On request**, `start-hash` with `{"source_id":"…"}` starts the source's job (202, or the running job with `"coalesced":true`; 404 `unknown_source`; 409 `source_offline`).
+
+A source has at most one hashing job at a time. Hashing is background work: on each disk it gives way to scans and to work you are waiting for, after every commit and after every `hashing.yield_bytes` read, even in the middle of a file. A source whose volume is not mounted is not hashed, and its digests stay as they were; its files still count as copies of files elsewhere.
+
+### Which files are read
+
+Each job starts by grouping, without reading anything, every present non-empty file and every file inside a listed archive, on every source, by size. Hard links to one file count once.
+
+- A file whose size no other file shares has **no other copy** and is never read.
+- Zero-byte files are never read and are never duplicates.
+- A file whose size is shared is read, unless its digest is already known.
+
+A digest stays valid until a rescan finds that the file's size, modification time, change time, or identity changed; the rescan then discards it. A file that did not change is never read again, across jobs and restarts.
+
+### Reading order
+
+1. The source's zip archives that are not listed yet: only their central directories (see [Archives](#archives)).
+2. Files of at least 1 MiB, and every tar, tar.gz, tar.bz2, gzip, and bzip2 archive, largest first. A file of at least 16 MiB is first compared by the digest of three 64 KiB samples, at its start, middle, and end; it is read in full only when another file of its size has the same samples. Equal samples alone never make two files duplicates.
+3. Smaller files inside pairs of folders that look like copies of each other by their file sizes, such as `Fotos` and `Fotos - Copia`, folder by folder.
+4. Every other smaller file, folder by folder.
+
+### Reading safety
+
+Each file is reached from the source root one folder at a time, never through a symbolic link or across a mount, and opened only when its size, times, and identity still match its index row. Content is read in `hashing.read_chunk_bytes` chunks. A digest is kept only when every byte was read, the file ended at its indexed size, and the open file still showed the same size, times, and identity at the end. Otherwise:
+
+- a file that changed, or no longer matches its row, is **not checked**; a rescan updates it and the next job reads it again;
+- a file that cannot be opened or read (permissions, I/O errors) is **unreadable**.
+
+Results are written at most 64 files at a time. Each write checks again that the file's index row has the size, times, and identity the read saw; a rescan that updated the row in the meantime wins, and the result is dropped.
+
+### Coverage
+
+Coverage is published per source and for all sources together (Home, and the detail of every claim):
+
+| Figure | Files and bytes |
+|---|---|
+| could have a copy | every file whose size is shared, or that was read |
+| checked | files with a digest, and large files whose samples differ from every other file of their size |
+| not checked | files still to read, and files that changed while read |
+| unreadable | files that could not be read |
+
+A file inside a listed archive counts under the archive's source. A file with no other copy by size is not in these figures: its claim needs no read. Every "no other copy" claim states the checked share of all sources, because a copy can be anywhere. Archives Precious does not open (7z, rar, partly read or damaged ones) count as plain files, so a file inside them is never seen as a copy.
+
+### Check now
+
+`check-now` with `{"entry_ids":["12","m45"]}` (one or two folders, archive files, or folders inside archives) hashes what is not checked yet inside them before any other hashing on their disks, for example to compare two folders while the first hashing run has not reached their small files. It answers 202 with `{"jobs":[{"job_id","state","coalesced"}]}`, one job per source; a second request for the same source adds its folders to the job already waiting or running. A file is 400 `invalid_request`, an unknown ID 404, and a folder on an unmounted source 409 `source_offline`. The rest of the source continues with its regular hashing job afterwards.
+
+### Progress and cancelling
+
+Hashing jobs have kind `hash` (and `hash_now` for `check-now`). Their progress, through `GET /api/jobs/{id}` and `GET /api/events`:
+
+| Key | Meaning |
+|---|---|
+| `phase` | 1 listing zip archives, 2 large files and archives, 3 small files |
+| `candidate_files`, `candidate_bytes` | the source's files that could have a copy |
+| `checked_files`, `checked_bytes` | of those, the files checked so far |
+| `read_bytes` | bytes this job has read |
+| `archives_listed` | archives this job has listed |
+| `unreadable` | the source's files that could not be read |
+
+Cancelling a hashing job (`cancel-job`) abandons the file being read and keeps every result already written; the next job reads only what is not checked yet. While hashing runs, duplicate folders and the review lists are recomputed every `duplicates.refresh_interval`, and once more when the job ends.
+
+### Cost on large archives
+
+A zip costs a read of its central directory, plus a read of each member whose size another file shares. A tar, tar.gz, tar.bz2, gzip, or bzip2 archive is read once from start to end, whatever its size, because its members are only known by reading it; its own digest comes from that same read. On an archive of hundreds of gigabytes of tar.gz, the first hashing run therefore takes hours; it is done once, and an archive that does not change is never read again.
+
+## Archives
+
+Precious opens archives in memory to list their members, so that a photo inside a zip counts as a copy of the same photo elsewhere, and so that you can browse and view the members. Nothing is ever unpacked to disk, not even to a temporary file, and the archive file itself is only read.
+
+### Formats
+
+An archive is recognized by its name and confirmed by its first bytes:
+
+| Name | Format |
+|---|---|
+| `.zip` | zip, stored or deflate |
+| `.tar` | tar |
+| `.tar.gz`, `.tgz` | tar.gz |
+| `.tar.bz2`, `.tbz2`, `.tbz` | tar.bz2 |
+| `.gz` | a single gzip-compressed file, named without `.gz` |
+| `.bz2` | a single bzip2-compressed file, named without `.bz2` |
+
+One trailing `.old`, `.bak`, or `.orig` is ignored, so `fotos.zip.bak` is a zip. Letter case does not matter.
+
+**What stays unopened:** 7z, rar, and every other format; Office documents and `.jar` files, although they are zips inside; encrypted zips; and archives inside archives, which are members like any other file. An unopened archive is a plain file: it is hashed when its size is shared, and its contents are not seen.
+
+### How each format is read
+
+- **zip:** only the central directory is read to list the members. A member is read later, when another file shares its size.
+- **tar, tar.gz, tar.bz2, gzip, bzip2:** the archive is read once from start to end, and every member is listed and hashed in that pass.
+
+An archive is listed once. Its listing and its members' digests are kept until a rescan finds that the archive file changed; the next hashing job then lists it again.
+
+### Budgets
+
+Reading one archive stops at the first of these budgets, from `[archives]` (see [Configuration reference](#configuration-reference)):
+
+| Setting | Stops when |
+|---|---|
+| `archives.max_members` | the archive holds more members (folders included) |
+| `archives.max_unpacked_bytes` | its members unpack to more bytes |
+| `archives.max_ratio` | its members unpack to more than this many times the bytes read from the archive, plus 64 MiB, as a zip bomb does |
+| `archives.max_time` | reading it takes longer |
+
+An archive stopped by a budget is **partial**, names the budget it reached, and gets no members.
+
+### Outcomes
+
+| State | Meaning | Members |
+|---|---|---|
+| complete | every member listed | yes |
+| partial | a budget was reached | none |
+| rejected | a member path is absolute or leaves the archive (`..`), two members share a path, or a member is both a file and a folder; the member is named | none |
+| encrypted | a zip member is encrypted | none |
+| unsupported | not really an archive of its format, a compression method other than store or deflate, or a multi-disk zip | none |
+| corrupt | a checksum or size mismatch, data cut off, or another format error | none |
+| changed | the file changed while it was read | none |
+| unreadable | the file could not be read | none |
+
+Every state but complete leaves the archive a plain file. Member names are kept as their raw bytes, symbolic links inside archives keep their text and are never followed, and members have no decision or tags of their own: they follow their archive's. A zip member's name that is not valid UTF-8 is shown decoded from code page 850, as zip tools on Portuguese Windows write it, so `Anota\x87\xE4es.txt` reads `Anotações.txt`. The raw bytes are still what is stored, in `name_b64` and `path_b64`.
+
+### Viewing members
+
+A member opens in the viewer under the same types and safety rules as a file, read from the archive in memory. A member stored without compression in a zip supports byte ranges, so a video can seek; a compressed zip member up to `archives.view_max_bytes` is unpacked into memory and supports ranges too; a larger one, and every member of a tar-family archive, is streamed from the start. When the archive file no longer matches the index, the viewer answers 409 `invalid_entry_state` until a rescan.
 
 ## Classification rules
 
@@ -643,6 +797,118 @@ The detail panel shows each rule behind an entry's classification with a one-sen
 
 The rules are versioned, and each scan records the version it used (`rules-v2+markers-v3` in this release).
 
+## Duplicates and Compare
+
+Precious finds copies by content, never by name: two files are copies when their SHA-256 digests are equal. Hashing (see [Hashing](#hashing)) fills in the digests in the background, and everything below follows it.
+
+### Duplicate groups
+
+A **duplicate group** is one content held by at least two copies among the present files of every source, offline sources included, and the members of opened archives (see [Archives](#archives)). Hard links to one file are one copy, and so are a tar hard link and the member it points to. A member is a copy; the archive holding it is not.
+
+A group's **redundant bytes** are its size times the number of copies minus one: what deleting every copy but one would give back. Precious never picks that one copy for you; each copy keeps its own decision.
+
+A file is said to have **no other copy** only when that is known: no other file anywhere has its size, its 64 KiB samples differ from every file of its size, or it was read in full and no other file has its digest. The claim always comes with the share of the content that could have a copy and was checked, across every source, because a copy could sit on any of them. Archives that are not opened (7z, rar, encrypted zips, archives inside archives, and archives that went over a budget) count as plain files: a copy inside one is not seen.
+
+### Folder relations
+
+Folders and opened archives are related by the digests of the files they hold, whatever the names and layout:
+
+| Relation | Meaning |
+|---|---|
+| `same` | Each side's content all exists on the other side. |
+| `inside` | Side A's content all exists on side B, which holds more. |
+| `overlap` | At least half of one side's bytes have their content on the other side. |
+
+Each relation shows its matched bytes, its redundant bytes, and the files and bytes found only on each side. Side A is the contained side of `inside`, the archive (or else the later path) of `same`, and the side with the larger matched share of `overlap`. An archive that is the `same` as a folder counts its packed size as redundant: it can go, and the folder keeps everything.
+
+A folder that holds a file not checked yet, a file that could not be read, an unreadable folder, or a mount point is never claimed `same` or `inside`: something in it might exist nowhere else. It can still `overlap`. Files that are empty count for nothing, and symbolic links match by their target text.
+
+Each copy is listed once, at its highest related folder: when `Fotos - Copia` overlaps `Fotos` and their `2004` folders are the same, the list holds those two relations, and none for the folders inside `2004`. Folders that hold nothing but one folder are named by it in a `same` relation, so a copied program folder pairs with the original even when it sits alone in its parent; a folder that holds nothing but an archive is named by the archive.
+
+### Percent duplicated
+
+Every folder carries:
+
+- its **duplicated bytes**: the bytes of the files in its subtree that have another copy anywhere;
+- its **candidate bytes**: the bytes of its files whose size another file shares, the only ones that can have a copy, leaving out the files that could not be read;
+- its **checked bytes**: the part of the candidate bytes whose content is known.
+
+Its **percent duplicated** is its duplicated bytes over its total bytes; a file is 0% or 100%. The Map colors folders by it in five bands (0%, under 25%, under 50%, under 75%, and 75% or more), and as **not checked** while its checked bytes are below its candidate bytes, because the figure can still grow. A file that could not be read never gets checked, so it does not keep its folders "not checked"; Home still counts it under **Could not be read**. An archive counts in its folder at its packed size, by its own file, never by its members.
+
+### Compare
+
+Compare takes two folders, opened archives, or folders inside an archive, and lists their files in five groups:
+
+| Group | Meaning |
+|---|---|
+| Only on the left / only on the right | The file's content is proven absent from the other side. |
+| Identical | The content exists on both sides, whatever the names. |
+| Same path, different content | Both sides have a file at that relative path, and their contents are proven different. |
+| Not checked yet | It cannot be said yet. |
+
+A size that the other side does not have at all proves "only here" without reading anything. **Not checked yet** appears for a file that hashing has not read (or could not read, or that changed while it was read) whose size exists on the other side, and for a checked file whose size exists on the other side only among such files: either could be the same content. Click **Check now** to have both sides hashed first; the group empties as hashing proceeds. Unreadable files stay in it.
+
+Compare opens on the first group that holds files, in this order: only on the left, only on the right, same path with different content, not checked yet, and identical. A folder inside another therefore opens on what only the larger one holds, and two copies that are the same open on identical.
+
+When one side holds nothing but a single folder, such as `emule-0.47c/` inside a zip, and dropping it lines up the paths with the other side, Compare drops it. The two sides cannot contain each other: comparing `Fotos` with `Fotos/2005`, or a file, is refused with `400 invalid_request`.
+
+### When relations are recomputed
+
+The `relate` job recomputes every relation and every folder's figures from the index, for all sources at once. It runs in a pool of its own, one at a time, and never holds a disk: it only reads the database. It starts after each scan, every `duplicates.refresh_interval` while hashing runs and when hashing ends, and at server start when a run was requested but never done. A request while it runs makes it run again when it finishes. The relations shown switch to the new ones all at once, so a page never mixes two runs; the folder figures are updated in place and settle within the run. Its progress shows `phase` (1 loading the index, 2 relating, 3 writing, 4 review lists, 5 cleaning up) and `folders`.
+
+On a development machine, a run over 2 million entries takes seconds and well under 1.5 GB of memory; a Compare of two folders of 100,000 files each answers within 2 seconds.
+
+## Opportunities and Gems
+
+Opportunities answers "what should I look at first?" with seven cards, and Gems answers "what is valuable and has no other copy?". Both are built from the index, the rules' classification, and the duplicates; neither decides anything for you.
+
+### The cards
+
+| Card | Rows | Bytes | Basis |
+|---|---|---|---|
+| Exact duplicates (`duplicates`) | Folder and archive relations of kind same or inside, and duplicate files outside every listed relation | Redundant bytes | Same content |
+| Archives already unpacked (`unpacked_archives`) | Archives whose whole content is the same as, or inside, a folder | The archive file's size | Same content |
+| System junk (`system_junk`) | Entries of category `system_junk` | Total bytes | Rules |
+| Installers and downloads (`installers`) | Entries of category `installer_download` or `download_collection` | Total bytes | Rules |
+| Programs and system copies (`programs`) | Entries of category `application_installation` or `os_installation` | Total bytes | Rules |
+| Caches and generated files (`caches`) | Entries of category `cache`, `temporary_data`, or `generated_artifacts`, except unfinished downloads | Total bytes | Rules |
+| Leftovers (`leftovers`) | Unfinished downloads (`*.part`, `*.partial`, `*.crdownload`), empty folders, and zero-byte files | Total bytes | Rules |
+
+Cards are ranked by bytes, largest first, and can show all sources or one. With one source, a card counts only the rows that touch it: its entries, and the duplicates rows with a copy on it.
+
+How the bytes are counted:
+
+- **A row is the outermost match.** A row is a group, folder, archive, or file that matches its card while no folder above it does. `Backup_PC_2004/C/WINDOWS` is one row of the programs card; `system32` inside it adds no bytes of its own. So no byte counts twice in one card. Different cards can overlap: a zero-byte `desktop.ini` is both system junk and a leftover.
+- **An empty folder** holds no file at any depth, is readable, and is not where another filesystem is mounted. Folders below an unreadable folder or a mount boundary are never called empty.
+- **A duplicates row** is a relation (its bytes are one side's worth of redundant bytes), or a group of identical files with at least one copy outside every listed relation. A group's bytes are its size times its copies outside the listed relations, less one when none of its copies is inside a relation: the relation already counts the copies inside it. Hard links to one file are one copy. Files inside archives count as copies; the archive itself does not.
+- **Only open rows count.** A row is open while its entry's effective decision is undecided. A duplicates row is open while at least two of its copies are undecided (for a relation, both sides). Deciding an entry, or the folder above it, closes its row at once and shrinks the card by the row's bytes. A card's bytes are always the sum of its list's open rows, read through every page.
+
+The rows are recomputed by the `relate` job (see Duplicates and Compare), after each scan and as hashing advances, so the classification and duplicates they show are as current as that job's last run. Decisions are never stored in them: they are read live.
+
+### Review lists
+
+Opening a card shows its review list, largest row first. Each row shows its size, dates, suggestion, and a one-line summary of what it holds: category, years, files (counted as in the Map, without the members of archives), bytes, and up to two notable signals, such as a spreadsheet inside an installed program. Duplicates rows expand into their copies, each with its own decision controls; a row of copies of one file names how many copies it has instead of a file count. A row of **Archives already unpacked** names the folder that holds the archive's content and opens Compare on the two.
+
+The list works from the keyboard: `K` keep, `D` discard, `L` later, `J` or `↓` next row, `↑` previous row, and `Enter` opens the detail panel. In the duplicates list, the keys act on the focused copy. When a decision makes the row leave the list, the row that takes its place is selected, so pressing `D` again decides it. `J` on the last row loaded brings the next page. The keys are ignored while typing in a field and inside a dialog.
+
+A decided row leaves the list. Choose to show decided rows to list the rows that are no longer open, with their decisions.
+
+### Selecting a whole list
+
+Every list except duplicates can select all of its open rows (the `select-list` command, `{"list":"system_junk","source_id":"…"}`; `source_id` is optional). This makes an ordinary selection of the rows' entries, exactly like a search's select-all: the confirmation shows the count, the bytes, and the kept entries, and the bulk decision skips every kept entry and reports it. The selection holds the entries open when it was made; a later refresh of the lists does not change it, and an entry kept in the meantime is skipped.
+
+The duplicates list has no select-all (`400 invalid_request`): Precious never chooses which copy stays. Decide copies one by one, or use Search's duplicate filter ("copies outside this folder") and select its results.
+
+### Gems
+
+Gems has three sections, for all sources or one:
+
+- **Unique personal files:** photos, videos, music, and documents of the personal family with no other copy anywhere, outside every installed program, system copy, or disposable group, oldest first.
+- **To rescue:** the user material the rules found inside programs and disposable groups (the indicators that trigger the veto, such as `OFFICE11/Meu orcamento casamento.xls` inside Microsoft Office), each under its outermost group, with its copy state.
+- **Only in one copy:** files with no other copy that sit on one side of an overlap relation, such as a photo edited in a copied folder, grouped by relation. Files inside archives are not listed here.
+
+"No other copy" means the file is unique by size, its sample is distinct among files of its size, or it was hashed and found once (hard links count once). A file not checked yet, or one that could not be read, is never listed as having no other copy; it waits until hashing checks it. Archives Precious does not open (7z, rar, and archives over budget) count as plain files, so a copy inside one is not seen. Each section states the share of the content that could have a copy that was checked, over every source, because a copy can be anywhere. Gems lists files whatever their decision.
+
 ## Search, viewer, and read API
 
 The interface reads the index through a small JSON API under `/api`. The same endpoints serve scripts, for example to export a search. Every endpoint below needs a signed-in session, like the interface; without one it answers `401 unauthenticated`. None of them change anything, and none of them accept a path: an entry is named only by its ID, which comes from an earlier answer. Entry IDs are decimal strings, such as `"812"`, and tag IDs are numbers. Treat both as opaque.
@@ -722,6 +988,50 @@ Files on a source come from anywhere, so the viewer treats each one as untrusted
 - **Text** (`/text`) is the first 1 MiB of the file, decoded: a byte-order mark gives UTF-8 or UTF-16, then valid UTF-8 is read as UTF-8, and anything else as Windows-1252. The answer names the encoding, says whether the text was cut at 1 MiB, and gives a syntax hint from the extension and whether the file is Markdown. The interface cleans Markdown before showing it; see [The viewer](#the-viewer).
 - **Only the indexed file is read.** The viewer opens the file read-only, starting from the source's folder and going down one name at a time. It never follows a symbolic link and never crosses into another mounted filesystem. It reads only a regular file that still matches the index: the same size and modification time (within the filesystem's time resolution, or one hour off on FAT) and, where the filesystem has stable file numbers, the same inode. A file changed, replaced, or moved since the last scan is refused with `invalid_entry_state` until a rescan. Content answers range requests, so video and audio can seek.
 - **Offline sources** stay browsable, but their files cannot be viewed: content and text answer `source_offline` until the disk is connected again.
+
+### Content, duplicates, and archive endpoints
+
+What hashing learns (see [Hashing](#hashing), [Duplicates and Compare](#duplicates-and-compare), and [Opportunities and Gems](#opportunities-and-gems)) is read through the same API. Like the rest, these endpoints need a session, change nothing, and name entries only by ID.
+
+**Archive members.** A member of an archive Precious read completely is named `m` followed by its number, such as `"m45"`. Every endpoint below `/api/entries/` accepts it where it accepts an entry ID. A member row has `"id":"m45"`, `"archive_id"` (the archive's entry ID), the path `archive path!path inside`, such as `Downloads/fotos.zip!Carnaval/DSC01001.JPG`, `"decision":null`, `"tag_ids":[]`, and the archive's effective decision: a member has no decision or tags of its own and follows its archive. `set-decision` and `set-tags` naming a member answer `invalid_request`; decide the archive instead. Members cannot be searched by name.
+
+**New fields of every entry row** (children, treemap, search, and the detail), each `null` where it does not apply:
+
+| Field | Of | Meaning |
+|---|---|---|
+| `content_state` | files and file members | `unique_size` (no other file of that size), `pending` (not read yet), `sampled` (unique by its samples), `hashed`, `changed` (changed while read), or `unreadable` |
+| `copies` | files and file members | how many physical copies the content has, this one included: hard links of one file count once, and so do a tar hard link and its target; `1` for a unique size or sample; `null` while not checked |
+| `candidate_bytes`, `checked_bytes`, `duplicated_bytes` | folders and member folders | the bytes inside that could have a copy, those checked, and those with another copy anywhere (computed by the last relations pass, and on read for a member folder) |
+| `archive_state` | archive files | the archive's [outcome](#outcomes), `null` while it was never listed or is being listed |
+| `archive_id` | members | the archive's entry ID |
+
+**Endpoints.**
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/entries/{id}` | Also `content` for a file or file member: its state, its SHA-256 in hex once read in full, when it was last read, up to 20 other copies, and their count; `relations`: up to 20 [relations](#folder-relations) of a folder, archive, or member folder, each with `self` (`a` or `b`, which side this entry is), the `other` side's row, the matched and redundant bytes, and the files and bytes only here and only there; `archive` for an archive file: its format, outcome, detail, members, and unpacked bytes; and `coverage`, the share checked over every source. A member's `ancestors` run from the source root through the archive to the member folder above it. |
+| `GET /api/entries/{id}/copies?cursor=&limit=` | Every other copy of a file or file member, files first, 100 per page by default and at most 1,000, with their count. A copy names its source, path, archive (for a member), whether it is a hard link of the same file, whether its source is offline, and its effective decision. |
+| `GET /api/entries/{id}/children`, `GET /api/entries/{id}/treemap` | Also for an archive read completely, whose items are its top members, and for a member folder. They sort and page as for folders; a member file has no items. |
+| `GET /api/home` | Also `coverage` (of the chosen source, or of all), `cards` (the seven opportunity cards), and `hashing` (hashing jobs in progress, like the scans, with their kind and progress). |
+| `GET /api/opportunities?source=` | The seven [cards](#the-cards), largest first, with the bytes and rows still open, the coverage of every source, and when the lists were last computed (`computed_at`, `null` before the first pass). |
+| `GET /api/opportunities/{list}?source=&decided=&cursor=&limit=` | One page of a card's open rows (50 by default, at most 500), largest first, with the card; `decided=1` lists the rows no longer open. A row of a rules card has its entry. A duplicates row is either a relation, whose `entry` is one side and whose `relation.other` is the other, or a group of copies of one file, which lists its `copies` (up to 101). Each row has the `summary` the interface writes its line from: category, oldest and newest year, files, bytes, and up to two signals. An unknown list answers `404 not_found`. |
+| `GET /api/gems?section=unique\|rescue\|only_in_copy&source=&cursor=&limit=` | One page of a [Gems](#gems) section, with the coverage its claims rest on. A rescue item names its group; an only-in-copy item names the overlapping folder it is in and the relation, seen from that folder. A missing or unknown section answers `invalid_request`. |
+| `GET /api/compare?left=&right=&bucket=&cursor=&limit=` | Both sides' rows, the files and bytes of the five [Compare](#compare) groups (`only_left`, `only_right`, `identical`, `different`, `unchecked`), and one page of the chosen group's items (100 by default, at most 1,000), each with its path and its row on each side. A side is a folder, an archive read completely, or a member folder. A file, two sides of which one holds the other, an unknown group, or a malformed ID answers `invalid_request`; a side that does not exist answers `not_found`. |
+
+**Every claim of no other copy carries the share checked.** A file reads "no other copy" only when its state is `unique_size` or `sampled`, or when it is `hashed` with `copies` 1. A copy can be on any source, so the claim always comes with `coverage` over every source: when 80% of the candidate bytes are checked, a file whose copy sits among the other 20% still reads unique. Archives Precious does not open (7z, rar, and partial ones) count as plain files: a file inside one is never seen as a copy.
+
+**Search's `dup` filter** (repeats) matches present files by what hashing found:
+
+| Value | Matches |
+|---|---|
+| `dup=copies` | Files with another physical copy anywhere, members of archives included. |
+| `dup=elsewhere` | Files with a copy outside the `within` folder: on another source, outside the folder's paths, or in an archive outside it. It needs `within`, otherwise `invalid_request`. With `within` set to a source's top folder it means a copy on another source. |
+| `dup=unique` | Files with no other copy: a unique size, a unique sample, or hashed with one copy. |
+| `dup=unchecked` | Files not checked yet, changed while read, or unreadable. |
+
+The filter has no index of its own: it is tested on each entry the other filters select, so combine it with `within`, `tag`, `source`, or a name. A selection stores the filter like the others, so "Select all results" on, for example, `within=ID&dup=elsewhere` selects the copies of that folder that have another copy outside it, ready to be discarded in one confirmed change.
+
+**Viewing a member.** `/content` and `/text` serve a file member under the [viewer's rules](#viewer-safety): the type comes from the member's own name, the same sandbox applies, and HTML is only a download. The member is read from the archive in memory: nothing is written to the state directory, to `TMPDIR`, or to the source. The archive file must still match the index and its listing, else `409 invalid_entry_state` until a rescan; its source must be online, else `source_offline`. A member stored without compression in a zip, and a compressed one up to `archives.view_max_bytes`, answers range requests; a larger one, and every member of a tar-family or gzip archive, is streamed whole without ranges (see [Viewing members](#viewing-members)). A member folder answers `invalid_entry_state`, like a folder.
 
 ## Decisions and tags
 
@@ -882,6 +1192,26 @@ Files from a disk are never run as part of Precious:
 - The type a file is shown as comes from its extension in Precious's own list, never from its content, so a `.jpg` that holds a web page is still only an image.
 - HTML and XML files are shown as text, never as pages, and an SVG is shown only as a picture, so any script inside it does not run. Executables are never run.
 - Markdown is cleaned before it is shown: scripts, event handlers, styles, forms, and embedded frames are removed, and images are replaced by their description ("[image not shown: …]"), so nothing is fetched from the internet. Links to web pages open in a new browser tab; other links do nothing.
+
+### Opportunities, Compare, and Gems
+
+**Home** also shows **Checked for copies**: how many bytes of the files that could have a copy (those sharing their size with another file) have been read, with the files not checked yet and those that could not be read. Each running hashing job shows what it is doing (listing archives, reading large files, reading small files) and its checked bytes, live. The opportunity cards follow, largest first; each opens its review list. All of these follow the source chosen at the top.
+
+**Opportunities** (in the main menu) lists the seven cards largest first, each with its bytes, how many items it holds, and whether it rests on the rules or on the same content found by hashing. A card counts only what is still undecided, so its bytes shrink as you decide.
+
+**A review list** shows one card's items, largest first. Each row gives its path, size, dates, suggestion, and a one-line summary (category, years, files, size, and up to two notable things inside, such as an Office document or version history), with the decision buttons. **Show decided rows** also lists the rows you already decided, with their decision. **Select all rows** works as Search's select all: it confirms the count, size, and kept items, then a decision skips kept items and reports them. The duplicates list has no select all: show a row's copies and decide each copy on its own (Precious never picks a copy for you); a folder pair also offers **Compare**.
+
+Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J** or **↓** next row, **↑** previous row, and **Enter** opens the row's details (in the duplicates list, Enter shows or hides a row's copies, and the keys then act on the selected copy). The keys do nothing while you type in a field or while a dialog or the detail panel has the focus.
+
+**Compare** shows two folders or archives side by side. Open it from a relation in the detail panel or the duplicates list, or choose **Compare with…** in a folder's or archive's details, then open the second one on the Map or in Search and choose **Compare with <first>**. The address names both sides (`/compare?left=…&right=…&bucket=…`), so a comparison can be bookmarked. Its five groups (only on the left, only on the right, identical, same name with different content, and not checked yet) show their files and size; each file has the decision buttons for each side that holds it. **Check now** reads the files of both sides that are not checked yet before any other hashing on their disks; the groups update when it ends. Two folders where one is inside the other cannot be compared.
+
+**Gems** (in the main menu) has three sections: your own photos, videos, music, and documents with no other copy, oldest first; your own files found inside programs or disposable folders, naming the folder; and files with no other copy in one of two folders that are otherwise much alike. Each section says how much is checked, on all disks, and how many files not checked yet it leaves out; each file has the decision buttons, and **Select all rows** works as in a review list.
+
+**On the Map,** the **Duplicated** column shows the share of each row's bytes that has another copy (a file is 0% or 100%), "so far" while its folder is not fully checked, and "Not checked" before anything is. It hides after Changed and Suggestion in a narrow window. **Color by → Duplication** paints the treemap in bands (no other copy, under 25%, 25 to 50%, 50 to 75%, 75% or more), with "Not checked yet" and "Nothing to check" colors, named in the legend. An archive Precious read completely opens like a folder, in the table and the treemap: its items show their sizes and copies, open in the viewer, and are decided with the archive, so their details show the archive's decision with a link to it and no decision or tag buttons.
+
+**Search** has a **Copies** filter: has another copy, no other copy, not checked yet, and, when searching inside a folder, has a copy outside this folder. Select all of the last one, then Discard, to discard the copies a folder holds of files kept elsewhere.
+
+**The detail panel** adds **Copies** for a file (its other copies, each with its path and decision, or why there is none: no other file of its size, different from every file of its size, or not checked yet), **Related folders** for a folder or archive (same content, contained in, or mostly shared, each with **Compare**), **Archive** for an archive file (format, what was read, items, size unpacked, and **Open as a folder**), the folder's **Duplicated** share, and the SHA-256 in the technical details. Every "no other copy" statement carries the share checked on all disks, because a copy can be on any of them; archives Precious does not open (7z, rar, and those over the limits) count as plain files.
 
 ### Common tasks
 

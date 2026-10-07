@@ -2,8 +2,10 @@ package api
 
 import (
 	"cmp"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -45,6 +47,14 @@ type entryRow struct {
 	TagIDs        []int64          `json:"tag_ids"`
 	// Composition is the entry's bytes and files by family (design D21).
 	Composition []search.FamilyAmount `json:"composition"`
+	// The R2 content fields (R2 design D16), null where they do not apply.
+	ContentState    *domain.ContentState `json:"content_state"`
+	Copies          *int64               `json:"copies"`
+	CandidateBytes  *int64               `json:"candidate_bytes"`
+	CheckedBytes    *int64               `json:"checked_bytes"`
+	DuplicatedBytes *int64               `json:"duplicated_bytes"`
+	ArchiveState    *string              `json:"archive_state"`
+	ArchiveID       *string              `json:"archive_id"`
 }
 
 // noTags is the tag_ids of an entry without own tags: [] rather than null.
@@ -56,20 +66,35 @@ func rowJSON(r *search.Row) entryRow {
 	if tags == nil {
 		tags = noTags
 	}
+	var archiveID *string
+	if r.ArchiveID != 0 {
+		s := r.ArchiveID.String()
+		archiveID = &s
+	}
+	name, path := domain.DisplayName(r.Name), domain.DisplayName(r.Path)
+	if r.Member != 0 && r.Zip {
+		name = domain.MemberDisplayName(r.Name, true)
+		path = domain.DisplayName(r.Path[:len(r.Path)-len(r.MemberPath)]) + domain.MemberDisplayName(r.MemberPath, true)
+	}
 	return entryRow{
-		ID: r.ID.String(), SourceID: r.Source,
-		Name: domain.DisplayName(r.Name), NameB64: r.Name,
-		Path: domain.DisplayName(r.Path), PathB64: r.Path,
+		ID: domain.Ref{Entry: r.ID, Member: r.Member}.String(), SourceID: r.Source,
+		Name: name, NameB64: r.Name,
+		Path: path, PathB64: r.Path,
 		Kind:     r.Kind,
 		FileKind: nonEmpty(&r.FileKind), MainKind: nonEmpty(&r.MainKind),
 		Category: nonEmpty(&r.Category), Family: nonEmpty(&r.Family), Triage: nonEmpty(&r.Triage),
 		Group: r.Group, Veto: r.Veto,
 		Size: r.Size, TotalBytes: r.TotalBytes, TotalFiles: r.TotalFiles,
-		MTime: nonZero(&r.MTime), Newest: nonZero(&r.Newest), Oldest: nonZero(&r.Oldest),
+		MTime: known(&r.MTime), Newest: known(&r.Newest), Oldest: known(&r.Oldest),
 		State: r.State, Partial: r.Partial, MountBoundary: r.MountBoundary,
 		Decision: nonEmpty(&r.Decision), EffDecision: r.EffDecision,
-		TagIDs:      tags,
-		Composition: r.Composition,
+		TagIDs:       tags,
+		Composition:  r.Composition,
+		ContentState: nonEmpty(&r.ContentState),
+		Copies:       nullInt(&r.Copies), CandidateBytes: nullInt(&r.CandidateBytes),
+		CheckedBytes: nullInt(&r.CheckedBytes), DuplicatedBytes: nullInt(&r.DuplicatedBytes),
+		ArchiveState: nonEmpty(&r.ArchiveState),
+		ArchiveID:    archiveID,
 	}
 }
 
@@ -90,12 +115,21 @@ func nonEmpty[T ~string](p *T) *T {
 	return p
 }
 
-// nonZero is p, or nil for the zero time (unknown, null in JSON).
-func nonZero(p *time.Time) *time.Time {
-	if p.IsZero() {
+// known is p, or nil for a time that is not known (search.KnownTime): NULL,
+// or a placeholder for a lost time (null in JSON).
+func known(p *time.Time) *time.Time {
+	if !search.KnownTime(*p) {
 		return nil
 	}
 	return p
+}
+
+// nullInt is p's value, or nil when it is NULL.
+func nullInt(p *sql.NullInt64) *int64 {
+	if !p.Valid {
+		return nil
+	}
+	return &p.Int64
 }
 
 // amount is one cell of a breakdown, as dir_stats stores it.
@@ -115,11 +149,17 @@ type kindAmount struct {
 	Files int64           `json:"files"`
 }
 
+// yearAmount is one year of a by_year breakdown; Year is null for the
+// files without a known modification time.
 type yearAmount struct {
-	Year  int   `json:"year"`
+	Year  *int  `json:"year"`
 	Bytes int64 `json:"bytes"`
 	Files int64 `json:"files"`
 }
+
+// unknownYear is the by_year key of the files without a known time, as
+// dir_stats stores it.
+const unknownYear = 0
 
 // breakdowns sums dir_stats breakdowns: by_kind, by_year, and by_family.
 type breakdowns struct {
@@ -184,13 +224,19 @@ func (b *breakdowns) kindList() []kindAmount {
 	return out
 }
 
-// yearList lists the years ascending.
+// yearList lists the years ascending, then the unknown year.
 func (b *breakdowns) yearList() []yearAmount {
-	out := make([]yearAmount, 0, len(b.years))
-	for y, a := range b.years {
-		out = append(out, yearAmount{Year: y, Bytes: a.Bytes, Files: a.Files})
+	years := slices.Sorted(maps.Keys(b.years))
+	out := make([]yearAmount, 0, len(years))
+	for _, y := range years {
+		if y != unknownYear {
+			a := b.years[y]
+			out = append(out, yearAmount{Year: &y, Bytes: a.Bytes, Files: a.Files})
+		}
 	}
-	slices.SortFunc(out, func(x, y yearAmount) int { return cmp.Compare(x.Year, y.Year) })
+	if a, ok := b.years[unknownYear]; ok {
+		out = append(out, yearAmount{Bytes: a.Bytes, Files: a.Files})
+	}
 	return out
 }
 

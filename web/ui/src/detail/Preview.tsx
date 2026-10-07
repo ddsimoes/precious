@@ -10,8 +10,8 @@ import {
   textQueryKey,
   type EntryRow,
 } from '@/api/entries'
-import { ErrorBanner } from '@/app/ErrorBanner'
 import { Button } from '@/components/ui/button'
+import { ContentError } from '@/viewer/ContentError'
 import { TextBody } from '@/viewer/Viewer'
 import { viewerKind } from '@/viewer/viewerKind'
 
@@ -83,6 +83,7 @@ function MediaPreview({
     if (probe.isError) {
       return (
         <ContentError
+          entry={entry}
           error={probe.error}
           onRetry={() => {
             setFailed(false)
@@ -156,7 +157,7 @@ function PdfPreview({ entry }: { entry: EntryRow }) {
     return <Loading />
   }
   if (probe.isError) {
-    return <ContentError error={probe.error} onRetry={() => void probe.refetch()} />
+    return <ContentError entry={entry} error={probe.error} onRetry={() => void probe.refetch()} />
   }
   // No sandbox attribute: browsers refuse to show a PDF in a sandboxed
   // frame. The response's own policy keeps it inert (design D12).
@@ -194,7 +195,7 @@ function TextPreview({ entry }: { entry: EntryRow }) {
   }, [text.data])
 
   if (text.isError) {
-    return <ContentError error={text.error} onRetry={() => void text.refetch()} />
+    return <ContentError entry={entry} error={text.error} onRetry={() => void text.refetch()} />
   }
   if (head === null) {
     return <Loading />
@@ -206,20 +207,6 @@ function TextPreview({ entry }: { entry: EntryRow }) {
         <p className="text-xs text-muted-foreground">{t('detail.preview.firstLines', { count: previewLines })}</p>
       )}
     </>
-  )
-}
-
-function ContentError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  const { t } = useTranslation()
-  return (
-    <ErrorBanner
-      error={error}
-      overrides={{
-        invalid_entry_state: t('detail.preview.changed'),
-        source_offline: t('detail.preview.offline'),
-      }}
-      onRetry={onRetry}
-    />
   )
 }
 

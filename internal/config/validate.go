@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Upper bounds of the [scan] settings (design D7): they keep one write
@@ -24,6 +25,9 @@ func Validate(c *Config) error {
 	validateJobs(&c.Jobs, &p)
 	validateSources(&c.Sources, &p)
 	validateScan(&c.Scan, &p)
+	validateHashing(&c.Hashing, &p)
+	validateArchives(&c.Archives, &p)
+	validateDuplicates(&c.Duplicates, &p)
 	return p.Err()
 }
 
@@ -69,6 +73,46 @@ func validateScan(s *Scan, p *Problems) {
 	if s.ListBatch < 1 || s.ListBatch > maxScanListBatch {
 		p.addf("scan.list_batch", "must be between 1 and %d, got %d", maxScanListBatch, s.ListBatch)
 	}
+}
+
+// Bounds of the R2 [hashing], [archives], and [duplicates] settings
+// (server-config).
+const (
+	kib = int64(1) << 10
+	mib = int64(1) << 20
+	gib = int64(1) << 30
+	tib = int64(1) << 40
+)
+
+// inRange reports a problem unless lo <= v <= hi.
+func (p *Problems) inRange(key string, v, lo, hi int64) {
+	if v < lo || v > hi {
+		p.addf(key, "must be between %d and %d, got %d", lo, hi, v)
+	}
+}
+
+// durationInRange reports a problem unless lo <= d <= hi.
+func (p *Problems) durationInRange(key string, d Duration, lo, hi time.Duration) {
+	if d.Duration < lo || d.Duration > hi {
+		p.addf(key, "must be between %s and %s, got %s", lo, hi, d.Duration)
+	}
+}
+
+func validateHashing(h *Hashing, p *Problems) {
+	p.inRange("hashing.read_chunk_bytes", h.ReadChunkBytes, 64*kib, 16*mib)
+	p.inRange("hashing.yield_bytes", h.YieldBytes, mib, gib)
+}
+
+func validateArchives(a *Archives, p *Problems) {
+	p.inRange("archives.max_members", a.MaxMembers, 1, 5_000_000)
+	p.inRange("archives.max_unpacked_bytes", a.MaxUnpackedBytes, mib, 16*tib)
+	p.inRange("archives.max_ratio", a.MaxRatio, 2, 100_000)
+	p.durationInRange("archives.max_time", a.MaxTime, time.Minute, 7*24*time.Hour)
+	p.inRange("archives.view_max_bytes", a.ViewMaxBytes, mib, gib)
+}
+
+func validateDuplicates(d *Duplicates, p *Problems) {
+	p.durationInRange("duplicates.refresh_interval", d.RefreshInterval, time.Minute, 24*time.Hour)
 }
 
 func validateAuth(a *Auth, p *Problems) {

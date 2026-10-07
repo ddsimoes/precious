@@ -67,15 +67,20 @@ func checkEffective(t *testing.T, path string, wantText ...string) {
 	}
 }
 
-// server-config "Valid configuration accepted" and "Scan defaults":
-// check-config exits 0 on the shipped example and prints effective settings,
-// the [scan] defaults and the empty allowed roots included, that load back
-// to the same configuration.
+// server-config "Valid configuration accepted", "Scan defaults", "Hashing
+// defaults printed", and "Archive defaults printed": check-config exits 0 on
+// the shipped example and prints effective settings, the [scan], [hashing],
+// [archives], and [duplicates] defaults and the empty allowed roots included,
+// that load back to the same configuration.
 func TestCheckConfigAcceptsShippedExample(t *testing.T) {
 	checkEffective(t, shippedExampleConfig,
 		`state_dir = "/var/lib/precious"`, "trusted_proxies = []",
 		"[sources]\n  allowed_roots = []", "picker offers the platform default roots",
-		"[scan]\n  batch_size = 1000\n  list_batch = 256")
+		"[scan]\n  batch_size = 1000\n  list_batch = 256",
+		"[hashing]\n  read_chunk_bytes = 1048576\n  yield_bytes = 67108864",
+		"[archives]\n  max_members = 1000000\n  max_unpacked_bytes = 1099511627776\n  max_ratio = 100\n"+
+			"  max_time = \"4h0m0s\"\n  view_max_bytes = 67108864",
+		"[duplicates]\n  refresh_interval = \"10m0s\"")
 }
 
 // check-config prints configured allowed roots, cleaned, and changed scan
@@ -147,6 +152,17 @@ external_origin = "https://precious.example.net"
 batch_size = 0
 `
 		}, []string{"scan.batch_size"}},
+		// server-config "Chunk out of range" and "Ratio out of range".
+		{"hashing chunk and archive ratio", func(base string) string {
+			return `state_dir = "` + base + `/state"
+[server]
+external_origin = "https://precious.example.net"
+[hashing]
+read_chunk_bytes = 4096
+[archives]
+max_ratio = 1
+`
+		}, []string{"hashing.read_chunk_bytes", "archives.max_ratio"}},
 		// Every problem is printed, not only the first.
 		{"several problems", func(string) string {
 			return `state_dir = "relative"

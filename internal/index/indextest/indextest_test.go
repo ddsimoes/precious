@@ -76,11 +76,21 @@ func loadRows(t *testing.T, st *store.Store, src domain.SourceID) map[int64]*row
 }
 
 // subtree recomputes a folder's aggregates from its descendants' rows,
-// independently of Seed.
+// independently of Seed. newest and oldest span the rows with a known time
+// (dated); a file of an unknown time has none of its own.
 type subtree struct {
 	bytes, files, dirs, symlinks, specials, unreadable int64
 	newest, oldest                                     int64
-	partial                                            bool
+	partial, dated                                     bool
+}
+
+func (s *subtree) addRange(oldest, newest int64) {
+	if !s.dated {
+		s.oldest, s.newest, s.dated = oldest, newest, true
+		return
+	}
+	s.oldest = min(s.oldest, oldest)
+	s.newest = max(s.newest, newest)
 }
 
 func recompute(children map[int64][]*row, id int64) subtree {
@@ -99,18 +109,14 @@ func recompute(children map[int64][]*row, id int64) subtree {
 				s.unreadable++
 			}
 			s.partial = s.partial || cs.partial || c.state == "unreadable"
-			if cs.files > 0 {
-				s.newest = max(s.newest, cs.newest)
-				if s.oldest == 0 || cs.oldest < s.oldest {
-					s.oldest = cs.oldest
-				}
+			if cs.dated {
+				s.addRange(cs.oldest, cs.newest)
 			}
 		case "file":
 			s.bytes += c.size
 			s.files++
-			s.newest = max(s.newest, c.newest.Int64)
-			if s.oldest == 0 || c.oldest.Int64 < s.oldest {
-				s.oldest = c.oldest.Int64
+			if c.newest.Valid {
+				s.addRange(c.oldest.Int64, c.newest.Int64)
 			}
 		case "symlink":
 			s.symlinks++
@@ -175,7 +181,7 @@ func TestSeedThreeLevelTree(t *testing.T) {
 		}
 		s := recompute(children, r.id.Int64)
 		got := subtree{r.bytes, r.files, r.dirs.Int64, r.symlinks.Int64, r.specials.Int64, r.unreadable.Int64,
-			r.newest.Int64, r.oldest.Int64, r.partial == 1}
+			r.newest.Int64, r.oldest.Int64, r.partial == 1, r.newest.Valid}
 		if got != s || r.nfiles.Int64 != s.files {
 			t.Errorf("folder %q: stored %+v (dir_stats files %d), recomputed %+v", r.path, got, r.nfiles.Int64, s)
 		}
@@ -284,6 +290,31 @@ func TestSeedExistingSource(t *testing.T) {
 	if gen != 5 || entryGen != 5 || lastScan != indextest.DefaultNow.UnixMilli() || total != 7 {
 		t.Fatalf("source gen %d, last_scan_at %d, entry gen %d, total %d; want 5, %d, 5, 7",
 			gen, lastScan, entryGen, total, indextest.DefaultNow.UnixMilli())
+	}
+}
+
+// Attach addresses an already indexed source by path with the same IDs, and
+// its content can then be seeded.
+func TestAttach(t *testing.T) {
+	st := storetest.Open(t)
+	seed := indextest.Seed(t, st, indextest.Tree{Source: "disk", CreateSource: true, Nodes: threeLevels()})
+	got := indextest.Attach(t, st, "disk")
+	if got.Source != seed.Source || got.Root != seed.Root {
+		t.Fatalf("attached source %q root %d, want %q root %d", got.Source, got.Root, seed.Source, seed.Root)
+	}
+	for _, n := range threeLevels() {
+		if got.ID(n.Path) != seed.ID(n.Path) {
+			t.Errorf("%s: attached ID %d, seeded %d", n.Path, got.ID(n.Path), seed.ID(n.Path))
+		}
+	}
+	file := "Fotos/2006/c.jpg"
+	got.SetContent(st, file, indextest.Content{State: domain.ContentUniqueSize})
+	var state string
+	if err := st.Reader().QueryRow(`SELECT state FROM file_content WHERE entry_id = ?`, int64(seed.ID(file))).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(domain.ContentUniqueSize) {
+		t.Fatalf("state %q after SetContent through Attach", state)
 	}
 }
 

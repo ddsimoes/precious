@@ -5,9 +5,11 @@
 //
 // DIR must be missing or empty. The ground truth goes to FILE, by default
 // ground_truth.json in DIR's parent, so that DIR holds exactly the entries the
-// ground truth lists. -fat writes the small FAT-capability fixture instead of
-// the corpus. The corpus's folder privado gets mode 000; run chmod 755 on it
-// before removing DIR.
+// ground truth lists. Besides the entries, with each file's sha256, it holds
+// the duplicate groups, each archive's members, the declared relations, and
+// the Gems sections (R2 design D19). -fat writes the small FAT-capability
+// fixture instead of the corpus. The corpus's folder privado gets mode 000;
+// run chmod 755 on it before removing DIR.
 package main
 
 import (

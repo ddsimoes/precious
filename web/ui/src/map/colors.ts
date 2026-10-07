@@ -1,15 +1,15 @@
 import type { TFunction } from 'i18next'
 
-import { decisions, families, fileKinds, lastChange, displayKind, type EntryRow } from '@/api/entries'
+import { decisions, duplicationOf, families, fileKinds, lastChange, displayKind, type EntryRow } from '@/api/entries'
 import type { Decision, Family, FileKind } from '@/api/home'
 import { dominantFamily } from '@/lib/composition'
 
 // The Map's color modes (spec §11.2): each paints a treemap area by one
 // property of its entry, and names its colors in a legend.
 
-export type ColorMode = 'family' | 'kind' | 'age' | 'decision' | 'tag'
+export type ColorMode = 'family' | 'kind' | 'age' | 'decision' | 'tag' | 'duplication'
 
-export const colorModes: ColorMode[] = ['family', 'kind', 'age', 'decision', 'tag']
+export const colorModes: ColorMode[] = ['family', 'kind', 'age', 'decision', 'tag', 'duplication']
 
 export interface LegendItem {
   key: string
@@ -75,6 +75,18 @@ const ageBands = [
 const tagColor = '#7c3aed'
 const yearMs = 365.25 * 24 * 3600 * 1000
 
+// dupBands are the upper bounds of each duplication color (R2 design D10):
+// no other copy, then less than 25, 50, and 75%, and 75% or more.
+const dupBands = [
+  { key: 'none', below: Number.MIN_VALUE, color: '#16a34a' },
+  { key: 'under25', below: 0.25, color: '#fde68a' },
+  { key: 'under50', below: 0.5, color: '#fbbf24' },
+  { key: 'under75', below: 0.75, color: '#f97316' },
+  { key: 'over75', below: Infinity, color: '#dc2626' },
+] as const
+// uncheckedColor paints what could have a copy and is not all checked yet.
+const uncheckedColor = '#93c5fd'
+
 export function colorOf(row: EntryRow, mode: ColorMode, context: ColorContext): string {
   switch (mode) {
     case 'family': {
@@ -102,6 +114,16 @@ export function colorOf(row: EntryRow, mode: ColorMode, context: ColorContext): 
       return context.tagId !== null && (context.folderHasTag || row.tag_ids.includes(context.tagId))
         ? tagColor
         : neutralColor
+    case 'duplication': {
+      const duplication = duplicationOf(row)
+      if (duplication === null) {
+        return neutralColor
+      }
+      if (!duplication.checked) {
+        return uncheckedColor
+      }
+      return (dupBands.find((band) => duplication.fraction < band.below) ?? dupBands[4]).color
+    }
   }
 }
 
@@ -125,6 +147,12 @@ export function legendOf(mode: ColorMode, t: TFunction): LegendItem[] {
       return [
         { key: 'has', label: t('map.hasTag'), color: tagColor },
         { key: 'lacks', label: t('map.lacksTag'), color: neutralColor },
+      ]
+    case 'duplication':
+      return [
+        ...dupBands.map((band) => ({ key: band.key, label: t(`map.dup.${band.key}`), color: band.color })),
+        { key: 'unchecked', label: t('map.dup.unchecked'), color: uncheckedColor },
+        { key: 'nothing', label: t('map.dup.nothing'), color: neutralColor },
       ]
   }
 }

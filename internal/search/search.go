@@ -25,6 +25,10 @@
 //     source's (source_id, path) index.
 //   - Within: the descendants of an entry, the folder itself excluded, as the
 //     same path range.
+//   - Dup: the duplicate state of a present file (R2 design D15): copies
+//     (another physical copy anywhere, archive members included),
+//     elsewhere (one outside the Within folder; needs Within), unique, or
+//     unchecked. It has no index and is tested on each candidate.
 //
 // The descendants of an entry at path p are the entries of its source whose
 // path starts with p + "/" (every entry but the root, for the root): the
@@ -80,9 +84,12 @@ type Query struct {
 	Triages    []domain.Triage   `json:"triage,omitempty"`
 	Tags       []int64           `json:"tag,omitempty"`
 	Decisions  []domain.Decision `json:"decision,omitempty"`
-	Within     *domain.EntryID   `json:"within,omitempty,string"`
-	Sort       string            `json:"sort,omitempty"`
-	Order      string            `json:"order,omitempty"`
+	// Dup filters by duplicate state (R2 design D15, see dupFilter);
+	// elsewhere requires Within.
+	Dup    []domain.DupFilter `json:"dup,omitempty"`
+	Within *domain.EntryID    `json:"within,omitempty,string"`
+	Sort   string             `json:"sort,omitempty"`
+	Order  string             `json:"order,omitempty"`
 }
 
 // Sort keys.
@@ -131,7 +138,8 @@ type Row struct {
 	// TotalBytes and TotalFiles are a file's size and 1, a folder's subtree
 	// sums.
 	TotalBytes, TotalFiles int64
-	// MTime, Newest, and Oldest are zero when unknown.
+	// MTime, Newest, and Oldest are zero when NULL; one at or before the
+	// epoch is kept as stored but is not known either (KnownTime).
 	MTime, Newest, Oldest time.Time
 	State                 string // present, missing, unreadable
 	Partial               bool
@@ -147,6 +155,28 @@ type Row struct {
 	// the others follow domain.Families order. Empty for other kinds and
 	// for a folder not scanned yet.
 	Composition []FamilyAmount
+
+	// The R2 content fields (design D16), each null (zero, or not Valid)
+	// where it does not apply.
+
+	// ContentState is a file's or file member's content state.
+	ContentState domain.ContentState
+	// Copies is how many copies of the content exist, this one included.
+	Copies sql.NullInt64
+	// CandidateBytes, CheckedBytes, and DuplicatedBytes are a folder's
+	// figures from dir_dups.
+	CandidateBytes, CheckedBytes, DuplicatedBytes sql.NullInt64
+	// ArchiveState is an archive file's listing state (a domain.ArchiveState
+	// value), "" when it was not listed.
+	ArchiveState string
+	// Member is set, and ID is 0, on the row of an archive member; ArchiveID
+	// is then the archive's entry, MemberPath the member's path inside the
+	// archive (the end of Path, after '!'), and Zip whether the archive is a
+	// zip, whose names display through domain.MemberDisplayName.
+	Member     domain.MemberID
+	ArchiveID  domain.EntryID
+	MemberPath []byte
+	Zip        bool
 }
 
 // FamilyAmount is one family's share of a composition.
@@ -247,15 +277,24 @@ func Resolve(ctx context.Context, q store.Queryer, query Query, max int) ([]doma
 }
 
 // Columns are the columns of a Row, in the order ScanRow reads them, for a
-// statement over From.
-const Columns = `e.id, e.source_id, e.name, e.path, e.kind, e.special_kind, e.file_kind, e.main_kind,
+// statement over From. The R2 fields: a file's content state, its copies
+// (copiesColumn), a folder's dir_dups figures, and an archive's listing
+// state (NULL while it is being listed, which readers ignore).
+var Columns = `e.id, e.source_id, e.name, e.path, e.kind, e.special_kind, e.file_kind, e.main_kind,
 	e.category, e.family, e.triage, e.is_group, e.veto, e.size, e.total_bytes, e.total_files,
 	e.mtime_ns, e.newest_ns, e.oldest_ns, e.state, e.partial, e.mount_boundary, e.decision, e.eff_decision,
-	ds.by_family`
+	ds.by_family,
+	fc.state AS content_state, ` + copiesColumn + ` AS copies,
+	dd.candidate_bytes, dd.checked_bytes, dd.duplicated_bytes,
+	CASE WHEN ar.state <> 'listing' THEN ar.state END AS archive_state, NULL AS archive_id`
 
-// From is what Columns read: entries aliased e, and a folder's dir_stats
-// aliased ds, joined on its primary key.
-const From = `entries e LEFT JOIN dir_stats ds ON ds.entry_id = e.id`
+// From is what Columns read: entries aliased e, with a folder's dir_stats
+// (ds) and dir_dups (dd), a file's file_content (fc), and an archive's
+// archives row (ar), each joined on its primary key.
+const From = `entries e LEFT JOIN dir_stats ds ON ds.entry_id = e.id
+	LEFT JOIN file_content fc ON fc.entry_id = e.id
+	LEFT JOIN dir_dups dd ON dd.entry_id = e.id
+	LEFT JOIN archives ar ON ar.entry_id = e.id`
 
 // pageSQL is the page statement of f in order s, starting after a position
 // when after is set.
@@ -349,10 +388,13 @@ func ScanRow(rows *sql.Rows, lead ...any) (Row, error) {
 		group, veto, partial, boundary   bool
 		mtime, newest, oldest            sql.NullInt64
 		byFamily                         []byte
+		contentState, archiveState       sql.NullString
+		archiveID                        sql.NullInt64
 	)
 	dest := append(lead[:len(lead):len(lead)], &id, &source, &r.Name, &r.Path, &kind, &special, &fileKind, &mainKind,
 		&category, &family, &triage, &group, &veto, &r.Size, &r.TotalBytes, &r.TotalFiles,
-		&mtime, &newest, &oldest, &state, &partial, &boundary, &decide, &eff, &byFamily)
+		&mtime, &newest, &oldest, &state, &partial, &boundary, &decide, &eff, &byFamily,
+		&contentState, &r.Copies, &r.CandidateBytes, &r.CheckedBytes, &r.DuplicatedBytes, &archiveState, &archiveID)
 	if err := rows.Scan(dest...); err != nil {
 		return Row{}, err
 	}
@@ -372,10 +414,13 @@ func ScanRow(rows *sql.Rows, lead ...any) (Row, error) {
 	r.Family = domain.Family(family.String)
 	r.Triage = domain.Triage(triage.String)
 	r.Group, r.Veto, r.Partial, r.MountBoundary = group, veto, partial, boundary
-	r.MTime, r.Newest, r.Oldest = nsTime(mtime), nsTime(newest), nsTime(oldest)
+	r.MTime, r.Newest, r.Oldest = NsTime(mtime), NsTime(newest), NsTime(oldest)
 	r.State = state
 	r.Decision = domain.Decision(decide.String)
 	r.EffDecision = domain.Decision(eff)
+	r.ContentState = domain.ContentState(contentState.String)
+	r.ArchiveState = archiveState.String
+	r.ArchiveID = domain.EntryID(archiveID.Int64)
 	switch r.Kind {
 	case domain.EntryFile:
 		r.Composition = []FamilyAmount{{Family: domain.FileFamily(r.Category, r.FileKind), Bytes: r.Size, Files: 1}}
@@ -427,12 +472,19 @@ func composition(raw []byte) ([]FamilyAmount, error) {
 	return out, nil
 }
 
-func nsTime(ns sql.NullInt64) time.Time {
+// NsTime is a stored time, the zero time when NULL. A time on the epoch's
+// first day is kept as stored, since orders and cursors read the stored
+// column, but it is not known (KnownTime).
+func NsTime(ns sql.NullInt64) time.Time {
 	if !ns.Valid {
 		return time.Time{}
 	}
 	return time.Unix(0, ns.Int64).UTC()
 }
+
+// KnownTime reports whether t is a known modification time: neither zero
+// (NULL) nor a placeholder for a lost time (domain.KnownModTime).
+func KnownTime(t time.Time) bool { return !t.IsZero() && domain.KnownModTime(t.UnixNano()) }
 
 // LoadTags fills the own tag IDs of items, ascending, with one indexed
 // read.

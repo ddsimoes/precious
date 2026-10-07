@@ -146,7 +146,7 @@ func (o *removeSourceOp) Canonical() []byte { return canonical(o.req) }
 func (o *removeSourceOp) Prepare(context.Context) error { return nil }
 
 func (o *removeSourceOp) Apply(ctx context.Context, tx *jobs.Tx) (int, any, error) {
-	if err := o.s.Remove(ctx, tx.SQL(), o.req.SourceID); err != nil {
+	if err := o.s.Remove(ctx, tx, o.req.SourceID); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, struct{}{}, nil

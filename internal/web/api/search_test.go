@@ -36,6 +36,8 @@ func TestSearch(t *testing.T) {
 	for _, target := range []string{
 		"/api/search?sort=color", "/api/search?size=1", "/api/search?limit=0", "/api/search?limit=a",
 		"/api/search?cursor=x", "/api/search?limit=1&limit=2", "/api/search?decision=maybe",
+		// R2 D15: "copies elsewhere" needs within; an unknown dup value.
+		"/api/search?dup=elsewhere", "/api/search?source=disco&dup=unique&dup=elsewhere", "/api/search?dup=keeper",
 	} {
 		e.fails(t, target, 400, "invalid_request")
 	}

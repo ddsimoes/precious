@@ -21,19 +21,23 @@ Precious is built around a handful of questions:
 1. **Where is my space going,** by folder, by kind of file, and by year?
 2. **What is obviously disposable,** and how much space does it hold?
 3. **What is personal or valuable,** and where is it hiding?
-4. **What is duplicated,** and which copy should I keep? *(next milestone)*
+4. **What is duplicated,** and which copy should I keep?
 5. **What have I decided so far,** and what is left?
 
 ## Features
 
 - **Every folder has a size.** A full metadata index of every entry, with the total bytes and file count of every folder, broken down by file type, by year, and by category.
 - **See what a folder is made of.** Each folder shows its composition: for example, 98% personal media and 2% programs. It also lists what is notable inside it: installed programs, downloads, caches, or drive backups buried among the photos. From the top folder you get clues straight away, without opening folder after folder.
-- **A Map of your space.** A treemap and a sortable table of the same folder, side by side and in sync, colored by category, file type, age, decision, or tag.
+- **A Map of your space.** A treemap and a sortable table of the same folder, side by side and in sync, colored by category, file type, age, decision, tag, or how much of each folder is duplicated.
 - **Classification you can read.** Rules sort every file and folder into 16 categories in four families (personal and valuable, programs and system, disposable, containers), with a keep, discard, or review suggestion. Every classification comes with a one-sentence explanation. A folder that would be discarded is held back for review when it holds your own documents, photos, saved games, or mail, and the panel names the files that held it back.
-- **Find anything.** Search by name, extension, file type, size, year, category, suggestion, decision, tag, or folder, anywhere in the index, including inside installed programs and copied drives.
+- **Find anything.** Search by name, extension, file type, size, year, category, suggestion, decision, tag, folder, or whether a file has a copy, anywhere in the index, including inside installed programs and copied drives.
+- **Find every copy.** Precious reads file content in the background and finds copies by their SHA-256, never by name: duplicate files, folders that hold the same files under other names, and zip or tar archives next to their unpacked folders. It only reads files that could have a copy, never reads an unchanged file twice, and always says how much of the content it has checked, so "no other copy" is never a guess.
+- **Compare two folders.** Side by side: what is only on the left, only on the right, identical, or the same name with different content, such as the one edited photo that exists only in the copy.
+- **What to look at first, and what is valuable.** Opportunity cards (duplicate folders and files, archives already unpacked, system junk, old installers, program copies, caches, leftovers) open review lists you can work through with the keyboard. Gems lists your personal photos and documents with no other copy, and your own files buried inside programs.
+- **Inside archives.** Browse zip and tar archives in the Map and open their photos and documents in the viewer, read in memory without unpacking anything to disk.
 - **Look without risk.** Preview photos, video, audio, PDF, text, source code, and Markdown right in the detail panel. File types come from Precious's own table, never from the content. HTML and SVG from your disk never run, and Markdown is sanitized with no remote content.
-- **Decide, safely.** Mark folders and files keep, discard, or later; a decision on a folder applies to everything inside it. Bulk decisions never override something you kept, and they report exactly what they skipped. Free-form tags are inherited the same way.
-- **Read-only by design.** Scanning, classification, and previews never write to a source; a test proves it on a read-only mount. Changing files on disk is a later, explicit, reversible step (see the [roadmap](#status-and-roadmap)).
+- **Decide, safely.** Mark folders and files keep, discard, or later; a decision on a folder applies to everything inside it. Bulk decisions never override something you kept, and they report exactly what they skipped. Free-form tags are inherited the same way. Duplicates never decide anything for you: each copy is yours to decide.
+- **Read-only by design.** Scanning, hashing, archive reading, classification, and previews never write to a source; tests prove it on a read-only mount. Changing files on disk is a later, explicit, reversible step (see the [roadmap](#status-and-roadmap)).
 - **Disks that come and go.** Each source is recognized by its volume identity (filesystem UUID, ZFS dataset, or Btrfs filesystem ID), not its path. A USB disk mounted somewhere else is the same source, and an unplugged disk stays browsable and searchable.
 - **Self-contained and private.** One static Go binary with the web interface built in. It needs no runtime dependencies, makes no outbound connections, and loads nothing from the internet. Access is protected by a password, server-side sessions, CSRF checks, and a strict Content-Security-Policy.
 - **Fast on large archives.** In the R1 measurement on a 4-core Celeron J4125 home server with four hard disks in RAIDZ1, a first scan of 1.49 million entries (about 780 GiB) took 3.5 minutes from a cold cache, 1.23 times a bare metadata walk of the same tree. On a benchmark index of 2 million entries, Map pages answer in under 10 ms at the 95th percentile.
@@ -59,12 +63,12 @@ The screenshots show the built-in regression corpus, a generated copy of a typic
 
 ## Status and roadmap
 
-Precious is in **early development**. Milestone R1 is complete: it was accepted by its first user on a real 780 GiB archive on 2026-10-06. There are no tagged releases yet, and things may change incompatibly until 1.0.
+Precious is in **early development**. Milestones R1 and R2 are complete: each was accepted by its first user on a real 780 GiB archive, on 2026-10-06. There are no tagged releases yet, and things may change incompatibly until 1.0.
 
 | Milestone | Scope | Status |
 |---|---|---|
 | **R1** Full index and explorer | Scanning and rescans, folder sizes and composition, classification rules, Home, Map, Search, detail panel, viewer, decisions and tags, sources with volume identity | ✅ Done |
-| **R2** Duplicates and gems | Content hashing, duplicate files and folders, a zip against its unpacked folder, folder comparison with the files unique to each side, choosing which copy to keep, opportunities, files with no other copy | Next |
+| **R2** Duplicates and gems | Content hashing, duplicate files and folders, a zip against its unpacked folder and browsing inside archives, folder comparison with the files unique to each side, opportunities, files with no other copy | ✅ Done |
 | **R3** Organizing | Moves and renames with undo, through one journaled, no-overwrite executor | Planned |
 | **R4** Cleanup | Cleanup plans, a reversible quarantine, a pre-delete check that every file has a verified copy, and purge | Planned |
 | **R5** Media dates | Photo and video dates from metadata, corrections, and organizing by date | Planned |

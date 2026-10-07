@@ -279,3 +279,15 @@ const desenhoSVG = `<?xml version="1.0" encoding="UTF-8"?>
 `
 
 const latin1Name = "Arquivo com nome em Latin-1 (n\xe3o \xe9 UTF-8).\r\n"
+
+// notas2007 is the text inside Documentos/notas_2007.txt.gz.
+const notas2007 = `Notas de 2007
+
+- renovar a carteira de motorista em marco
+- levar o carro na revisao dos 40 mil
+- comprar presente de natal para a Ana
+- fazer backup das fotos no DVD antes de formatar o PC
+`
+
+// feriasTXT is the deflated text inside Midia/videos.zip.
+const feriasTXT = "Video das ferias de 2010, gravado com o celular.\r\n"

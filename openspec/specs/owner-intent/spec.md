@@ -6,117 +6,207 @@ Records the owner's decisions (category overrides, dispositions, and protection 
 
 ## Requirements
 
-### Requirement: Category override
-`set-classification` SHALL set or clear the owner category of one directory node. A set override SHALL take effect immediately, SHALL record the descriptor digest current at that moment, and SHALL persist across rescans, rule-set changes, and the collapse and re-expansion of an ancestor. Clearing it SHALL restore the precedence result.
-
-#### Scenario: Override survives rescan
-- **WHEN** the owner sets `personal_media` on a directory and a later scan suggests `cache` for it
-- **THEN** its effective category is still `personal_media` with source `owner`
-
-#### Scenario: Clearing an override
-- **WHEN** the owner clears the override on a directory whose current rule suggestion is `cache`
-- **THEN** its effective category becomes `cache` with source `rule`
-
-### Requirement: Changed evidence flags an override
-When a later descriptor of an overridden directory, probed with the same entry budget as the descriptor recorded with the override, has a different digest, the override SHALL stay effective and SHALL be flagged for owner review. A descriptor from a probe with a different budget, such as the escalated probe, SHALL NOT flag it. The override SHALL NOT be replaced or cleared automatically.
-
-#### Scenario: Directory contents changed after override
-- **WHEN** a directory overridden as `documents` is probed again and its examined entries now differ
-- **THEN** it is still `documents` with source `owner`, it is flagged "evidence changed since your decision", and it appears in the ambiguous review queue
-
-#### Scenario: Escalated probe does not flag
-- **WHEN** an `unknown` directory is overridden after its escalated probe, and its next probe uses the normal budget and examines the same entries as the normal-budget probe before the override
-- **THEN** the override is not flagged
-
-### Requirement: Owner-only disposition
-`set-disposition` SHALL set a disposition of `unreviewed`, `preserve`, `cleanup_candidate`, or `review` on each listed node. New nodes SHALL start `unreviewed`. No scan, rule, aggregate, or other job SHALL change a disposition. A request for `quarantined` SHALL be rejected with `invalid_request`, because quarantine does not exist yet.
-
-#### Scenario: Classification never sets disposition
-- **WHEN** a scan classifies a directory as `cache` with suggested triage `cleanup_candidate`
-- **THEN** its disposition remains `unreviewed`
-
-#### Scenario: Quarantined disposition rejected
-- **WHEN** `set-disposition` requests `quarantined`
-- **THEN** the response is HTTP 400 with code `invalid_request`, and nothing changes
-
-### Requirement: Path-scoped protection pins
-`set-protection` SHALL add or remove a pin on the path of a cataloged node, or on a path inside an atomic unit identified by a peek token. A pin SHALL protect its path and every path beneath it, whether cataloged or not. It SHALL stay at that path when nodes there are collapsed, deactivated, or reactivated. Pinning SHALL create no inventory node.
-
-#### Scenario: Pin inside an atomic unit
-- **WHEN** the owner pins `Saves` through a peek token inside the atomic directory `Game`
-- **THEN** no node is created for `Saves`, `Game` reports that it contains a protected path, and `Game`'s inventory mode is unchanged
-
-#### Scenario: Pin survives collapse and re-expansion
-- **WHEN** a pinned directory's parent is collapsed and later refined again
-- **THEN** the reactivated directory is still explicitly protected
-
-### Requirement: Effective protection states
-Each node SHALL report its protection as `explicit` (pinned at its own path), `inherited` (a pin at an ancestor path), or `none`. Separately, it SHALL report whether a pinned path exists beneath it. Both states SHALL reflect a pin change in every read that follows it.
-
-#### Scenario: Inherited and contained protection
-- **WHEN** `Backup/Photos` is pinned
-- **THEN** `Backup/Photos` is `explicit`, `Backup/Photos/2004` is `inherited`, and `Backup` is `none` and reports that it contains a protected path
-
-### Requirement: Protection blocks cleanup designation
-A node that is explicitly or inheritedly protected, that contains a protected path, or that is an inbox or lies above one, SHALL NOT receive disposition `cleanup_candidate`. A single-node request SHALL fail with HTTP 409 code `protected`. In a bulk request the node SHALL be excluded and reported, without blocking the other items.
-
-#### Scenario: Ancestor of a protected path
-- **WHEN** the owner marks `Backup` as `cleanup_candidate` while `Backup/Photos` is pinned
-- **THEN** the response is HTTP 409 with code `protected` naming the pinned path, and `Backup`'s disposition is unchanged
-
-#### Scenario: A40 inbox cannot become a cleanup candidate
-- **WHEN** the owner marks the inbox `data/Incoming`, or `data`, as `cleanup_candidate`
-- **THEN** the response is HTTP 409 with code `protected` naming the inbox, and no disposition changes
-
-### Requirement: Expected intent revision
-Every node-targeted owner command SHALL carry the node's expected intent revision. A mismatch SHALL return HTTP 409 `revision_conflict` and change nothing. Each accepted override, disposition, or inventory-mode change SHALL increment the node's intent revision. Adding or removing a pin SHALL increment the intent revision of the cataloged node at that path, if one exists.
-
-#### Scenario: Concurrent edits from two tabs
-- **WHEN** two browser tabs load a node at intent revision 4 and both submit a disposition change
-- **THEN** the first is applied and moves the node to revision 5, and the second receives HTTP 409 `revision_conflict`
-
 ### Requirement: Owner decisions are audited
-Each accepted override, disposition, protection, refine, or collapse change SHALL write an audit event. The event records the time, the client address, the target node or pinned path, and the old and new values. Audit events SHALL NOT contain file content, passwords, or session tokens.
+Each accepted `set-decision`, `set-tags`, `create-tag`, `rename-tag`, or `delete-tag` request SHALL write one audit event in the same transaction. The event records the time, the client address, the target (the entry IDs or the selection, with counts of applied and skipped entries), and the old and new values. Audit events SHALL NOT contain file content, passwords, or session tokens.
 
 #### Scenario: Protection change audited
-- **WHEN** the owner removes a pin
-- **THEN** an audit event records the removal, the source and pinned path, the time, and the client address
+- **WHEN** the owner changes `Fotos` from its own decision `keep` to `discard` with an individual request
+- **THEN** a `decision_set` audit event records the entry `Fotos`, the old value `keep`, the new value `discard`, the time, and the client address
 
-### Requirement: Cleanup marks can carry copy evidence
-An item of `set-disposition` with disposition `cleanup_candidate` MAY name a copy result. The result SHALL name that node as its copy: the inside folder or archive, either side of a `same` result, or either file of a file result, and that side SHALL NOT lie inside an archive. The result SHALL be `current`. The evidence SHALL stay attached until the node's disposition is next set. Protection and inbox locks SHALL refuse the mark as without evidence.
+#### Scenario: Bulk decision audited once
+- **WHEN** the owner applies `discard` to a selection of 40 entries, and 2 are skipped as kept
+- **THEN** one `decision_set` audit event records the selection, the new value `discard`, 38 applied and 2 skipped, the time, and the client address
 
-#### Scenario: Mark a copy with its evidence
-- **WHEN** the owner marks `fotos-b` as `cleanup_candidate` naming the current result "`fotos-b` inside `fotos`"
-- **THEN** the disposition is set, the inspector shows "inside `fotos`" with the matched size and the search time, and the audit event names the result
+#### Scenario: Tag rename audited
+- **WHEN** the owner renames `familia` to `família`
+- **THEN** a `tag_renamed` audit event records the tag, the old and new names, the time, and the client address
 
-#### Scenario: Mark an archive with its evidence
-- **WHEN** the owner marks the file `bkp.tar.gz` as `cleanup_candidate` naming the current result "`bkp.tar.gz` same as `bkp`"
-- **THEN** the disposition is set with that evidence, and `bkp.tar.gz` appears in the `marked` queue with "same as `bkp`"
+#### Scenario: Rejected request not audited
+- **WHEN** a `set-decision` request fails with HTTP 404 `not_found`
+- **THEN** no audit event is written
 
-#### Scenario: Stale evidence refused
-- **WHEN** the named result reads `changed`
-- **THEN** a single-item request fails with HTTP 409 code `stale_evidence`, and nothing changes
+### Requirement: Own and effective decisions
+Every entry SHALL have an own decision, which is inherit (none), `undecided`, `keep`, `discard`, or `later`, and an effective decision. The effective decision SHALL be the entry's own decision when it has one, otherwise the own decision of its nearest ancestor that has one, otherwise `undecided`. Entry reads SHALL show the own decision, the effective decision, and the entry it comes from, and every read after an accepted change SHALL reflect it (§6.7).
 
-#### Scenario: Stale evidence in a bulk request
-- **WHEN** a bulk request names three current results and one `changed` result
-- **THEN** three items are applied, and the fourth is reported with outcome `stale_evidence`
+#### Scenario: R1.7 Deciding a folder decides its subtree
+- **WHEN** Home shows the source's undecided and decided bytes, `Backup_PC_2004/Meus documentos` has its own decision `keep`, and the owner sets `discard` on the folder `Backup_PC_2004`
+- **THEN** every other entry inside `Backup_PC_2004` reads effective decision `discard`, coming from `Backup_PC_2004`, while `Meus documentos` and everything inside it stay `keep`
+- **AND** Home's `discard` bytes grow, and its `undecided` bytes shrink, by the bytes of the present files inside `Backup_PC_2004` outside `Meus documentos`
 
-#### Scenario: Protection still refuses
-- **WHEN** `fotos-b` is pinned and the owner marks it with a current result
-- **THEN** the response is HTTP 409 code `protected` naming the pin, and no evidence is stored
+#### Scenario: Nearest own decision wins
+- **WHEN** `Fotos` has its own decision `keep` and `Fotos/2006/rejeitadas` has its own decision `discard`
+- **THEN** `Fotos/2006` reads `keep` coming from `Fotos`, and `Fotos/2006/rejeitadas/IMG_0001.JPG` reads `discard` coming from `Fotos/2006/rejeitadas`
 
-#### Scenario: Evidence for the wrong node or disposition
-- **WHEN** a request names a result for a node the result does not name as its copy, or names a result with disposition `preserve`
-- **THEN** the response is HTTP 400 code `invalid_request`, and nothing changes
+#### Scenario: Default is undecided
+- **WHEN** neither an entry nor any of its ancestors has an own decision
+- **THEN** the entry reads own decision none and effective decision `undecided`, with no entry it comes from
 
-#### Scenario: A copy inside an atomic unit
-- **WHEN** the owner names the result "`Elements/bkp-old-laptop` inside `bkp`" for the atomic unit `Elements`
-- **THEN** the response is HTTP 400 code `invalid_request` stating that the copy lies inside `Elements` and must be refined before it can be marked
+### Requirement: Inherit clears an own decision
+`set-decision` with `"decision": "inherit"` SHALL remove the target's own decision. The target and every descendant that has no own decision of its own SHALL then take the effective decision of the target's nearest decided ancestor, or `undecided` when there is none.
 
-#### Scenario: A copy inside an archive
-- **WHEN** the owner marks `bkp.tar.gz` naming the result "`home/fotos` in `bkp.tar.gz` inside `fotos`"
-- **THEN** the response is HTTP 400 code `invalid_request` stating that the copy is a part of `bkp.tar.gz` and cannot be marked on its own
+#### Scenario: Clearing a folder's discard
+- **WHEN** `Backup_PC_2004` has its own decision `discard`, its parent `HD antigo` has its own decision `later`, and the owner sets `inherit` on `Backup_PC_2004`
+- **THEN** `Backup_PC_2004` reads own decision none and effective decision `later` coming from `HD antigo`, and so do its descendants without an own decision
 
-#### Scenario: Evidence ends with the mark
-- **WHEN** the owner later sets `fotos-b` to `preserve`
-- **THEN** its copy evidence is no longer shown as attached
+#### Scenario: Clearing with no decided ancestor
+- **WHEN** the owner sets `inherit` on `Microsoft Office`, whose own decision is `discard` and which has no decided ancestor
+- **THEN** `Microsoft Office` and its descendants without an own decision read effective decision `undecided`
+
+### Requirement: Individual and bulk decision requests
+`set-decision` SHALL name its targets either by a single `entry_id` (an individual request) or by `entry_ids` (1 to 1,000 IDs) or a `selection_id` (a bulk request). An individual request SHALL apply its value to that entry even when its effective decision is `keep`, explicit or inherited. A request with both or neither form, or with more than 1,000 IDs, SHALL fail with HTTP 400 `invalid_request`. An unknown ID SHALL fail the whole request with HTTP 404 `not_found`.
+
+#### Scenario: Individual action changes an inherited keep
+- **WHEN** `Fotos` has its own decision `keep` and the owner sets `discard` on `Fotos/2006/borrada.jpg` alone with `entry_id`
+- **THEN** the response is `{"applied":1,"skipped_count":0,"skipped":[]}`, `borrada.jpg` reads `discard`, and `Fotos` and its other entries stay `keep`
+
+#### Scenario: Individual action changes an explicit keep
+- **WHEN** `Microsoft Office` has its own decision `keep` and the owner sets `discard` on it with `entry_id`
+- **THEN** `Microsoft Office` and its descendants without an own decision read `discard`
+
+#### Scenario: Both target forms
+- **WHEN** a `set-decision` request carries both `entry_id` and `entry_ids`, or neither of them nor `selection_id`
+- **THEN** the response is HTTP 400 `invalid_request`, and no decision changes
+
+#### Scenario: Too many IDs
+- **WHEN** a `set-decision` request carries 1,001 `entry_ids`
+- **THEN** the response is HTTP 400 `invalid_request`, and no decision changes
+
+#### Scenario: One unknown ID fails the whole request
+- **WHEN** a bulk request names 50 indexed entries and one ID that names no entry
+- **THEN** the response is HTTP 404 `not_found`, and none of the 50 entries changes
+
+### Requirement: Bulk actions never change a keep
+A bulk `set-decision` with any value other than `keep` SHALL skip every target whose effective decision is `keep`, explicit or inherited, and apply to the others. The response SHALL report `applied`, the full `skipped_count`, and up to 100 skipped entries with their `entry_id`, `path`, and `path_b64`. A bulk `keep` SHALL apply to every target (I5, §6.7).
+
+#### Scenario: R1.11 Bulk discard skips kept entries
+- **WHEN** a selection holds 40 files, including `Fotos/IMG_0042.JPG` with its own decision `keep` and `Backup_PC_2004/Meus documentos/carta.doc` inside the kept folder `Meus documentos`, and the owner applies `discard` to the selection
+- **THEN** the response has `applied` 38 and `skipped_count` 2, and `skipped` lists both files with their paths
+- **AND** both files still read effective decision `keep`, and the other 38 read `discard`
+
+#### Scenario: Bulk inherit does not clear a keep
+- **WHEN** a bulk request sets `inherit` on `entry_ids` that include an entry whose own decision is `keep`
+- **THEN** that entry is skipped and keeps its own decision `keep`
+
+#### Scenario: Skipped list is capped
+- **WHEN** a bulk discard skips 250 kept entries
+- **THEN** `skipped_count` is 250 and `skipped` lists 100 of them
+
+#### Scenario: Bulk keep applies to all
+- **WHEN** the owner applies `keep` to `entry_ids` naming one `discard` file, one `undecided` file, and one already kept file
+- **THEN** `applied` is 3, `skipped_count` is 0, and all three read effective decision `keep`
+
+#### Scenario: A keep set just before is honored
+- **WHEN** an individual `keep` on `Fotos` commits just before a bulk discard that names `Fotos/2006/IMG_0001.JPG`
+- **THEN** the bulk request skips `IMG_0001.JPG` and lists it as skipped
+
+### Requirement: Decisions and tags survive rescans
+A rescan SHALL NOT change any entry's own decision or own tags. An entry that goes missing and later returns at the same path SHALL keep its ID, its own decision, and its own tags (I4).
+
+#### Scenario: R1.6 Rescan keeps decisions and tags
+- **WHEN** `Backup_PC_2004` is decided `discard`, `Fotos/2006` is tagged `familia`, files inside both folders are changed, added, and removed on disk, and the source is rescanned
+- **THEN** `Backup_PC_2004` still reads own decision `discard` and `Fotos/2006` still carries its own tag `familia`, and each remaining entry inside them reads the same effective decision and tags as before
+
+#### Scenario: R1.6 Missing entry returns with its intent
+- **WHEN** `Fotos/2006/natal.jpg`, with its own decision `keep` and own tag `dudu`, is absent from one rescan and present again in the next
+- **THEN** after the second rescan it has the same entry ID, own decision `keep`, and own tag `dudu`
+
+### Requirement: New entries inherit their folder's decision
+An entry that a scan indexes for the first time SHALL have no own decision and SHALL read the effective decision of its nearest decided ancestor, or `undecided` when there is none.
+
+#### Scenario: New file under a discarded folder
+- **WHEN** `Backup_PC_2004` has its own decision `discard` and a rescan finds the new file `Backup_PC_2004/novo.tmp`
+- **THEN** `novo.tmp` reads own decision none and effective decision `discard` coming from `Backup_PC_2004`
+
+#### Scenario: Decision set during a scan
+- **WHEN** the owner discards `Downloads` while a scan is still adding entries inside it
+- **THEN** after the scan finishes, every entry inside `Downloads` without an own decision reads `discard`
+
+### Requirement: Owner tags
+The owner SHALL be able to create, rename, and delete tags with `create-tag`, `rename-tag`, and `delete-tag`. A tag name SHALL be 1 to 64 characters and unique ignoring case; an empty or longer name SHALL fail with HTTP 400 `invalid_request`, and a duplicate with HTTP 409 `tag_exists`. Deleting a tag SHALL remove it from every entry. `set-tags` SHALL add and remove own tags on bulk targets (§6.9).
+
+#### Scenario: Duplicate name ignoring case
+- **WHEN** the tag `familia` exists and the owner creates `Familia`
+- **THEN** the response is HTTP 409 `tag_exists`, and no tag is created
+
+#### Scenario: Rename keeps assignments
+- **WHEN** the owner renames `familia` to `família`
+- **THEN** every entry that carried `familia` now carries `família`
+
+#### Scenario: Delete removes everywhere
+- **WHEN** `livro` is on 12 entries and the owner deletes it
+- **THEN** no entry carries `livro`, it is gone from `GET /api/tags`, and a `set-tags` naming its ID fails with HTTP 404
+
+#### Scenario: Tagging a selection
+- **WHEN** the owner adds `scan` to a selection of 30 entries
+- **THEN** the response is `{"applied":30}`, and each of the 30 entries lists `scan` as an own tag
+
+### Requirement: Tags are inherited as a union
+An entry's effective tags SHALL be its own tags plus every tag on any of its ancestors. Entry reads SHALL show each effective tag as the entry's own or name the folder it comes from, and a search filtered by a tag SHALL find the entries that carry it, own or inherited (§6.9).
+
+#### Scenario: R1.12 A folder tag applies to everything inside
+- **WHEN** the owner adds `familia` to `Fotos/2006`, and `Fotos/2006/natal/IMG_0001.JPG` has its own tag `dudu`
+- **THEN** every entry inside `Fotos/2006` shows `familia` as inherited from `Fotos/2006`, and `IMG_0001.JPG` also shows `dudu` as its own
+- **AND** a search filtered by `familia` finds `Fotos/2006` and the entries inside it
+
+#### Scenario: Union of nested tags
+- **WHEN** `Fotos` carries `familia` and `Fotos/2006` carries `familia` and `natal`
+- **THEN** `Fotos/2006/IMG_0001.JPG` shows `familia` and `natal` once each, every tag naming the folder it comes from
+
+### Requirement: Inherited tags are removed at their folder
+Removing a tag from an entry SHALL remove only that entry's own tag. A tag an entry inherits SHALL stay effective on it until it is removed from the folder that carries it.
+
+#### Scenario: Removing an inherited tag on a descendant
+- **WHEN** `Fotos/2006` carries `familia` and the owner removes `familia` from `Fotos/2006/natal`
+- **THEN** `Fotos/2006/natal` still shows `familia` inherited from `Fotos/2006`
+
+#### Scenario: Removing at the source folder
+- **WHEN** the owner removes `familia` from `Fotos/2006`
+- **THEN** no entry inside `Fotos/2006` shows `familia` unless it or another ancestor carries it
+
+### Requirement: Selections resolve to explicit entries
+`create-selection` SHALL resolve a search query to explicit entry IDs when it is created and return its `selection_id`, `count`, `bytes`, the `kept` count and bytes, and `expires_at`. Entries indexed later SHALL NOT join it. A selection SHALL expire one hour after creation; a request naming an expired selection SHALL fail with HTTP 409 `selection_expired` and change nothing (§11.3).
+
+#### Scenario: Confirmation counts
+- **WHEN** the owner selects all results of a search for name `.tmp` within `Backup_PC_2004`, which match 1,200 entries of which 3 are kept
+- **THEN** the response has `count` 1,200, their `bytes`, and `kept` with count 3 and those entries' bytes
+
+#### Scenario: Later entries are not included
+- **WHEN** a scan indexes a new `Backup_PC_2004/z.tmp` after the selection was created, and the owner then discards the selection
+- **THEN** `z.tmp` has no own decision from that request
+
+#### Scenario: Expired selection
+- **WHEN** the owner applies `discard` to a selection created more than one hour earlier
+- **THEN** the response is HTTP 409 `selection_expired`, and no decision changes
+
+### Requirement: Classification never writes decisions
+No scan, rule, or job SHALL set or change an own decision or an own tag. A suggested triage SHALL only be shown as a suggestion (I4, I5).
+
+#### Scenario: Discard triage is not a decision
+- **WHEN** a scan classifies `Temp/cache` as `cache` with triage `discard`
+- **THEN** its own decision stays none, its effective decision is inherited or `undecided`, and its tags are unchanged
+
+### Requirement: A copy is decided like any other entry
+A decision on one copy of a duplicate group or on one side of a relation SHALL change only that entry and its subtree, exactly as any `set-decision` does. It SHALL NOT change any other copy's decision, suggestion, or tags. No duplicate or relation SHALL ever set a decision, a suggestion, or a tag by itself (§6.7, I4, I5).
+
+#### Scenario: R2.4 Deciding one copy changes nothing on the others
+- **WHEN** the owner discards `Documentos/curriculo (1).doc` from its duplicate group, where `Documentos/curriculo.doc` carries the own tag `documento`
+- **THEN** `curriculo (1).doc` reads discard, and every other copy keeps its decision, triage, and tags, `documento` included, and gains none
+
+#### Scenario: R2.4 Deciding a side in Compare
+- **WHEN** the owner keeps `Fotos` from Compare against `Fotos - Copia`
+- **THEN** `Fotos` reads keep, and `Fotos - Copia` and its files keep their decisions and suggestions
+
+#### Scenario: Hashing writes no decision
+- **WHEN** hashing finds that every file of `Fotos - Copia` but one has a copy in `Fotos`
+- **THEN** no entry's own decision, triage suggestion, or tag changes
+
+### Requirement: Archive members are decided with their archive
+An archive member SHALL have no decision or tags of its own; its effective decision SHALL be the archive's. A `set-decision` or `set-tags` that names a member SHALL fail with HTTP 400 `invalid_request` and change nothing (§6.4).
+
+#### Scenario: A member follows its archive
+- **WHEN** the owner discards `Downloads/fotos_2005_do_pendrive.zip`
+- **THEN** each of its members reads effective decision discard, coming from the archive
+
+#### Scenario: Deciding a member is refused
+- **WHEN** a `set-decision` request names a member of a zip
+- **THEN** the response is HTTP 400 `invalid_request`, and no decision changes

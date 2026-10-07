@@ -2,7 +2,7 @@ import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { categories, decisions, fileKinds, triages } from '@/api/entries'
-import { searchListParams } from '@/api/search'
+import { dupFilters, searchListParams } from '@/api/search'
 import { useTags } from '@/api/tags'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -75,6 +75,7 @@ export function SearchFilters({ params, onSearch }: SearchFiltersProps) {
     tag: params.getAll('tag'),
     decision: params.getAll('decision'),
     triage: params.getAll('triage'),
+    dup: params.getAll('dup'),
   }))
 
   const toggle = (key: ListFilter, value: string) =>
@@ -110,7 +111,7 @@ export function SearchFilters({ params, onSearch }: SearchFiltersProps) {
         next.append('ext', clean)
       }
     }
-    for (const key of ['file_kind', 'category', 'tag', 'decision', 'triage'] as const) {
+    for (const key of ['file_kind', 'category', 'tag', 'decision', 'triage', 'dup'] as const) {
       for (const value of lists[key]) {
         next.append(key, value)
       }
@@ -222,6 +223,15 @@ export function SearchFilters({ params, onSearch }: SearchFiltersProps) {
           {checkboxes(
             'triage',
             triages.map((tr) => ({ value: tr, label: t(`entry.triage.${tr}`) })),
+          )}
+        </Choices>
+        <Choices label={t('search.dup')} count={lists.dup.length}>
+          {checkboxes(
+            'dup',
+            // A copy outside the folder needs the folder searched within.
+            dupFilters
+              .filter((d) => d !== 'elsewhere' || params.has('within'))
+              .map((d) => ({ value: d, label: t(`search.dupChoice.${d}`) })),
           )}
         </Choices>
         <Choices label={t('search.tags')} count={lists.tag.length}>

@@ -1,8 +1,11 @@
 package corpus
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
 	_ "embed"
 	"encoding/binary"
 	"hash/fnv"
@@ -10,6 +13,7 @@ import (
 	"image/color"
 	"image/gif"
 	"image/jpeg"
+	"io"
 	"time"
 )
 
@@ -23,6 +27,12 @@ var (
 	//go:embed testdata/documento.pdf
 	documentPDF []byte
 )
+
+// notesBZ2 is a single-file bzip2 taken from m4b's archive tests: Go has no
+// bzip2 writer.
+//
+//go:embed testdata/notes.txt.bz2
+var notesBZ2 []byte
 
 // prng is splitmix64: a fixed, seedable generator, so the corpus is the same
 // on every run and Go version.
@@ -150,17 +160,23 @@ func gifImage(label string) []byte {
 
 // zipMember is one file stored in a zip archive.
 type zipMember struct {
-	name  string
-	data  []byte
-	mtime time.Time
+	name    string
+	data    []byte
+	mtime   time.Time
+	deflate bool // method deflate; otherwise store
 }
 
-// zipArchive is a real zip of members, stored without compression.
+// zipArchive is a real zip of members, stored without compression unless a
+// member asks for deflate.
 func zipArchive(members []zipMember) []byte {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 	for _, m := range members {
-		f, err := w.CreateHeader(&zip.FileHeader{Name: m.name, Method: zip.Store, Modified: m.mtime})
+		method := zip.Store
+		if m.deflate {
+			method = zip.Deflate
+		}
+		f, err := w.CreateHeader(&zip.FileHeader{Name: m.name, Method: method, Modified: m.mtime})
 		if err == nil {
 			_, err = f.Write(m.data)
 		}
@@ -172,6 +188,69 @@ func zipArchive(members []zipMember) []byte {
 		panic(err)
 	}
 	return buf.Bytes()
+}
+
+// tarMember is one member of a tar archive: a folder when dir is set (its
+// name without a trailing '/'), else a file.
+type tarMember struct {
+	name  string
+	data  []byte
+	mtime time.Time
+	dir   bool
+}
+
+// tarGzip is a real tar.gz of members, with fixed owners and modes and an
+// empty gzip header.
+func tarGzip(members []tarMember) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	for _, m := range members {
+		h := &tar.Header{Name: m.name, Mode: 0o644, Size: int64(len(m.data)), ModTime: m.mtime,
+			Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}
+		if m.dir {
+			h.Name, h.Mode, h.Typeflag = m.name+"/", 0o755, tar.TypeDir
+		}
+		err := tw.WriteHeader(h)
+		if err == nil && !m.dir {
+			_, err = tw.Write(m.data)
+		}
+		if err != nil {
+			panic(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		panic(err)
+	}
+	if err := zw.Close(); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+// gzipFile is a real single-file gzip of data, whose header names the file
+// and its modification time.
+func gzipFile(name string, mtime time.Time, data []byte) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Name, zw.ModTime = name, mtime
+	_, err := zw.Write(data)
+	if err == nil {
+		err = zw.Close()
+	}
+	if err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+// bunzip2 returns the content of a single-file bzip2.
+func bunzip2(b []byte) []byte {
+	data, err := io.ReadAll(bzip2.NewReader(bytes.NewReader(b)))
+	if err != nil {
+		panic(err)
+	}
+	return data
 }
 
 // at is a UTC modification time.

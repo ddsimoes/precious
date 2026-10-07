@@ -65,6 +65,8 @@ func TestIndexedFiltersAvoidFullScans(t *testing.T) {
 		{"within root", Query{Within: &disco.Root}},
 		{"tag", Query{Tags: []int64{tag}}},
 		{"tag, decision", Query{Tags: []int64{tag}, Decisions: keep}},
+		{"within, dup", Query{Within: &fotos, Dup: []domain.DupFilter{domain.DupElsewhere, domain.DupCopies, domain.DupUnique}}},
+		{"name, dup", Query{Name: "natal", Dup: []domain.DupFilter{domain.DupUnchecked}}},
 		{"tag, name", Query{Tags: []int64{tag}, Name: "img"}},
 		{"source, decision", Query{Source: "disco", Decisions: keep}},
 		{"decision", Query{Decisions: keep}},
