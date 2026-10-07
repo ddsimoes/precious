@@ -24,16 +24,15 @@ const (
 // entries with the content state and relations a long hashing run leaves,
 // refreshes its review rows, then times (D20):
 //
-//   - every review list's and Gems section's pages, for all sources and
-//     for one, open and decided, the first ten pages of 50 rows of each:
-//     p95 < 300 ms;
-//   - the seven cards, for all sources and for one: p95 < 1 s.
+//   - every review list's pages, for all sources and for one, open and
+//     decided, the first ten pages of 50 rows of each: p95 < 300 ms;
+//   - the eight cards, for all sources and for one: p95 < 1 s.
 //
 // The index, by folder number f (f mod 10):
 //
 //   - 0: system junk, 1: cache (folder and files classified);
 //   - 2: application installations, groups of family programs, three
-//     indicators each; 3: an installer download;
+//     indicators each (the rescue rows); 3: an installer download;
 //   - 4–9: personal photos.
 //
 // Each folder's files are 60% unique by size, 30% hashed, 10% pending. A
@@ -82,7 +81,7 @@ func TestReviewPagesStayFastAt2MillionEntries(t *testing.T) {
 	}
 	var pages []time.Duration
 	worst := map[List]time.Duration{}
-	for _, l := range append(slices.Clone(CardLists), GemLists...) {
+	for _, l := range CardLists {
 		for _, src := range []domain.SourceID{"", "big"} {
 			for _, decided := range []bool{false, true} {
 				cursor := ""

@@ -21,15 +21,14 @@ const (
 )
 
 // Refresh writes generation gen of review_rows and review_row_sources: the
-// rows of the seven cards and the three Gems sections, computed from the
-// index, the content state, and the relations of generation gen (D12, D14).
-// It is the relate job's after hook, called before review_state.gen flips
-// to gen, so readers never see a partial generation. Rows a previous,
-// interrupted run left in gen are deleted first. Every insert re-checks
-// that its entries, relation, content, and sources still exist
-// (Transaction boundaries): a row whose entry a scan or remove-source
-// deleted meanwhile is skipped. Refreshing the visible generation is an
-// error.
+// rows of the eight cards, computed from the index, the content state, and
+// the relations of generation gen (D12, r2c D4). It is the relate job's
+// after hook, called before review_state.gen flips to gen, so readers never
+// see a partial generation. Rows a previous, interrupted run left in gen
+// are deleted first. Every insert re-checks that its entries, relation,
+// content, and sources still exist (Transaction boundaries): a row whose
+// entry a scan or remove-source deleted meanwhile is skipped. Refreshing
+// the visible generation is an error.
 func Refresh(ctx context.Context, st *store.Store, gen int64) error {
 	var visible int64
 	if err := st.Reader().QueryRowContext(ctx, `SELECT gen FROM review_state WHERE id = 1`).Scan(&visible); err != nil {
@@ -191,25 +190,11 @@ func compute(ctx context.Context, tx *sql.Tx, gen int64) ([]newRow, error) {
 	out = append(out, duplicateRows(rels, copies)...)
 	out = append(out, unpackedRows(rels)...)
 
-	groups, err := loadGroups(ctx, tx)
+	rescue, err := rescueRows(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	unique, err := uniqueGems(ctx, tx, copies, groups)
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, unique...)
-	rescue, err := rescueGems(ctx, tx, groups)
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, rescue...)
-	only, err := onlyInCopyGems(ctx, tx, rels, copies)
-	if err != nil {
-		return nil, err
-	}
-	return append(out, only...), nil
+	return append(out, rescue...), nil
 }
 
 // ruleLists maps a category to its rule card (D12).
@@ -521,123 +506,58 @@ func unpackedRows(rels []relation) []newRow {
 type group struct {
 	id         int64
 	src, path  string
-	bytes      int64
 	indicators string
 }
 
-// groupSet are the programs and disposable groups, by key.
-type groupSet struct {
-	all []group
-	set map[string]bool
-}
-
-func loadGroups(ctx context.Context, tx *sql.Tx) (groupSet, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.source_id, e.path, e.total_bytes, coalesce(d.indicators, '[]')
+func loadGroups(ctx context.Context, tx *sql.Tx) ([]group, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.source_id, e.path, coalesce(d.indicators, '[]')
 		FROM entries e LEFT JOIN dir_stats d ON d.entry_id = e.id
 		WHERE e.is_group = 1 AND e.family IN ('programs', 'disposable') AND e.state <> 'missing'`)
 	if err != nil {
-		return groupSet{}, err
+		return nil, err
 	}
 	defer rows.Close()
-	g := groupSet{set: map[string]bool{}}
+	var out []group
 	for rows.Next() {
 		var (
 			x group
 			p []byte
 		)
-		if err := rows.Scan(&x.id, &x.src, &p, &x.bytes, &x.indicators); err != nil {
-			return groupSet{}, err
+		if err := rows.Scan(&x.id, &x.src, &p, &x.indicators); err != nil {
+			return nil, err
 		}
 		x.path = string(p)
-		g.all = append(g.all, x)
-		g.set[key(x.src, x.path)] = true
+		out = append(out, x)
 	}
-	return g, rows.Err()
+	return out, rows.Err()
 }
 
-// gemKinds are the file kinds Gems lists as unique (D14).
-var gemKinds = map[domain.FileKind]bool{
-	domain.FileKindImage: true, domain.FileKindVideo: true, domain.FileKindAudio: true, domain.FileKindDocument: true,
-}
-
-// unique reports whether a file's content state proves it has no other
-// copy (D8): unique by size, a distinct sample, or hashed with one copy.
-func unique(state string, content int64, copies contentCopies) bool {
-	switch domain.ContentState(state) {
-	case domain.ContentUniqueSize, domain.ContentSampled:
-		return true
-	case domain.ContentHashed:
-		return len(copies[content]) == 0
-	}
-	return false
-}
-
-// uniqueGems returns gems_unique: the personal images, videos, audio files,
-// and documents with no other copy, outside every programs or disposable
-// group, oldest first (D14). A file not checked yet is never listed (I7).
-func uniqueGems(ctx context.Context, tx *sql.Tx, copies contentCopies, groups groupSet) ([]newRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.source_id, e.path, coalesce(e.category, ''), e.file_kind,
-			e.size, coalesce(e.mtime_ns, 0), fc.state, coalesce(fc.content_id, 0)
-		FROM entries e JOIN file_content fc ON fc.entry_id = e.id
-		WHERE e.kind = 'file' AND e.state = 'present' AND e.file_kind IN ('image', 'video', 'audio', 'document')`)
+// rescueRows returns the rescue card's rows (r2c D4): the indicators of the
+// programs and disposable groups (dir_stats.indicators), each once, under
+// its outermost such group, with its total bytes as sort key. They are
+// written in reverse card order, so that among rows of equal bytes the
+// higher ID, which pages first, has the smaller path.
+func rescueRows(ctx context.Context, tx *sql.Tx) ([]newRow, error) {
+	groups, err := loadGroups(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	type gem struct {
-		row  newRow
-		path string
+	byKey := make(map[string]int64, len(groups))
+	set := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		byKey[key(g.src, g.path)] = g.id
+		set[key(g.src, g.path)] = true
 	}
-	var gems []gem
-	for rows.Next() {
-		var (
-			id, size, mtime, content int64
-			src, category, kind      string
-			state                    string
-			p                        []byte
-		)
-		if err := rows.Scan(&id, &src, &p, &category, &kind, &size, &mtime, &state, &content); err != nil {
-			return nil, err
-		}
-		fk := domain.FileKind(kind)
-		if !gemKinds[fk] || domain.FileFamily(domain.Category(category), fk) != domain.FamilyPersonal ||
-			!unique(state, content, copies) || underAny(groups.set, src, string(p)) {
-			continue
-		}
-		gems = append(gems, gem{row: newRow{list: ListGemsUnique, source: src, entry: id, bytes: size, files: 1, sortKey: mtime},
-			path: key(src, string(p))})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	slices.SortFunc(gems, func(a, b gem) int {
-		return cmp.Or(cmp.Compare(a.row.sortKey, b.row.sortKey), strings.Compare(a.path, b.path))
-	})
-	out := make([]newRow, len(gems))
-	for i, g := range gems {
-		out[i] = g.row
-	}
-	return out, nil
-}
-
-// rescueGems returns gems_rescue: the indicators of the programs and
-// disposable groups (dir_stats.indicators), each under its outermost such
-// group, once; groups largest first, indicators by path (D14).
-func rescueGems(ctx context.Context, tx *sql.Tx, groups groupSet) ([]newRow, error) {
 	type indicator struct {
-		id    int64
-		outer string // the outermost group's key
-	}
-	byID := map[string]group{}
-	for _, g := range groups.all {
-		byID[key(g.src, g.path)] = g
+		id, outer int64 // the indicator and its outermost group
+		src       string
 	}
 	var inds []indicator
 	seen := map[int64]bool{}
-	for _, g := range groups.all {
-		outer := key(g.src, g.path)
-		if p, ok := outermostAncestor(groups.set, g.src, g.path); ok {
-			outer = key(g.src, p)
+	for _, g := range groups {
+		outer := g.id
+		if p, ok := outermostAncestor(set, g.src, g.path); ok {
+			outer = byKey[key(g.src, p)]
 		}
 		var list []struct {
 			EntryID string `json:"entry_id"`
@@ -651,7 +571,7 @@ func rescueGems(ctx context.Context, tx *sql.Tx, groups groupSet) ([]newRow, err
 				continue
 			}
 			seen[int64(id)] = true
-			inds = append(inds, indicator{id: int64(id), outer: outer})
+			inds = append(inds, indicator{id: int64(id), outer: outer, src: g.src})
 		}
 	}
 	if len(inds) == 0 {
@@ -691,104 +611,25 @@ func rescueGems(ctx context.Context, tx *sql.Tx, groups groupSet) ([]newRow, err
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	var outers []group
-	members := map[string][]indicator{}
-	for _, x := range inds {
-		if _, ok := facts[x.id]; !ok {
-			continue
-		}
-		if len(members[x.outer]) == 0 {
-			outers = append(outers, byID[x.outer])
-		}
-		members[x.outer] = append(members[x.outer], x)
-	}
-	slices.SortFunc(outers, func(a, b group) int {
-		return cmp.Or(cmp.Compare(b.bytes, a.bytes), strings.Compare(a.src, b.src), strings.Compare(a.path, b.path))
-	})
-	var out []newRow
-	for rank, g := range outers {
-		list := members[key(g.src, g.path)]
-		slices.SortFunc(list, func(a, b indicator) int { return strings.Compare(facts[a.id].path, facts[b.id].path) })
-		for _, x := range list {
-			f := facts[x.id]
-			out = append(out, newRow{list: ListGemsRescue, source: g.src, entry: x.id, group: g.id,
-				bytes: f.bytes, files: f.files, sortKey: int64(rank)})
-		}
-	}
-	return out, nil
-}
-
-// onlyInCopyGems returns gems_only_in_copy: the files with no other copy
-// below a folder side of an overlap relation (so found only on that side),
-// grouped by relation, by raw path within one, each file once (D14). Files
-// inside archives are members, which review rows cannot name, so archive
-// sides add none.
-func onlyInCopyGems(ctx context.Context, tx *sql.Tx, rels []relation, copies contentCopies) ([]newRow, error) {
-	const files = `SELECT e.id, e.path, e.size, fc.state, coalesce(fc.content_id, 0)
-		FROM entries e JOIN file_content fc ON fc.entry_id = e.id
-		WHERE e.source_id = ?1 AND e.kind = 'file' AND e.state = 'present' AND `
-	below, err := tx.PrepareContext(ctx, files+`e.path >= ?2 AND e.path < ?3 ORDER BY e.path`)
-	if err != nil {
-		return nil, err
-	}
-	defer below.Close()
-	all, err := tx.PrepareContext(ctx, files+`e.path > X'' ORDER BY e.path`)
-	if err != nil {
-		return nil, err
-	}
-	defer all.Close()
-	var out []newRow
-	seen := map[int64]bool{}
 	type found struct {
 		row  newRow
 		path string
 	}
-	for _, r := range rels {
-		if r.kind != "overlap" {
+	var out []found
+	for _, x := range inds {
+		f, ok := facts[x.id]
+		if !ok {
 			continue
 		}
-		var rel []found
-		for _, s := range []side{r.a, r.b} {
-			if s.member != 0 || s.kind != string(domain.EntryDirectory) {
-				continue
-			}
-			var (
-				rows *sql.Rows
-				err  error
-			)
-			if s.path == "" { // the source root
-				rows, err = all.QueryContext(ctx, s.src)
-			} else {
-				rows, err = below.QueryContext(ctx, s.src, []byte(s.path+"/"), []byte(s.path+"0"))
-			}
-			if err != nil {
-				return nil, err
-			}
-			for rows.Next() {
-				var (
-					id, size, content int64
-					p                 []byte
-					state             string
-				)
-				if err := rows.Scan(&id, &p, &size, &state, &content); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				if seen[id] || !unique(state, content, copies) {
-					continue
-				}
-				seen[id] = true
-				rel = append(rel, found{path: key(s.src, string(p)), row: newRow{list: ListGemsOnlyInCopy, source: s.src,
-					entry: id, group: s.entry, bytes: size, files: 1, sortKey: r.id}})
-			}
-			if err := rows.Close(); err != nil {
-				return nil, err
-			}
-		}
-		slices.SortFunc(rel, func(a, b found) int { return strings.Compare(a.path, b.path) })
-		for _, f := range rel {
-			out = append(out, f.row)
-		}
+		out = append(out, found{path: key(x.src, f.path), row: newRow{list: ListRescue, source: x.src, entry: x.id,
+			group: x.outer, bytes: f.bytes, files: f.files, sortKey: f.bytes}})
 	}
-	return out, nil
+	slices.SortFunc(out, func(a, b found) int {
+		return cmp.Or(cmp.Compare(a.row.bytes, b.row.bytes), strings.Compare(b.path, a.path))
+	})
+	rs := make([]newRow, len(out))
+	for i, f := range out {
+		rs[i] = f.row
+	}
+	return rs, nil
 }

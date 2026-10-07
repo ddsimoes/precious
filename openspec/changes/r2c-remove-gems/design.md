@@ -105,3 +105,11 @@ Stays:
   - that `PRAGMA foreign_key_check` is empty;
   - that the indexes exist.
 - [Owner bookmarks of `/gems`] → They land on not-found; there is one owner, who chose the removal.
+
+## Addendum: decisions made during implementation
+
+- **B1. Migrated rescue rows take their bytes as sort key.** `0005_rescue` sets `sort_key = bytes` on the `gems_rescue` rows it keeps, so they page per D4 before the next refresh rewrites them.
+- **B2. Folder indicators stay rows.** `rescueRows` keeps every indicator the rules raise, as `rescueGems` did: a folder (such as `Jogos/Need for Speed Underground 2/save`) and an indicator inside it (`save/Joao/profile.sav`) are both rows. The rescue card is therefore the one card exempt from "a row is the outermost match": its bytes can count a file under a listed folder twice. The ground truth keeps all three declarations, and the operator guide says so.
+- **B3. Ties in bytes page by path.** `rescueRows` writes its rows in reverse card order, so among rows of equal bytes the higher ID, which pages first, has the smaller path. The list then pages exactly in the ground truth's order (bytes descending, then path), as `save` and `save/Joao/profile.sav` (equal bytes) show.
+- **B4. Ground-truth paths are display paths.** `rescue: [{path, group}]` holds the display form of each path (as `Entry.path`), with no base64; every rescue path in the corpus is valid UTF-8.
+- **B5. `group` only on rescue rows.** `Row.Group` is still set on `unpacked_archives` rows (the folder the archive was unpacked into, used for their relation), but the review row JSON serves `group` only for `rescue` rows and `null` elsewhere, per the Interfaces.

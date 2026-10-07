@@ -1,6 +1,6 @@
 // Package review turns the index, the rules' classification, and the
-// relations into the opportunity cards, their review lists, and Gems (R2
-// design D12–D14, §11.4–§11.7).
+// relations into the opportunity cards and their review lists (R2 design
+// D12–D13, r2c design D2–D4, §11.4).
 //
 // Refresh, the relate job's after hook, writes one generation of
 // review_rows (and review_row_sources for duplicates rows) from the index
@@ -20,21 +20,20 @@
 //     redundant bytes), or a duplicate group (content_id) with a copy
 //     outside every listed relation. source_id is NULL; review_row_sources
 //     names every source holding one of its copies.
-//   - gems_unique: entry_id the file, sort_key its mtime_ns.
-//   - gems_rescue: entry_id the indicator, group_id its outermost programs
-//     or disposable group, sort_key the group's rank (largest group first).
-//   - gems_only_in_copy: entry_id the file, group_id the overlap side that
-//     holds it, sort_key the relation's ID.
+//   - rescue: entry_id a user-material indicator inside a programs or
+//     disposable group, group_id the outermost such group, bytes its
+//     total_bytes, sort_key = bytes.
 //
-// Cards page by sort_key then id, both descending (largest first); Gems
-// page by sort_key then id, both ascending.
+// Every list pages by sort_key then id, both descending (largest first).
 package review
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -45,8 +44,9 @@ import (
 // List is a review list: a review_rows.list value.
 type List string
 
-// The seven cards' lists and the three Gems sections.
+// The eight cards' lists.
 const (
+	ListRescue           List = "rescue"
 	ListDuplicates       List = "duplicates"
 	ListUnpackedArchives List = "unpacked_archives"
 	ListSystemJunk       List = "system_junk"
@@ -54,36 +54,18 @@ const (
 	ListPrograms         List = "programs"
 	ListCaches           List = "caches"
 	ListLeftovers        List = "leftovers"
-	ListGemsUnique       List = "gems_unique"
-	ListGemsRescue       List = "gems_rescue"
-	ListGemsOnlyInCopy   List = "gems_only_in_copy"
 )
 
 // CardLists are the lists of the opportunity cards, in their fixed order
 // (the tie break of the ranking by bytes).
-var CardLists = []List{ListDuplicates, ListUnpackedArchives, ListSystemJunk, ListInstallers,
+var CardLists = []List{ListRescue, ListDuplicates, ListUnpackedArchives, ListSystemJunk, ListInstallers,
 	ListPrograms, ListCaches, ListLeftovers}
 
-// GemLists are the Gems sections, in display order.
-var GemLists = []List{ListGemsUnique, ListGemsRescue, ListGemsOnlyInCopy}
-
 // IsCard reports whether l is a card's list.
-func (l List) IsCard() bool {
-	for _, c := range CardLists {
-		if l == c {
-			return true
-		}
-	}
-	return false
-}
-
-// IsGems reports whether l is a Gems section.
-func (l List) IsGems() bool {
-	return l == ListGemsUnique || l == ListGemsRescue || l == ListGemsOnlyInCopy
-}
+func (l List) IsCard() bool { return slices.Contains(CardLists, l) }
 
 // Valid reports whether l is a known list.
-func (l List) Valid() bool { return l.IsCard() || l.IsGems() }
+func (l List) Valid() bool { return l.IsCard() }
 
 // Basis says what a card is based on.
 const (
@@ -124,8 +106,7 @@ type Row struct {
 	Source domain.SourceID
 	// Entry is the row's entry (0 for duplicates rows).
 	Entry domain.EntryID
-	// Relation is the relation of a duplicates relation row, and the overlap
-	// relation of a gems_only_in_copy row.
+	// Relation is the relation of a duplicates relation row.
 	Relation int64
 	// Content is the content of a duplicate group row.
 	Content int64
@@ -133,9 +114,8 @@ type Row struct {
 	// lowest entry, else the lowest member), the ref content.Copies lists
 	// the group from; zero when no copy is left.
 	Copy domain.Ref
-	// Group is the outermost programs or disposable group of a gems_rescue
-	// row, the overlap side holding a gems_only_in_copy row's file, and the
-	// folder an unpacked_archives row's archive was unpacked into.
+	// Group is the outermost programs or disposable group of a rescue row,
+	// and the folder an unpacked_archives row's archive was unpacked into.
 	Group   domain.EntryID
 	Bytes   int64
 	Files   int64
@@ -158,14 +138,18 @@ const copyKeySQL = `CASE WHEN e.nlink > 1 AND e.ino IS NOT NULL AND e.dev IS NOT
 	AND (SELECT json_extract(s.capabilities, '$.stable_identity') FROM sources s WHERE s.id = e.source_id) = 1
 	THEN 'h' || e.source_id || '/' || e.dev || '/' || e.ino ELSE e.id END`
 
-// openSQL holds for an open row rr (D12): an entry row while its entry is
-// undecided; a relation row while both sides are; a duplicate group row
-// while at least two of its present copies are (a member reads its
-// archive's decision, a hard-link set is one copy). Gems rows are always
-// listed. The undecided file copies are counted distinct only when one of
-// them has hard links, which saves a temporary table per row otherwise.
+// openSQL holds for an open row rr (D12): a rescue row until the owner
+// decides its file or the file is kept (r2c D2), so that a decision it
+// inherits from the group around it does not hide it; another entry row
+// while its entry is undecided; a relation row while both sides are; a
+// duplicate group row while at least two of its present copies are (a
+// member reads its archive's decision, a hard-link set is one copy). The
+// undecided file copies are counted distinct only when one of them has hard
+// links, which saves a temporary table per row otherwise.
 const openSQL = `(CASE
-	WHEN rr.list IN ('gems_unique', 'gems_rescue', 'gems_only_in_copy') THEN 1
+	WHEN rr.list = 'rescue' THEN
+		(SELECT e.eff_decision <> 'keep' AND coalesce(e.decision, 'undecided') = 'undecided'
+			FROM entries e WHERE e.id = rr.entry_id)
 	WHEN rr.entry_id IS NOT NULL THEN
 		(SELECT e.eff_decision = 'undecided' FROM entries e WHERE e.id = rr.entry_id)
 	WHEN rr.relation_id IS NOT NULL THEN
@@ -192,20 +176,20 @@ const openSQL = `(CASE
 const sourceSQL = `(:src = '' OR rr.source_id = :src OR (rr.source_id IS NULL AND EXISTS (
 	SELECT 1 FROM review_row_sources rs WHERE rs.source_id = :src AND rs.row_id = rr.id)))`
 
-// Cards returns the seven cards for source src ("" = all sources), largest
-// first: each card's bytes and row count are the sums over its open rows,
-// and its decided bytes and rows the sums over its rows no longer open,
-// with the filters Rows uses, so a card always equals its open and decided
-// lists (R2.5, r2b D13). One pass evaluates openSQL once per row: the
-// materialized CTE keeps SQLite from copying it into each sum, and a row
-// whose openSQL is NULL (its entry gone) counts in neither, as in Rows.
+// Cards returns the eight cards for source src ("" = all sources): the
+// rescue card first while it has open rows (r2c D3), then largest first,
+// CardLists' order breaking ties. Each card's bytes and row count are the
+// sums over its open rows, and its decided bytes and rows the sums over its
+// rows no longer open, with the filters Rows uses, so a card always equals
+// its open and decided lists (R2.5, r2b D13). One pass evaluates openSQL
+// once per row: the materialized CTE keeps SQLite from copying it into each
+// sum, and a row whose openSQL is NULL (its entry gone) counts in neither,
+// as in Rows.
 func Cards(ctx context.Context, q store.Queryer, src domain.SourceID) ([]Card, error) {
 	rows, err := q.QueryContext(ctx, `WITH r AS MATERIALIZED (
 			SELECT rr.list, rr.bytes, `+openSQL+` AS open
 			FROM review_rows rr
-			WHERE rr.gen = `+genSQL+` AND rr.list IN ('duplicates', 'unpacked_archives', 'system_junk',
-				'installers', 'programs', 'caches', 'leftovers')
-				AND `+sourceSQL+`)
+			WHERE rr.gen = `+genSQL+` AND `+sourceSQL+`)
 		SELECT list,
 			coalesce(sum(CASE WHEN open THEN bytes ELSE 0 END), 0), coalesce(sum(CASE WHEN open THEN 1 ELSE 0 END), 0),
 			coalesce(sum(CASE WHEN NOT open THEN bytes ELSE 0 END), 0), coalesce(sum(CASE WHEN NOT open THEN 1 ELSE 0 END), 0)
@@ -235,20 +219,22 @@ func Cards(ctx context.Context, q store.Queryer, src domain.SourceID) ([]Card, e
 		cards[i] = c
 	}
 	// A stable sort keeps the fixed order among equal bytes.
-	for i := 1; i < len(cards); i++ {
-		for j := i; j > 0 && cards[j].Bytes > cards[j-1].Bytes; j-- {
-			cards[j], cards[j-1] = cards[j-1], cards[j]
+	slices.SortStableFunc(cards, func(a, b Card) int {
+		if aFirst, bFirst := a.List == ListRescue && a.Rows > 0, b.List == ListRescue && b.Rows > 0; aFirst != bFirst {
+			if aFirst {
+				return -1
+			}
+			return 1
 		}
-	}
+		return cmp.Compare(b.Bytes, a.Bytes)
+	})
 	return cards, nil
 }
 
 // Rows returns a page of list for source src ("" = all sources): its open
 // rows, or with decided its rows that are no longer open, after cursor (""
 // for the first page), at most limit (DefaultLimit when limit ≤ 0, at most
-// MaxLimit). Gems rows are listed whatever their decision, so a decided
-// Gems page is empty. An unknown list or a malformed cursor is
-// invalid_request.
+// MaxLimit). An unknown list or a malformed cursor is invalid_request.
 func Rows(ctx context.Context, q store.Queryer, list List, src domain.SourceID, decided bool, cursor string, limit int) (Page, error) {
 	if !list.Valid() {
 		return Page{}, domain.Errorf(domain.CodeInvalidRequest, "unknown review list %q", list)
@@ -258,13 +244,6 @@ func Rows(ctx context.Context, q store.Queryer, list List, src domain.SourceID, 
 	}
 	limit = min(limit, MaxLimit)
 	page := Page{Items: []Row{}}
-	if decided && list.IsGems() {
-		return page, nil
-	}
-	cmp, order := "<", "DESC"
-	if list.IsGems() {
-		cmp, order = ">", "ASC"
-	}
 	open := openSQL
 	if decided {
 		open = "NOT " + openSQL
@@ -276,12 +255,11 @@ func Rows(ctx context.Context, q store.Queryer, list List, src domain.SourceID, 
 		if err != nil {
 			return Page{}, err
 		}
-		after = ` AND (rr.sort_key ` + cmp + ` :key OR (rr.sort_key = :key AND rr.id ` + cmp + ` :id))`
+		after = ` AND (rr.sort_key < :key OR (rr.sort_key = :key AND rr.id < :id))`
 		args = append(args, sql.Named("key", key), sql.Named("id", id))
 	}
 	rows, err := q.QueryContext(ctx, `SELECT rr.id, rr.list, coalesce(rr.source_id, ''), coalesce(rr.entry_id, 0),
-			coalesce(rr.relation_id, CASE WHEN rr.list = 'gems_only_in_copy' THEN rr.sort_key END, 0),
-			coalesce(rr.content_id, 0), coalesce(rr.group_id, 0), rr.bytes, rr.files, rr.sort_key,
+			coalesce(rr.relation_id, 0), coalesce(rr.content_id, 0), coalesce(rr.group_id, 0), rr.bytes, rr.files, rr.sort_key,
 			CASE WHEN rr.content_id IS NOT NULL THEN coalesce(
 				(SELECT min(fc.entry_id) FROM file_content fc JOIN entries e ON e.id = fc.entry_id
 					WHERE fc.content_id = rr.content_id AND e.state = 'present'), 0) END,
@@ -290,7 +268,7 @@ func Rows(ctx context.Context, q store.Queryer, list List, src domain.SourceID, 
 					WHERE m.content_id = rr.content_id AND a.state = 'complete'), 0) END
 		FROM review_rows rr
 		WHERE rr.gen = `+genSQL+` AND rr.list = :list AND `+sourceSQL+` AND `+open+after+`
-		ORDER BY rr.sort_key `+order+`, rr.id `+order+`
+		ORDER BY rr.sort_key DESC, rr.id DESC
 		LIMIT :limit`, args...)
 	if err != nil {
 		return Page{}, fmt.Errorf("review: rows: %w", err)
