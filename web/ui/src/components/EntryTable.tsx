@@ -1,6 +1,17 @@
 import { createColumnHelper, tableFeatures, useTable } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { createContext, use, useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
+import {
+  createContext,
+  use,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+  type UIEvent,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, type To } from 'react-router'
 
@@ -14,6 +25,7 @@ import {
   type EntryRow,
   type SortOrder,
 } from '@/api/entries'
+import { useSources } from '@/api/sources'
 import { CompositionBar } from '@/components/CompositionBar'
 import { Button } from '@/components/ui/button'
 import { useEntryLink } from '@/detail/useEntryLink'
@@ -27,7 +39,8 @@ import { cn } from '@/lib/utils'
 // near the end asks for the next page. Clicking a row opens its detail
 // panel (?entry=); a folder's name drills into it. The table stays inside
 // its card (design D23): when the card is narrow its lowest-priority
-// columns hide, and what still does not fit scrolls sideways inside it.
+// columns hide, and what still does not fit scrolls sideways inside it. The
+// Map turns on the keys (TableKeyboard).
 
 export interface TableSort {
   sort: ChildSort
@@ -40,6 +53,15 @@ export interface TableSelection {
   toggle: (row: EntryRow) => void
 }
 
+// TableKeyboard turns on the Map's keys (r2b design D9), the review lists'
+// model: the up and down arrows move the selected row, which opens its
+// details; Enter opens it (onOpen); Escape closes the details (onClose).
+// Keys typed in a field, in a dialog, or in the detail panel are theirs.
+export interface TableKeyboard {
+  onOpen: (row: EntryRow) => void
+  onClose: () => void
+}
+
 interface EntryTableProps {
   label: string
   rows: EntryRow[]
@@ -49,16 +71,24 @@ interface EntryTableProps {
   sort: TableSort
   // folderLink is where a folder's name leads.
   folderLink: (row: EntryRow) => To
+  // location shows under each name the folder that holds it, after its
+  // source's label for 'sourceAndFolder' (r2b design D9).
+  location?: RowLocation
   hoveredId?: string | null
   onHover?: (id: string | null) => void
   selectedId: string | null
   selection?: TableSelection
+  keyboard?: TableKeyboard
+  // tableRef receives the table, which can take the focus.
+  tableRef?: Ref<HTMLDivElement>
   hasMore: boolean
   loadingMore: boolean
   onLoadMore: () => void
 }
 
 export const rowHeight = 36
+// locatedRowHeight leaves room for the location line under the name.
+const locatedRowHeight = 48
 // loadAhead is how many rows before the end scrolling asks for the next page.
 const loadAhead = 20
 
@@ -70,7 +100,12 @@ interface RowLinks {
   entryLink: (id: string | null) => string
   folderLink: (row: EntryRow) => To
   selection: TableSelection | undefined
+  location: RowLocation | undefined
+  // sourceLabel names a source by its ID, or gives the ID while loading.
+  sourceLabel: (id: string) => string
 }
+
+type RowLocation = 'folder' | 'sourceAndFolder'
 
 const RowLinksContext = createContext<RowLinks | null>(null)
 
@@ -86,16 +121,48 @@ interface CellProps {
   row: { original: EntryRow }
 }
 
+// rowName is a row's name; a source's top folder is named after the source.
+function rowName(entry: EntryRow, sourceLabel: (id: string) => string): string {
+  return entry.path === '' ? sourceLabel(entry.source_id) : entry.name
+}
+
+// LocationLine shows the folder that holds an entry, cut from the left so
+// its nearest folders stay readable, after its source's label when asked.
+// A top-level entry has no folder above it.
+function LocationLine({ entry }: { entry: EntryRow }) {
+  const { t } = useTranslation()
+  const { location, sourceLabel } = useRowLinks()
+  if (location === undefined || entry.path === '') {
+    return null
+  }
+  const slash = entry.path.lastIndexOf('/')
+  const folder = slash < 0 ? '' : entry.path.slice(0, slash)
+  const text =
+    location === 'folder'
+      ? folder
+      : folder === ''
+        ? sourceLabel(entry.source_id)
+        : t('search.location', { source: sourceLabel(entry.source_id), folder })
+  if (text === '') {
+    return null
+  }
+  return (
+    <span dir="rtl" title={text} className="truncate text-left text-xs text-muted-foreground">
+      <bdi dir="ltr">{text}</bdi>
+    </span>
+  )
+}
+
 function SelectCell({ row }: CellProps) {
   const { t } = useTranslation()
-  const { selection } = useRowLinks()
+  const { selection, sourceLabel } = useRowLinks()
   if (selection === undefined) {
     return null
   }
   return (
     <input
       type="checkbox"
-      aria-label={t('search.selectRow', { name: row.original.name })}
+      aria-label={t('search.selectRow', { name: rowName(row.original, sourceLabel) })}
       checked={selection.isSelected(row.original.id)}
       onChange={() => selection.toggle(row.original)}
       onClick={(event) => event.stopPropagation()}
@@ -105,17 +172,21 @@ function SelectCell({ row }: CellProps) {
 
 function NameCell({ row }: CellProps) {
   const { t } = useTranslation()
-  const { entryLink, folderLink } = useRowLinks()
+  const { entryLink, folderLink, sourceLabel } = useRowLinks()
   const entry = row.original
+  const name = rowName(entry, sourceLabel)
   if (!isDrillable(entry)) {
     return (
-      <Link
-        to={{ search: entryLink(entry.id) }}
-        className="truncate hover:underline"
-        onClick={(event) => event.stopPropagation()}
-      >
-        {entry.name}
-      </Link>
+      <span className="grid min-w-0">
+        <Link
+          to={{ search: entryLink(entry.id) }}
+          className="truncate hover:underline"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {name}
+        </Link>
+        <LocationLine entry={entry} />
+      </span>
     )
   }
   return (
@@ -130,17 +201,20 @@ function NameCell({ row }: CellProps) {
           <path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5zM7 2v2h2V2zm0 3v2h2V5zm0 3v2h2V8z" />
         </svg>
       )}
-      <Link
-        to={folderLink(entry)}
-        className="truncate font-medium text-primary hover:underline"
-        onClick={(event) => event.stopPropagation()}
-      >
-        {entry.name}
-      </Link>
+      <span className="grid min-w-0">
+        <Link
+          to={folderLink(entry)}
+          className="truncate font-medium text-primary hover:underline"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {name}
+        </Link>
+        <LocationLine entry={entry} />
+      </span>
       <Button asChild variant="ghost" size="sm" className="ml-auto h-6 shrink-0 px-2 text-xs text-muted-foreground">
         <Link
           to={{ search: entryLink(entry.id) }}
-          aria-label={t('map.showDetails', { name: entry.name })}
+          aria-label={t('map.showDetails', { name })}
           onClick={(event) => event.stopPropagation()}
         >
           {t('detail.label')}
@@ -150,10 +224,17 @@ function NameCell({ row }: CellProps) {
   )
 }
 
+// An entry that could not be read has no figures: its cells show a dash,
+// never 0 B, 0 files, or 0% (r2b design D9).
+const noFigure = '—'
+
 // SizeCell shows the size, and under a folder's its composition bar.
 function SizeCell({ row }: CellProps) {
   const fmt = useFormat()
   const entry = row.original
+  if (entry.state === 'unreadable') {
+    return noFigure
+  }
   if (entry.kind !== 'directory') {
     return fmt.bytes(entry.total_bytes)
   }
@@ -167,15 +248,21 @@ function SizeCell({ row }: CellProps) {
 
 function FilesCell({ row }: CellProps) {
   const fmt = useFormat()
-  return row.original.kind === 'directory' ? fmt.count(row.original.total_files) : ''
+  if (row.original.kind !== 'directory') {
+    return ''
+  }
+  return row.original.state === 'unreadable' ? noFigure : fmt.count(row.original.total_files)
 }
 
 // KindCell shows the category, or the file type of what has none, with a
-// mixed folder's dominant share.
+// mixed folder's dominant share; an entry that could not be read says so.
 function KindCell({ row }: CellProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const entry = row.original
+  if (entry.state === 'unreadable') {
+    return <span className="text-amber-700">{t('entry.unreadable')}</span>
+  }
   let label: string
   if (entry.category !== null && entry.category !== 'unknown') {
     label = t(`entry.category.${entry.category}`)
@@ -202,34 +289,58 @@ function TriageCell({ row }: CellProps) {
   return row.original.triage === null ? '' : t(`entry.triage.${row.original.triage}`)
 }
 
-// DuplicatedCell shows the share of the bytes that have another copy: a
-// folder's from its figures, a file's 0 or 100% (R2 design D10).
+// DuplicatedCell shows the share of a folder's bytes that have another
+// copy, from its figures (R2 design D10), and a checked file's number of
+// copies (r2b design D9).
 function DuplicatedCell({ row }: CellProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
+  const entry = row.original
+  if (entry.state === 'unreadable') {
+    return noFigure
+  }
   // An unreadable file never gets checked: "Not checked" would promise it.
-  if (row.original.content_state === 'unreadable') {
+  if (entry.content_state === 'unreadable') {
     return t('map.dupCell.unreadable')
   }
-  const duplication = duplicationOf(row.original)
+  const duplication = duplicationOf(entry)
   if (duplication === null) {
     return ''
   }
   const percent = fmt.percent(duplication.fraction)
   if (duplication.checked) {
-    return percent
+    if (entry.kind === 'directory') {
+      return percent
+    }
+    const copies = entry.copies ?? 1
+    return copies > 1
+      ? t('map.dupCell.copies', { count: copies, formatted: fmt.count(copies) })
+      : t('map.dupCell.noOtherCopy')
   }
   return duplication.fraction === 0 ? t('map.dupCell.unchecked') : t('map.dupCell.partial', { percent })
 }
 
+// DecisionCell stays blank for what only follows "undecided", and says an
+// inherited decision briefly, with its full wording as the title (r2b
+// design D9).
 function DecisionCell({ row }: CellProps) {
   const { t } = useTranslation()
   const entry = row.original
+  if (entry.decision !== null) {
+    return t(`home.decision.${entry.decision}`)
+  }
+  if (entry.eff_decision === 'undecided') {
+    return ''
+  }
   const effective = t(`home.decision.${entry.eff_decision}`)
   if (isMember(entry)) {
-    return t('entry.withArchive', { decision: effective })
+    return <span title={t('entry.withArchive', { decision: effective })}>{t('entry.withArchiveShort')}</span>
   }
-  return entry.decision === null ? t('entry.inherited', { decision: effective }) : t(`home.decision.${entry.decision}`)
+  return (
+    <span title={t('entry.inherited', { decision: effective })}>
+      {t('entry.inheritedShort', { decision: effective })}
+    </span>
+  )
 }
 
 const features = tableFeatures({})
@@ -256,8 +367,8 @@ function isColumnId(id: string | undefined): id is ColumnId {
 
 // columnLayout gives each column its grid track and its narrowest width, in
 // rem. Columns with a hide rank hide in that order when the card is too
-// narrow for every column: Changed and Suggestion first, then Duplicated;
-// name, size, and type or category always stay.
+// narrow for every column: Changed and Suggestion first, then Decision,
+// then Duplicated; name, size, and type or category always stay.
 const columnLayout: Record<ColumnId, { track: string; min: number; hide?: number }> = {
   select: { track: '2rem', min: 2 },
   name: { track: 'minmax(12rem, 1.5fr)', min: 12 },
@@ -265,9 +376,9 @@ const columnLayout: Record<ColumnId, { track: string; min: number; hide?: number
   files: { track: '5rem', min: 5, hide: 5 },
   kind: { track: 'minmax(9rem, 2fr)', min: 9 },
   dates: { track: 'minmax(9rem, 1.5fr)', min: 9, hide: 1 },
-  duplicated: { track: '6rem', min: 6, hide: 3 },
+  duplicated: { track: '6rem', min: 6, hide: 4 },
   triage: { track: '6rem', min: 6, hide: 2 },
-  decision: { track: '9rem', min: 9, hide: 4 },
+  decision: { track: '9rem', min: 9, hide: 3 },
 }
 // A row's column gap and side padding (gap-2, px-3), in rem.
 const columnGap = 0.5
@@ -308,10 +419,13 @@ export function EntryTable({
   emptyText,
   sort,
   folderLink,
+  location,
   hoveredId = null,
   onHover,
   selectedId,
   selection,
+  keyboard,
+  tableRef,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -319,6 +433,7 @@ export function EntryTable({
   const { t } = useTranslation()
   const navigate = useNavigate()
   const entryLink = useEntryLink()
+  const sources = useSources()
   const scrollRef = useRef<HTMLDivElement>(null)
   const headerRef = useRef<HTMLDivElement>(null)
   // width is the room for a row inside the card, in rem, once measured.
@@ -346,7 +461,10 @@ export function EntryTable({
     () => allColumns.filter((column) => isColumnId(column.id) && columnKey.split(' ').includes(column.id)),
     [columnKey],
   )
-  const links = useMemo<RowLinks>(() => ({ entryLink, folderLink, selection }), [entryLink, folderLink, selection])
+  const links = useMemo<RowLinks>(() => {
+    const labels = new Map(sources.data?.sources.map((s) => [s.id, s.label]))
+    return { entryLink, folderLink, selection, location, sourceLabel: (id) => labels.get(id) ?? id }
+  }, [entryLink, folderLink, selection, location, sources.data])
 
   const table = useTable({ features, columns, data: rows, getRowId: (row) => row.id })
   const tableRows = table.getRowModel().rows
@@ -366,7 +484,7 @@ export function EntryTable({
   const virtualizer = useVirtualizer({
     count: tableRows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => rowHeight,
+    estimateSize: () => (location === undefined ? rowHeight : locatedRowHeight),
     getItemKey: (index) => tableRows[index]?.id ?? index,
     overscan: 10,
   })
@@ -386,6 +504,91 @@ export function EntryTable({
       virtualizer.scrollToIndex(selectedIndex, { align: 'auto' })
     }
   }, [selectedIndex, virtualizer])
+
+  // focusId is the row the keys selected: it takes the focus once the
+  // virtualizer has drawn it, so assistive technology follows.
+  const focusId = useRef<string | null>(null)
+  useEffect(() => {
+    const id = focusId.current
+    if (id === null || id !== selectedId) {
+      return
+    }
+    const row = scrollRef.current?.querySelector<HTMLElement>(`[data-row-id="${id}"]`)
+    if (row !== null && row !== undefined) {
+      focusId.current = null
+      row.focus({ preventScroll: true })
+    }
+  })
+
+  // walk is where the arrows are going while the address lags behind them:
+  // the row they chose last, and the rows they left on the way. Keys pressed
+  // faster than the address changes go on from that row instead of being
+  // lost (r2b E2). It ends when the address arrives.
+  const walk = useRef<{ left: (string | null)[]; to: string } | null>(null)
+  useEffect(() => {
+    if (walk.current?.to === selectedId) {
+      walk.current = null
+    }
+  }, [selectedId])
+
+  const onKey = useEffectEvent((event: KeyboardEvent) => {
+    if (keyboard === undefined || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+      return
+    }
+    const origin = event.target instanceof Element ? event.target : null
+    const fields = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog, aside'
+    if (origin?.closest(fields) != null || document.querySelector('dialog[open]') !== null) {
+      return
+    }
+    const pending = walk.current !== null && walk.current.left.includes(selectedId) ? walk.current : null
+    const current = pending?.to ?? selectedId
+    const currentIndex = current === null ? -1 : tableRows.findIndex((row) => row.id === current)
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (tableRows.length === 0) {
+        return
+      }
+      event.preventDefault()
+      const down = event.key === 'ArrowDown'
+      const index = currentIndex < 0 ? (down ? 0 : tableRows.length - 1) : currentIndex + (down ? 1 : -1)
+      if (index >= tableRows.length) {
+        // Past the last loaded row, the next page comes first.
+        if (hasMore && !loadingMore) {
+          onLoadMore()
+        }
+        return
+      }
+      const row = tableRows[Math.max(0, index)]
+      if (row === undefined || row.id === current) {
+        return
+      }
+      focusId.current = row.id
+      walk.current = { left: pending === null ? [selectedId] : [...pending.left, pending.to], to: row.id }
+      // Walking the rows replaces the address instead of adding to history.
+      void navigate({ search: entryLink(row.id) }, { replace: current !== null })
+    } else if (event.key === 'Enter') {
+      // A focused link or button acts on Enter itself.
+      const row = tableRows[currentIndex]
+      if (row !== undefined && origin?.closest('a, button, summary') == null) {
+        event.preventDefault()
+        walk.current = null
+        keyboard.onOpen(row.original)
+      }
+    } else if (event.key === 'Escape' && current !== null) {
+      event.preventDefault()
+      walk.current = null
+      keyboard.onClose()
+    }
+  })
+
+  const keys = keyboard !== undefined
+  useEffect(() => {
+    if (!keys) {
+      return
+    }
+    const listener = (event: KeyboardEvent) => onKey(event)
+    document.addEventListener('keydown', listener)
+    return () => document.removeEventListener('keydown', listener)
+  }, [keys])
 
   const headerCell = (id: ColumnId): ReactNode => {
     const content = id === 'select' ? <span className="sr-only">{t('map.columns.select')}</span> : t(`map.columns.${id}`)
@@ -409,9 +612,11 @@ export function EntryTable({
   return (
     <RowLinksContext value={links}>
       <div
+        ref={tableRef}
         role="table"
         aria-label={label}
         aria-rowcount={(rowCount ?? tableRows.length) + 1}
+        tabIndex={tableRef === undefined ? undefined : -1}
         className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-sm"
       >
         {/* The header follows the rows' sideways scroll; both reserve the
@@ -465,6 +670,9 @@ export function EntryTable({
                   aria-rowindex={item.index + 2}
                   aria-selected={entry.id === selectedId}
                   data-hovered={entry.id === hoveredId ? 'true' : undefined}
+                  data-row-id={entry.id}
+                  // With the keys, the selected row is the table's tab stop.
+                  tabIndex={keyboard === undefined ? undefined : entry.id === selectedId ? 0 : -1}
                   className={cn(
                     'absolute top-0 left-0 grid w-full cursor-pointer items-center gap-2 border-b px-3',
                     entry.id === hoveredId && 'bg-accent',

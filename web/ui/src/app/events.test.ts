@@ -144,6 +144,8 @@ describe('job event stream', () => {
 
   it('refetches the live figures on reset and on a fresh start', () => {
     const queryClient = seededClient()
+    // The cached responses are older than the stream.
+    vi.advanceTimersByTime(1)
     stream = new JobEventStream(queryClient)
     stream.start()
     const source = MockEventSource.latest()
@@ -163,6 +165,39 @@ describe('job event stream', () => {
     source.fail(MockEventSource.CLOSED)
     vi.advanceTimersByTime(1_000)
     expect(MockEventSource.latest().url).toBe('/api/events?last_event_id=120')
+  })
+
+  it('leaves the responses fetched since the stream started on its first open', () => {
+    const queryClient = seededClient()
+    vi.advanceTimersByTime(1)
+    stream = new JobEventStream(queryClient)
+    stream.start()
+    // Home is fetched while the stream connects.
+    vi.advanceTimersByTime(5)
+    queryClient.setQueryData<Home>(homeQueryKey('old-disk'), homeResponse())
+    const source = MockEventSource.latest()
+
+    source.open()
+    expect(invalidated(queryClient, sourcesQueryKey)).toBe(true)
+    expect(invalidated(queryClient, homeQueryKey(null))).toBe(true)
+    expect(invalidated(queryClient, homeQueryKey('old-disk'))).toBe(false)
+  })
+
+  it('refetches every live response when it reconnects without a position', () => {
+    const queryClient = seededClient()
+    stream = new JobEventStream(queryClient)
+    stream.start()
+    // The first attempt fails before any event.
+    MockEventSource.latest().fail(MockEventSource.CLOSED)
+    vi.advanceTimersByTime(1_000)
+    const second = MockEventSource.latest()
+    expect(second.url).toBe('/api/events')
+
+    // Even what was fetched since the stream started may have missed events.
+    queryClient.setQueryData<SourcesResponse>(sourcesQueryKey, { sources: [fotosSource()] })
+    second.open()
+    expect(invalidated(queryClient, sourcesQueryKey)).toBe(true)
+    expect(invalidated(queryClient, homeQueryKey(null))).toBe(true)
   })
 
   it('closes the stream and any pending reconnect when stopped', () => {

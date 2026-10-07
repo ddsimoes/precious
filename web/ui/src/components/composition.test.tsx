@@ -210,7 +210,7 @@ describe('composition', () => {
     renderApp('/map/1?entry=40')
     const panel = within(await screen.findByRole('complementary', { name: 'IMG_0001.JPG' }))
     const facts = within(await panel.findByRole('region', { name: 'Classification' }))
-    expect(facts.getByText('Not classified')).toBeInTheDocument()
+    expect(facts.getByText('Not classified', { selector: 'dd' })).toBeInTheDocument()
     expect(facts.getByText('Counted as Personal and valuable by its file type')).toBeInTheDocument()
     expect(facts.queryByText('Containers')).toBeNull()
   })

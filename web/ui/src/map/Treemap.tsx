@@ -19,9 +19,11 @@ interface TreemapProps {
   hoveredId: string | null
   selectedId: string | null
   onHover: (id: string | null) => void
-  // onDrill opens a folder; onSelect opens an entry's detail panel.
+  // onDrill opens a folder; onSelect opens an entry's detail panel; onOther
+  // sends the owner to the table for the children too small to draw.
   onDrill: (id: string) => void
   onSelect: (id: string) => void
+  onOther: () => void
 }
 
 interface Handlers {
@@ -29,13 +31,15 @@ interface Handlers {
   onHover: (id: string | null) => void
   onDrill: (id: string) => void
   onSelect: (id: string) => void
+  onOther: () => void
 }
 
 // Treemap draws one folder level with ECharts: its largest children by
-// bytes, and one area for the rest, which cannot be opened. Hovering an
-// area reports it, so the table highlights the same row; clicking a folder
-// drills into it and clicking a file opens its details. A list of the same
-// areas gives screen readers and keyboards the same actions.
+// bytes, and one area for the rest. Hovering an area reports it, so the
+// table highlights the same row; clicking a folder drills into it, clicking
+// a file opens its details, and clicking the rest leads to the table
+// (r2b design D9). A list of the same areas gives screen readers and
+// keyboards the same actions.
 export function Treemap({
   data,
   folderName,
@@ -46,12 +50,13 @@ export function Treemap({
   onHover,
   onDrill,
   onSelect,
+  onOther,
 }: TreemapProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ECharts | null>(null)
-  const handlers = useRef<Handlers>({ rows: new Map(), onHover, onDrill, onSelect })
+  const handlers = useRef<Handlers>({ rows: new Map(), onHover, onDrill, onSelect, onOther })
 
   const otherLabel = t('map.remaining', { count: data.other.count, formatted: fmt.count(data.other.count) })
 
@@ -61,8 +66,9 @@ export function Treemap({
       onHover,
       onDrill,
       onSelect,
+      onOther,
     }
-  }, [data, onHover, onDrill, onSelect])
+  }, [data, onHover, onDrill, onSelect, onOther])
 
   useEffect(() => {
     const host = hostRef.current
@@ -78,7 +84,12 @@ export function Treemap({
     })
     chart.on('mouseout', () => handlers.current.onHover(null))
     chart.on('click', (event: ECElementEvent) => {
-      const row = handlers.current.rows.get(idOf(event) ?? '')
+      const id = idOf(event)
+      if (id === otherId) {
+        handlers.current.onOther()
+        return
+      }
+      const row = handlers.current.rows.get(id ?? '')
       if (row === undefined) {
         return
       }
@@ -170,7 +181,11 @@ export function Treemap({
           </li>
         ))}
         {data.other.count > 0 && (
-          <li>{t('map.otherArea', { label: otherLabel, bytes: fmt.bytes(data.other.bytes) })}</li>
+          <li>
+            <Button variant="ghost" onClick={onOther}>
+              {t('map.otherArea', { label: otherLabel, bytes: fmt.bytes(data.other.bytes) })}
+            </Button>
+          </li>
         )}
       </ul>
       <ul aria-label={t('map.legend')} className="flex flex-wrap gap-x-4 gap-y-1 text-xs">

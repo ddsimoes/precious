@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { useCallback, useId, useMemo, useState } from 'react'
-import { Trans, useTranslation } from 'react-i18next'
-import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams, type To } from 'react-router'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { Link, Navigate, useNavigate, useParams, useSearchParams, type To } from 'react-router'
 
 import {
   childSorts,
@@ -21,14 +21,18 @@ import { useSources } from '@/api/sources'
 import { useTags } from '@/api/tags'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { PageTitle } from '@/app/PageTitle'
-import { EntryTable } from '@/components/EntryTable'
+import { EntryTable, type TableKeyboard } from '@/components/EntryTable'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { DetailPanel } from '@/detail/DetailPanel'
 import { useEntryLink } from '@/detail/useEntryLink'
 import { cn } from '@/lib/utils'
 import { colorModes, type ColorContext, type ColorMode } from '@/map/colors'
+import { MapPath } from '@/map/MapPath'
+import { pathSteps } from '@/map/pathSteps'
+import { MapStart } from '@/map/MapStart'
 import { Treemap } from '@/map/Treemap'
+import { ViewerDialog } from '@/viewer/ViewerDialog'
 
 // MapPage answers "where is my space?" (spec §11.2): a treemap and a table of
 // one folder, side by side and synchronized, with the detail panel of
@@ -36,40 +40,6 @@ import { Treemap } from '@/map/Treemap'
 export function MapPage() {
   const { entryId } = useParams()
   return entryId === undefined ? <MapStart /> : <MapFolder folderId={entryId} />
-}
-
-// MapStart opens the top folder of the first source, or points to Sources
-// when there is none.
-function MapStart() {
-  const { t } = useTranslation()
-  const location = useLocation()
-  const sources = useSources()
-
-  if (sources.isPending) {
-    return (
-      <p role="status" className="text-sm text-muted-foreground">
-        {t('app.loading')}
-      </p>
-    )
-  }
-  if (sources.isError) {
-    return <ErrorBanner error={sources.error} onRetry={() => void sources.refetch()} />
-  }
-  const first = sources.data.sources[0]
-  if (first === undefined) {
-    return (
-      <>
-        <PageTitle>{t('pages.map')}</PageTitle>
-        <p className="text-sm text-muted-foreground">
-          <Trans
-            i18nKey="map.noSources"
-            components={{ sourcesLink: <Link to="/sources" className="font-medium text-primary underline" /> }}
-          />
-        </p>
-      </>
-    )
-  }
-  return <Navigate to={{ pathname: `/map/${first.root_entry_id}`, search: location.search }} replace />
 }
 
 function isSort(value: string | null): value is ChildSort {
@@ -90,6 +60,11 @@ function MapFolder({ folderId }: { folderId: string }) {
   const tagId = useId()
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [now] = useState(() => Date.now())
+  // viewing is the file Enter opened in the viewer.
+  const [viewing, setViewing] = useState<EntryRow | null>(null)
+  const tableRef = useRef<HTMLDivElement>(null)
+  // focusTable asks for the table's focus once it shows the new order.
+  const focusTable = useRef(false)
 
   const sortParam = params.get('sort')
   const sort: ChildSort = isSort(sortParam) ? sortParam : 'bytes'
@@ -133,6 +108,19 @@ function MapFolder({ folderId }: { folderId: string }) {
   )
   const drill = useCallback((id: string) => void navigate(folderLink({ id })), [navigate, folderLink])
   const select = useCallback((id: string) => void navigate({ search: entryLink(id) }), [navigate, entryLink])
+  const keyboard = useMemo<TableKeyboard>(
+    () => ({
+      onOpen: (row) => {
+        if (isDrillable(row)) {
+          drill(row.id)
+        } else if (row.kind === 'file') {
+          setViewing(row)
+        }
+      },
+      onClose: () => void navigate({ search: entryLink(null) }),
+    }),
+    [drill, navigate, entryLink],
+  )
   const { fetchNextPage, hasNextPage, isFetchingNextPage } = children
   const loadMore = useCallback(() => void fetchNextPage(), [fetchNextPage])
 
@@ -154,6 +142,22 @@ function MapFolder({ folderId }: { folderId: string }) {
       setView({ sort: key, order: key === 'name' ? 'asc' : 'desc' })
     }
   }
+  // The treemap's rest leads to the table sorted by size, where the
+  // children too small to draw are listed.
+  const showSmaller = () => {
+    if (sort === 'bytes' && order === 'desc') {
+      tableRef.current?.focus()
+    } else {
+      focusTable.current = true
+      setView({ sort: 'bytes', order: 'desc' })
+    }
+  }
+  useEffect(() => {
+    if (focusTable.current && children.data !== undefined && tableRef.current !== null) {
+      focusTable.current = false
+      tableRef.current.focus()
+    }
+  }, [children.data])
 
   const colorContext = useMemo<ColorContext>(
     () => ({
@@ -226,21 +230,10 @@ function MapFolder({ folderId }: { folderId: string }) {
         </div>
 
         {detail !== undefined && (
-          <nav aria-label={t('map.path')} className="text-sm">
-            <ol className="flex flex-wrap items-center gap-1 text-muted-foreground">
-              {detail.ancestors.map((a, index) => (
-                <li key={a.id} className="flex items-center gap-1">
-                  <Link to={folderLink(a)} className="text-primary hover:underline">
-                    {index === 0 ? rootLabel : a.name}
-                  </Link>
-                  <span aria-hidden="true">/</span>
-                </li>
-              ))}
-              <li aria-current="page" className="font-medium break-all text-foreground">
-                {folderName}
-              </li>
-            </ol>
-          </nav>
+          <MapPath
+            steps={pathSteps(detail.ancestors, { id: detail.entry.id, name: folderName }, rootLabel)}
+            folderLink={folderLink}
+          />
         )}
         {folder.isError && <ErrorBanner error={folder.error} onRetry={() => void folder.refetch()} />}
 
@@ -266,6 +259,8 @@ function MapFolder({ folderId }: { folderId: string }) {
                 hoveredId={hoveredId}
                 onHover={setHoveredId}
                 selectedId={selectedId}
+                keyboard={keyboard}
+                tableRef={tableRef}
                 hasMore={hasNextPage}
                 loadingMore={isFetchingNextPage}
                 onLoadMore={loadMore}
@@ -285,12 +280,14 @@ function MapFolder({ folderId }: { folderId: string }) {
                 onHover={setHoveredId}
                 onDrill={drill}
                 onSelect={select}
+                onOther={showSmaller}
               />
             )}
           </div>
         </div>
       </div>
       <DetailPanel />
+      {viewing !== null && <ViewerDialog entry={viewing} onClose={() => setViewing(null)} />}
     </div>
   )
 }

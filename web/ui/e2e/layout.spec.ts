@@ -267,7 +267,8 @@ interface Finding {
 //   detail panel, treemap, and each section and list item of the main area,
 //   such as an opportunity card, a review row, a copy, or a Compare file)
 //   lies inside the window;
-// - every visible element inside a card ends inside that card;
+// - every visible element inside a card ends inside that card, as far as
+//   it is not clipped inside the card;
 // - a table's header cells line up with its rows' cells;
 // - no two visible controls or labels inside a card overlap.
 async function checkLayout(name: string) {
@@ -307,14 +308,22 @@ async function checkLayout(name: string) {
         out.push({ what: describe(card), detail: `outside the window: ${outer.left}–${outer.right} of ${viewportWidth}` })
       }
       // Rows outside the scrolled-to area are clipped vertically by design;
-      // only their sideways extent counts.
+      // only their sideways extent counts. That extent is what a reader sees
+      // of the element: its box cut by every element between it and the
+      // card that clips sideways, such as a path cut from the left.
       for (const el of card.querySelectorAll('*')) {
         if (!shown(el)) {
           continue
         }
-        const rect = box(el)
-        if (rect.right > outer.right + slack || rect.left < outer.left - slack) {
-          out.push({ what: describe(el), detail: `past its card ${describe(card)}: ${rect.left}–${rect.right} of ${outer.left}–${outer.right}` })
+        let { left, right } = box(el)
+        for (let clip = el.parentElement; clip !== null && clip !== card; clip = clip.parentElement) {
+          if (getComputedStyle(clip).overflowX !== 'visible') {
+            left = Math.max(left, box(clip).left)
+            right = Math.min(right, box(clip).right)
+          }
+        }
+        if (right > outer.right + slack || left < outer.left - slack) {
+          out.push({ what: describe(el), detail: `past its card ${describe(card)}: ${left}–${right} of ${outer.left}–${outer.right}` })
         }
       }
       if (card.getAttribute('role') === 'table') {

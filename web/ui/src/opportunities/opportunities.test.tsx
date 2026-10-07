@@ -70,8 +70,12 @@ function junkList(rows: EntryRow[]) {
             reviewRow(`r${row.id}`, { ...row, eff_decision: (decided.get(row.id) ?? 'undecided') as never }),
           )
         const open = rows.filter((row) => !decided.has(row.id))
+        const done = rows.filter((row) => decided.has(row.id))
         return jsonResponse(200, {
-          card: card('system_junk', open.reduce((sum, row) => sum + row.total_bytes, 0), open.length),
+          card: card('system_junk', open.reduce((sum, row) => sum + row.total_bytes, 0), open.length, {
+            decided_rows: done.length,
+            decided_bytes: done.reduce((sum, row) => sum + row.total_bytes, 0),
+          }),
           items,
           next_cursor: null,
         })
@@ -131,6 +135,87 @@ describe('Opportunities', () => {
     expect(requests.filter((r) => new URL(r.url).pathname === '/api/opportunities').map((r) => new URL(r.url).search)).toEqual(
       ['', '?source=fotos'],
     )
+  })
+
+  it('shows what was decided on each card, and says when nothing is left', async () => {
+    stubApi({
+      ...base,
+      'GET /api/opportunities': () =>
+        jsonResponse(200, {
+          cards: [
+            card('leftovers', 1 * GiB, 584, { decided_rows: 20, decided_bytes: 4.4 * GiB }),
+            card('system_junk', 0, 0, { decided_rows: 3, decided_bytes: 30 * MiB }),
+            card('caches', 0, 0),
+          ],
+          coverage: coverage(),
+          computed_at: '2026-10-06T10:00:00Z',
+        }),
+    })
+    renderApp('/opportunities')
+
+    const cards = within(await screen.findByRole('list', { name: 'Opportunity cards' })).getAllByRole('listitem')
+    expect(cards[0]).toHaveTextContent('1 GiB584 items to review · 20 decided (4.4 GiB)')
+    expect(cards[1]).toHaveTextContent(/^System junkNothing left to review3 decided \(30 MiB\)/)
+    expect(cards[2]).toHaveTextContent(/^Caches, temporary files, and build outputNothing left to review/)
+    expect(cards[2]).not.toHaveTextContent(/decided|0\sB/)
+  })
+
+  it('links to the similar folders of the chosen source', async () => {
+    stubApi({
+      ...base,
+      'GET /api/opportunities': () =>
+        jsonResponse(200, { cards: [card('caches', 1 * GiB, 2)], coverage: coverage(), computed_at: null }),
+    })
+    renderApp('/opportunities?source=fotos')
+    expect(await screen.findByRole('link', { name: 'Similar folders' })).toHaveAttribute(
+      'href',
+      '/opportunities/similar?source=fotos',
+    )
+  })
+})
+
+describe('Similar folders', () => {
+  const copia = folderRow('5', 'Fotos - Copia', { total_bytes: 900 * MiB })
+  const fotos = folderRow('2', 'Fotos', { total_bytes: 950 * MiB })
+  const overlap = {
+    ...relationTo(fotos, {
+      id: '9',
+      kind: 'overlap',
+      matched_bytes: 898 * MiB,
+      redundant_bytes: 0,
+      only_here: { files: 1, bytes: 2 * MiB },
+      only_there: { files: 3, bytes: 52 * MiB },
+    }),
+    a: copia,
+  }
+
+  it('lists each pair with its bytes in common and what is only on each side, with Compare', async () => {
+    const requests = stubApi({
+      ...base,
+      'GET /api/relations': () => jsonResponse(200, { items: [overlap], next_cursor: null }),
+    })
+    renderApp('/opportunities/similar?source=fotos')
+
+    const list = await screen.findByRole('list', { name: 'Similar folders' })
+    const row = list.children[0] as HTMLElement
+    expect(within(row).getByRole('link', { name: 'Fotos - Copia' })).toBeInTheDocument()
+    expect(within(row).getByRole('link', { name: 'Fotos' })).toBeInTheDocument()
+    expect(row).toHaveTextContent(
+      '898 MiB in common · Only in Fotos - Copia: 1 file (2 MiB) · Only in Fotos: 3 files (52 MiB)',
+    )
+    expect(within(row).getByRole('link', { name: 'Compare' })).toHaveAttribute('href', '/compare?left=5&right=2')
+    // Read-only: a similar folder is not a copy.
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(row).queryByRole('group')).not.toBeInTheDocument()
+    expect(
+      requests.filter((r) => new URL(r.url).pathname === '/api/relations').map((r) => new URL(r.url).search),
+    ).toEqual(['?kind=overlap&source=fotos'])
+  })
+
+  it('says when there are none', async () => {
+    stubApi({ ...base, 'GET /api/relations': () => jsonResponse(200, { items: [], next_cursor: null }) })
+    renderApp('/opportunities/similar')
+    expect(await screen.findByText('No similar folders.')).toBeInTheDocument()
   })
 })
 
@@ -318,6 +403,25 @@ describe('Review list', () => {
     await user.click(screen.getByRole('checkbox', { name: 'Show decided rows' }))
     expect(screen.queryByRole('region', { name: 'Decided rows' })).not.toBeInTheDocument()
     expect(router.state.location.search).toBe('')
+  })
+
+  it('shows its decided figures in its header, and says when nothing is left', async () => {
+    const list = junkList([thumbs, recycler])
+    list.decided.set('21', 'discard')
+    stubApi({ ...base, ...list.routes })
+    renderApp('/opportunities/system_junk')
+    const user = userEvent.setup()
+
+    const row = (await screen.findByRole('link', { name: recycler.path })).closest('li')!
+    const header = () => screen.getByText('Based on the rules', { exact: false }).closest('p')!
+    expect(header()).toHaveTextContent('22 MiB 1 item to review · 1 decided (21 MiB) · Based on the rules')
+
+    await user.click(
+      within(within(row).getByRole('group', { name: 'Decision for RECYCLER' })).getByRole('button', { name: 'Discard' }),
+    )
+    await waitFor(() =>
+      expect(header()).toHaveTextContent('Nothing left to review 2 decided (43 MiB) · Based on the rules'),
+    )
   })
 
   it('selects every open row with the usual confirmation and report', async () => {

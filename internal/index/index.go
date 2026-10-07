@@ -33,6 +33,14 @@
 // root. An update of a file whose own facts changed also deletes its
 // file_content and archives rows in the same batch (R2 D4), and a scan that
 // finishes successfully runs the OnScanDone hook.
+//
+// The owner's overrides (entry_overrides, r2b design D3) are read when a
+// scan starts and applied through rules.ApplyOwner right after the rules
+// classify an entry, so rows, compositions, and inside lists come out as
+// for a rule result, and a rescan with unchanged overrides writes nothing.
+// An override set while a scan runs sets sources.rescan_requested; the scan
+// that ends with it set clears it and runs its job once more (jobs.Defer),
+// and only the last pass runs the OnScanDone hook.
 package index
 
 import (
@@ -115,6 +123,12 @@ func (h *Handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error 
 		return err
 	}
 	defer children.Close()
+	// The owner's overrides as they are now: one set later reaches this
+	// scan's source through rescan_requested (r2b design D3).
+	owner, err := readOverrides(ctx, h.st.Reader(), job.SourceID)
+	if err != nil {
+		return err
+	}
 
 	walkCtx, stopWalk := context.WithCancelCause(ctx)
 	defer stopWalk(nil)
@@ -126,7 +140,7 @@ func (h *Handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error 
 	s := &walk{
 		ctx: walkCtx, rt: rt, pol: h.pol, caps: opened.Source.Caps, w: w, children: children,
 		listN: h.cfg.ListBatch, batchN: h.cfg.BatchSize, codec: newCodec(), progress: map[string]int64{},
-		held: map[uint64]int32{},
+		held: map[uint64]int32{}, owner: owner,
 	}
 	s.report()
 	walkErr := s.run(opened.Root, []byte(filepath.Base(opened.AbsRoot)), root)
@@ -148,14 +162,25 @@ func (h *Handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error 
 	s.report()
 	s.progress[ProgressPhase] = PhaseFinishing
 	rt.Progress(s.progress)
-	if err := w.finishScan(ctx, h.pol.Version()); err != nil {
+	again, err := w.finishScan(ctx, h.pol.Version())
+	if err != nil {
 		return err
+	}
+	if again {
+		// An override arrived during this pass, which may have read the
+		// overrides before it: one more pass converges (r2b design D3). The
+		// job runs again at once; the after-scan hook waits for its end.
+		return &jobs.Defer{Until: h.clk.Now(), Reason: DeferRescanRequested}
 	}
 	if h.done != nil {
 		h.done(ctx, job.SourceID)
 	}
 	return nil
 }
+
+// DeferRescanRequested is the reason of a scan job that runs one more pass
+// because the owner overrode a classification during the pass that ended.
+const DeferRescanRequested = "rescan_requested"
 
 // cmpErr returns the first non-nil error.
 func cmpErr(first, then error) error {

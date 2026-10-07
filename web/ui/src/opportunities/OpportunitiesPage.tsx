@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router'
 
 import { fetchOpportunities, opportunitiesQueryKey } from '@/api/opportunities'
 import { ErrorBanner } from '@/app/ErrorBanner'
@@ -41,6 +42,15 @@ export function OpportunitiesPage() {
       {data !== undefined && (
         <>
           <CardList cards={data.cards} source={source} />
+          <p className="text-sm">
+            <Link
+              to={{ pathname: '/opportunities/similar', search: source === null ? '' : `?${new URLSearchParams({ source })}` }}
+              className="font-medium text-primary hover:underline"
+            >
+              {t('opportunities.similarLink')}
+            </Link>{' '}
+            <span className="text-muted-foreground">{t('opportunities.similarHelp')}</span>
+          </p>
           <p className="text-sm text-muted-foreground">
             {data.computed_at === null
               ? t('opportunities.notComputed')

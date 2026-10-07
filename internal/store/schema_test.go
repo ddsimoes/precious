@@ -306,7 +306,7 @@ func assertForeignKeysIndexed(t *testing.T, s *Store, parent string, min int) {
 // rowid removes it.
 func TestEntryNamesInsertAndContentlessDelete(t *testing.T) {
 	s, _ := openTemp(t, Options{})
-	names := map[int64]string{1: "Meu orcamento casamento.xls", 2: "Orçamento 2006.doc", 3: "fotos.zip"}
+	names := map[int64]string{1: "Meu orcamento casamento.xls", 2: "Orçamento 2006.doc", 3: "fotos.zip", 4: "Confraternização 2018"}
 	for id, name := range names {
 		mustWrite(t, s, `INSERT INTO entry_names (rowid, name) VALUES (?, ?)`, id, name)
 	}
@@ -333,6 +333,13 @@ func TestEntryNamesInsertAndContentlessDelete(t *testing.T) {
 
 	if got := match(`"AMENTO"`); !reflect.DeepEqual(got, []int64{1, 2}) {
 		t.Fatalf(`match "AMENTO" = %v, want [1 2]`, got)
+	}
+	// The index folds accents on both sides (migration 0003, r2b D7).
+	if got := match(`"orcamento"`); !reflect.DeepEqual(got, []int64{1, 2}) {
+		t.Fatalf(`match "orcamento" = %v, want [1 2]`, got)
+	}
+	if got := match(`"confraternizacao"`); !reflect.DeepEqual(got, []int64{4}) {
+		t.Fatalf(`match "confraternizacao" = %v, want [4]`, got)
 	}
 	mustWrite(t, s, `DELETE FROM entry_names WHERE rowid = ?`, 1)
 	if got := match(`"amento"`); !reflect.DeepEqual(got, []int64{2}) {

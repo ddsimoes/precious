@@ -15,7 +15,8 @@ import { useSources } from '@/api/sources'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { CompareWith } from '@/compare/CompareWith'
 import { Button } from '@/components/ui/button'
-import { ArchiveSection, CopiesSection, RelationsSection } from '@/detail/ContentSections'
+import { ArchiveNoteSection, ArchiveSection, CopiesSection, RelationsSection } from '@/detail/ContentSections'
+import { ClassificationControls } from '@/detail/ClassificationControls'
 import { DecisionControls } from '@/detail/DecisionControls'
 import { InsideList } from '@/detail/InsideList'
 import { Preview } from '@/detail/Preview'
@@ -56,12 +57,16 @@ export function DetailPanel() {
   })
 
   // Opened as a drawer, the panel takes the focus, and gives it back to
-  // where it was when it closes.
+  // where it was when it closes. The entry's own table row keeps the focus,
+  // so that the Map keys go on walking the rows (r2b E1).
   useEffect(() => {
     if (entryId === null || typeof window.matchMedia !== 'function' || window.matchMedia(sideBySideQuery).matches) {
       return
     }
     const previous = document.activeElement
+    if (previous instanceof HTMLElement && previous.dataset.rowId === entryId) {
+      return
+    }
     panelRef.current?.focus()
     return () => {
       if (previous instanceof HTMLElement && previous.isConnected) {
@@ -120,6 +125,7 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
   const folder = entry.kind === 'directory'
   const drillable = isDrillable(entry)
   const member = isMember(entry)
+  const listed = detail.archive?.state === 'complete'
   const rootLabel = sources.data?.sources.find((s) => s.id === entry.source_id)?.label ?? t('entry.root')
   const parent = ancestors.at(-1)
   const archiveName = ancestors.find((a) => a.id === entry.archive_id)?.name ?? entry.archive_id ?? ''
@@ -164,15 +170,22 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       </nav>
 
       <div className="flex flex-wrap gap-2">
+        {/* A complete archive opens as a folder first (r2b design D10);
+            the viewer only offers it for download. */}
+        {listed && (
+          <Button asChild size="sm">
+            <Link to={`/map/${entry.id}`}>{t('detail.openArchive')}</Link>
+          </Button>
+        )}
         {entry.kind === 'file' && (
-          <Button size="sm" onClick={() => setViewing(true)}>
+          <Button size="sm" variant={listed ? 'outline' : 'default'} onClick={() => setViewing(true)}>
             {t('detail.open')}
           </Button>
         )}
         <Button asChild size="sm" variant="outline">
           <Link
             to={
-              drillable || parent === undefined
+              folder || parent === undefined
                 ? { pathname: `/map/${entry.id}`, search: `?entry=${entry.id}` }
                 : { pathname: `/map/${parent.id}`, search: `?entry=${entry.id}` }
             }
@@ -249,7 +262,12 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       )}
       {detail.archive !== null && (
         <Section title={t('detail.archive')}>
-          <ArchiveSection entry={entry} archive={detail.archive} />
+          <ArchiveSection archive={detail.archive} />
+        </Section>
+      )}
+      {detail.archive_note !== null && (
+        <Section title={t('detail.archive')}>
+          <ArchiveNoteSection entry={entry} note={detail.archive_note} />
         </Section>
       )}
       {drillable && (
@@ -284,6 +302,7 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
           <Fact label={t('detail.category')}>
             {withShare(t(`entry.category.${classification.category ?? 'unknown'}`), entry.composition, t, fmt)}
+            {classification.owner.category !== null && <SetByYou />}
           </Fact>
           {typeFamily !== null && (
             <Fact label={t('detail.family')}>
@@ -295,7 +314,24 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
             <Fact label={t('detail.suggestion')}>{t(`entry.triage.${classification.triage}`)}</Fact>
           )}
         </dl>
-        {classification.group && <p className="text-sm">{t('detail.group')}</p>}
+        {classification.owner.category !== null && classification.rules_category !== null && (
+          <p className="text-sm text-muted-foreground">
+            {t('detail.override.rulesSay', { value: t(`entry.category.${classification.rules_category}`) })}
+          </p>
+        )}
+        {(classification.group || classification.owner.group === false) && (
+          <p className="text-sm">
+            {classification.group ? t('detail.group') : t('detail.override.notGroup')}
+            {classification.owner.group !== null && <SetByYou />}
+          </p>
+        )}
+        {classification.owner.group !== null && (
+          <p className="text-sm text-muted-foreground">
+            {t('detail.override.rulesSay', {
+              value: classification.rules_group ? t('detail.override.rulesGroup') : t('detail.override.rulesNoGroup'),
+            })}
+          </p>
+        )}
         {classification.traits.length > 0 && (
           <ul aria-label={t('detail.traits')} className="flex flex-wrap gap-1 text-xs">
             {classification.traits.map((trait) => (
@@ -339,6 +375,9 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
               </ul>
             )}
           </div>
+        )}
+        {!member && (entry.kind === 'file' || folder) && (
+          <ClassificationControls key={entry.id} entry={entry} classification={classification} />
         )}
       </Section>
 
@@ -426,5 +465,16 @@ function Notice({ children }: { children: ReactNode }) {
     <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm">
       {children}
     </p>
+  )
+}
+
+// SetByYou marks a classification value the owner set.
+function SetByYou() {
+  const { t } = useTranslation()
+  return (
+    <>
+      {' '}
+      <span className="ml-1 rounded-full bg-secondary px-2 py-0.5 text-xs font-medium">{t('detail.override.setByYou')}</span>
+    </>
   )
 }

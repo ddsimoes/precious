@@ -1,9 +1,13 @@
 package search
 
 import (
+	"context"
+	"fmt"
+	"slices"
 	"strings"
 
 	"precious/internal/domain"
+	"precious/internal/store"
 )
 
 // Copies and the duplicate filter (R2 design D8, D15). A copy of a content
@@ -100,9 +104,11 @@ func (w withinRange) outside(x string, args *[]any) string {
 //     physical copy;
 //   - unchecked: pending, changed, or unreadable.
 //
-// Every value is tested per candidate row: the filter has no index of its
-// own.
-func dupFilter(b *filterBuilder, dups []domain.DupFilter, w *withinRange) {
+// When the filter drives (r2b design D8), dupDriver has put the file's
+// content row df in the FROM clause; otherwise each candidate row looks it
+// up by its entry ID. Either way, the exact test runs on the candidates
+// only.
+func dupFilter(b *filterBuilder, dups []domain.DupFilter, w *withinRange, driving bool) {
 	var (
 		conds []string
 		args  []any
@@ -126,6 +132,132 @@ func dupFilter(b *filterBuilder, dups []domain.DupFilter, w *withinRange) {
 		}
 	}
 	// A unary + keeps SQLite from choosing an index for the state test.
+	if driving {
+		b.add(`+e.state = 'present' AND (`+strings.Join(conds, ` OR `)+`)`, args...)
+		return
+	}
 	b.add(`+e.state = 'present' AND EXISTS (SELECT 1 FROM file_content df WHERE df.entry_id = e.id AND (`+
 		strings.Join(conds, ` OR `)+`))`, args...)
+}
+
+// copiesOnly reports that every value of dups needs another copy (copies,
+// elsewhere).
+func copiesOnly(dups []domain.DupFilter) bool {
+	for _, d := range dups {
+		if d != domain.DupCopies && d != domain.DupElsewhere {
+			return false
+		}
+	}
+	return true
+}
+
+// dupStates are the content states each duplicate state needs.
+var dupStates = map[domain.DupFilter][]string{
+	domain.DupCopies:    {"hashed"},
+	domain.DupElsewhere: {"hashed"},
+	domain.DupUnique:    {"unique_size", "sampled", "hashed"},
+	domain.DupUnchecked: {"pending", "changed", "unreadable"},
+}
+
+// statesOf are the content states dups need, without repeats, hashed last:
+// only hashed files need the copy test.
+func statesOf(dups []domain.DupFilter) []string {
+	var states []string
+	hashed := false
+	for _, d := range dups {
+		for _, s := range dupStates[d] {
+			if s == "hashed" {
+				hashed = true
+			} else if !slices.Contains(states, s) {
+				states = append(states, s)
+			}
+		}
+	}
+	if hashed {
+		states = append(states, "hashed")
+	}
+	return states
+}
+
+// withCopies are the contents with two or more file rows, or with an
+// archive member: the only ones another copy can hold. Grouping streams
+// over file_content_by_content, so a statement that stops early (a capped
+// count) stops reading it too.
+const withCopies = `(SELECT content_id FROM file_content WHERE content_id IS NOT NULL GROUP BY content_id
+	HAVING count(*) > 1 OR EXISTS (SELECT 1 FROM archive_members m
+		WHERE m.content_id = file_content.content_id AND m.kind = 'file')) dc
+	CROSS JOIN file_content df ON df.content_id = dc.content_id
+	CROSS JOIN entries e ON e.id = df.entry_id`
+
+// byContentState reads the files through their content row df first.
+const byContentState = `file_content df CROSS JOIN entries e ON e.id = df.entry_id`
+
+// dupDriver returns the FROM clause of a query the duplicate filter
+// drives (r2b design D8), adding its index conditions to b: the files of
+// the contents with copies (withCopies) when every value needs a copy,
+// otherwise the files of source (every source when "") in the content
+// states the values need, through file_content_by_source.
+func dupDriver(b *filterBuilder, dups []domain.DupFilter, source string) string {
+	if source != "" {
+		b.add(`df.source_id = ?`, source)
+	}
+	if copiesOnly(dups) {
+		return withCopies
+	}
+	if source == "" {
+		b.add(`df.source_id IN (SELECT id FROM sources)`)
+	}
+	in(b, `df.state`, statesOf(dups))
+	return byContentState
+}
+
+// arm is one (source, content state) range of file_content_by_source,
+// which holds its files in size order.
+type arm struct {
+	source, state string
+}
+
+// dupArms returns the ranges of file_content_by_source a query the
+// duplicate filter drives reads (r2b design D8): one per source (source,
+// or every source when "") and content state dups need, by state in
+// dupStates order, those that need no copy test first. A file's size is its
+// total_bytes, and file_content.size is its entry's size (hashing copies
+// it, and the scan drops the row when the file changes), so each range is
+// in the order of a page by bytes, and SQLite merges them without sorting.
+func dupArms(ctx context.Context, q store.Queryer, dups []domain.DupFilter, source string) ([]arm, error) {
+	sources := []string{source}
+	if source == "" {
+		var err error
+		if sources, err = sourceIDs(ctx, q); err != nil {
+			return nil, err
+		}
+	}
+	arms := []arm{} // never nil: no source has no files
+	for _, state := range statesOf(dups) {
+		for _, s := range sources {
+			arms = append(arms, arm{source: s, state: state})
+		}
+	}
+	return arms, nil
+}
+
+// sourceIDs lists the IDs of every source.
+func sourceIDs(ctx context.Context, q store.Queryer) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id FROM sources ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("search: sources: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("search: sources: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("search: sources: %w", err)
+	}
+	return ids, nil
 }

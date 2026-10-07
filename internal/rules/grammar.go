@@ -217,6 +217,12 @@ func (p *Policy) loadRules(data []byte, add func(string, ...any)) {
 	}
 	slices.SortFunc(p.fileRules, byPriority)
 	slices.SortFunc(p.folderRules, byPriority)
+	p.byID = make(map[string]*rule, len(p.fileRules)+len(p.folderRules))
+	for _, rs := range [][]rule{p.fileRules, p.folderRules} {
+		for i := range rs {
+			p.byID[rs[i].id] = &rs[i]
+		}
+	}
 }
 
 // signalList validates signal IDs listed under key against the markers file.

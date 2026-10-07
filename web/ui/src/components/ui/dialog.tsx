@@ -14,17 +14,30 @@ interface DialogProps {
 }
 
 // Dialog is a modal dialog on the native <dialog> element, shown while it is
-// rendered. The browser makes the rest of the page inert and returns focus
-// when it closes; nothing injects styles, so the strict CSP holds.
+// rendered. The browser makes the rest of the page inert; nothing injects
+// styles, so the strict CSP holds. A dialog removed from the page is not
+// closed by the browser, which then returns focus nowhere: Dialog gives it
+// back to the element that had it when the dialog opened, if that element
+// is still in the page (r2b design D9).
 export function Dialog({ title, description, onClose, alert = false, className, children }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null)
+  // opener is read once: a second run of the effect (React's development
+  // checks) would find the focus inside the dialog.
+  const opener = useRef<Element | null>(null)
   const titleId = useId()
   const descriptionId = useId()
 
   useEffect(() => {
+    opener.current ??= document.activeElement
     const dialog = ref.current
     if (dialog !== null && !dialog.open) {
       dialog.showModal()
+    }
+    return () => {
+      const previous = opener.current
+      if (previous instanceof HTMLElement && previous.isConnected) {
+        previous.focus()
+      }
     }
   }, [])
 

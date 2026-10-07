@@ -2,6 +2,7 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
+import { rememberSource } from '@/app/sourceChoice'
 import { MockEventSource } from '@/test/eventSource'
 import { card, fotosSource, homeResponse, scanEvent, usbSource } from '@/test/fixtures'
 import { errorResponse, jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
@@ -126,7 +127,7 @@ describe('Home screen', () => {
     expect(homeRequests(requests)).toEqual(['?source=fotos'])
   })
 
-  it('says when its figures are partial', async () => {
+  it('says when its figures are partial, linking to what could not be read', async () => {
     stubApi({
       'GET /api/session': () => jsonResponse(200, signedIn),
       'GET /api/sources': () => jsonResponse(200, { sources: [fotosSource()] }),
@@ -135,8 +136,29 @@ describe('Home screen', () => {
     renderApp('/')
 
     expect(
-      await screen.findByText('Some folders could not be read, so these figures are incomplete.'),
+      await screen.findByText(/^Some folders could not be read, so these figures are incomplete\./),
     ).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'See what could not be read' })).toHaveAttribute(
+      'href',
+      '/search?state=unreadable',
+    )
+  })
+
+  it('links its partial figures to what could not be read in the source shown', async () => {
+    stubApi({
+      'GET /api/session': () => jsonResponse(200, signedIn),
+      'GET /api/sources': () => jsonResponse(200, { sources: [fotosSource(), usbSource()] }),
+      'GET /api/home': () => jsonResponse(200, homeResponse({ partial: true })),
+    })
+    const { router } = renderApp('/?source=old-disk')
+    const link = () => screen.getByRole('link', { name: 'See what could not be read' })
+    await screen.findByRole('link', { name: 'See what could not be read' })
+    expect(link()).toHaveAttribute('href', '/search?state=unreadable&source=old-disk')
+
+    // Without a source in the address, Home shows the remembered one.
+    act(() => rememberSource('fotos'))
+    await act(() => router.navigate('/'))
+    await waitFor(() => expect(link()).toHaveAttribute('href', '/search?state=unreadable&source=fotos'))
   })
 
   it('shows active scans and follows their progress', async () => {

@@ -29,9 +29,21 @@ const summary = {
   unchecked: { files: 4, bytes: 12 * MiB },
 }
 
-function item(path: string, left: EntryRow | null, right: EntryRow | null): CompareItem {
-  return { path, path_b64: btoa(path), left, right }
+function item(path: string, left: EntryRow | null, right: EntryRow | null, overrides: Partial<CompareItem> = {}): CompareItem {
+  return {
+    path,
+    path_b64: btoa(path),
+    left_path: left === null ? null : path,
+    right_path: right === null ? null : path,
+    left,
+    right,
+    twin: null,
+    ...overrides,
+  }
 }
+
+// opening is the server's order for a comparison opened without a group.
+const opening: Bucket[] = ['only_left', 'only_right', 'different', 'unchecked', 'identical']
 
 const groups: Partial<Record<Bucket, CompareItem[]>> = {
   only_right: [item('2006/Praia/DSC_editada.JPG', null, editada)],
@@ -44,15 +56,18 @@ const base = {
   'GET /api/tags': () => jsonResponse(200, { tags: [] }),
 }
 
+// compareRoute serves Compare as the server does: the group asked for, or
+// without one the first holding files, named in bucket.
 function compareRoute(decided: Map<string, string> = new Map(), sums: typeof summary = summary) {
   return (request: Request) => {
     const params = new URL(request.url).searchParams
-    const items = (groups[params.get('bucket') as Bucket] ?? []).map((i) => ({
+    const bucket = (params.get('bucket') as Bucket | null) ?? opening.find((b) => sums[b].files > 0) ?? 'only_left'
+    const items = (groups[bucket] ?? []).map((i) => ({
       ...i,
       left: i.left,
       right: i.right === null ? null : { ...i.right, eff_decision: decided.get(i.right.id) ?? 'undecided' },
     }))
-    return jsonResponse(200, { left: fotos, right: copia, summary: sums, items, next_cursor: null })
+    return jsonResponse(200, { left: fotos, right: copia, summary: sums, bucket, items, next_cursor: null })
   }
 }
 
@@ -76,15 +91,13 @@ describe('Compare', () => {
     const { router } = renderApp('/compare?left=2&right=5')
     const user = userEvent.setup()
 
-    // Nothing is only on the left of this pair: it opens on the right.
+    // Nothing is only on the left of this pair: the server opens it on the
+    // right, in the one request that computes the comparison.
     const files = within(await screen.findByRole('list', { name: 'Files: Only on the right' }))
     expect(files.getByRole('link', { name: '2006/Praia/DSC_editada.JPG' })).toBeInTheDocument()
     expect(router.state.location.search).toBe('?left=2&right=5&bucket=only_right')
     expect(router.state.historyAction).toBe('REPLACE')
-    expect(compareRequests(requests)).toEqual([
-      { left: '2', right: '5' },
-      { left: '2', right: '5', bucket: 'only_right' },
-    ])
+    expect(compareRequests(requests)).toEqual([{ left: '2', right: '5' }])
     const sides = within(screen.getByRole('region', { name: 'Folders compared' }))
     expect(sides.getByText('Fotos')).toBeInTheDocument()
     expect(sides.getByText('Fotos - Copia')).toBeInTheDocument()
@@ -102,6 +115,39 @@ describe('Compare', () => {
     expect(await screen.findByText('No files in this group.')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Only on the left/ })).toHaveAttribute('aria-current', 'page')
     expect(router.state.location.search).toBe('?left=2&right=5&bucket=only_left')
+    expect(compareRequests(requests)).toEqual([
+      { left: '2', right: '5' },
+      { left: '2', right: '5', bucket: 'only_left' },
+    ])
+  })
+
+  it('loads more of the group it opened on', async () => {
+    const more = entryRow({ id: '53', name: 'DSC02.JPG', path: 'Fotos - Copia/2006/Praia/DSC02.JPG', size: MiB })
+    const requests = stubApi({
+      ...base,
+      'GET /api/compare': (request) => {
+        const params = new URL(request.url).searchParams
+        const next = params.get('cursor') === null
+        return jsonResponse(200, {
+          left: fotos,
+          right: copia,
+          summary: { ...summary, only_right: { files: 2, bytes: 3 * MiB } },
+          bucket: 'only_right',
+          items: next ? groups.only_right : [item('2006/Praia/DSC02.JPG', null, more)],
+          next_cursor: next ? '1' : null,
+        })
+      },
+    })
+    renderApp('/compare?left=2&right=5')
+    const user = userEvent.setup()
+
+    await screen.findByRole('list', { name: 'Files: Only on the right' })
+    await user.click(screen.getByRole('button', { name: 'Load more' }))
+    expect(await screen.findByRole('link', { name: '2006/Praia/DSC02.JPG' })).toBeInTheDocument()
+    expect(compareRequests(requests)).toEqual([
+      { left: '2', right: '5' },
+      { left: '2', right: '5', bucket: 'only_right', cursor: '1' },
+    ])
   })
 
   it('opens a pair with the same content on its identical files', async () => {
@@ -123,6 +169,43 @@ describe('Compare', () => {
     expect(within(row).getByRole('group', { name: `Decision for Right: ${praiaCopy.path}` })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Identical/ })).toHaveAttribute('aria-current', 'page')
     expect(compareRequests(requests)).toEqual([{ left: '2', right: '5', bucket: 'identical' }])
+  })
+
+  it('shows where each copy is, and the file an extra copy is the same as', async () => {
+    const left = entryRow({ id: '31', name: 'img_0001.jpg', path: 'fotos-b/2002/12/img_0001.jpg', size: MiB })
+    const right = entryRow({ id: '61', name: 'IMG_0001.jpg', path: 'fotos/2014/celular/IMG_0001.jpg', size: MiB })
+    const extra = entryRow({ id: '62', name: 'IMG_0001 (1).jpg', path: 'fotos/2015/IMG_0001 (1).jpg', size: MiB })
+    stubApi({
+      ...base,
+      'GET /api/compare': () =>
+        jsonResponse(200, {
+          left: folderRow('3', 'fotos-b'),
+          right: folderRow('6', 'fotos'),
+          summary: { ...summary, identical: { files: 2, bytes: 2 * MiB } },
+          bucket: 'identical',
+          items: [
+            item('2002/12/img_0001.jpg', left, right, { right_path: '2014/celular/IMG_0001.jpg' }),
+            item('2015/IMG_0001 (1).jpg', null, extra, {
+              twin: { path: '2002/12/img_0001.jpg', entry: left },
+            }),
+          ],
+          next_cursor: null,
+        }),
+    })
+    renderApp('/compare?left=3&right=6&bucket=identical')
+
+    const list = await screen.findByRole('list', { name: 'Files: Identical' })
+    const [pair, copy] = Array.from(list.children) as HTMLElement[]
+    // The pair: each side's path inside its side, as they differ.
+    expect(within(pair!).getByText('2014/celular/IMG_0001.jpg')).toBeInTheDocument()
+    expect(within(pair!).getAllByText('2002/12/img_0001.jpg')).toHaveLength(2) // the item, and its left path
+    expect(within(pair!).queryByText(/Extra copy/)).not.toBeInTheDocument()
+    // The extra copy names the left file holding its content.
+    expect(copy).toHaveTextContent('Extra copy, same as 2002/12/img_0001.jpg on the left')
+    expect(within(copy!).getByRole('link', { name: '2002/12/img_0001.jpg' })).toHaveAttribute(
+      'href',
+      '/compare?left=3&right=6&bucket=identical&entry=31',
+    )
   })
 
   it('decides a file only on the right, and checks the two folders first', async () => {

@@ -77,3 +77,17 @@ func TestMemberNameCopies(t *testing.T) {
 		t.Fatalf("name changed to %q", name)
 	}
 }
+
+// The formats domain lists as not opened (r2b design D10) are never opened.
+func TestUnsupportedAreNotOpened(t *testing.T) {
+	t.Parallel()
+	for _, ext := range domain.UnsupportedArchiveExtensions {
+		name := []byte("backup." + ext)
+		if f, ok := Classify(name); ok {
+			t.Errorf("%s is opened as %q and listed as unsupported", name, f)
+		}
+		if !domain.UnsupportedArchive(name) {
+			t.Errorf("%s is not unsupported", name)
+		}
+	}
+}

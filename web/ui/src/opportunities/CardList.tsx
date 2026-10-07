@@ -6,8 +6,8 @@ import { useFormat } from '@/lib/format'
 import { cardFigures } from '@/opportunities/cardFigures'
 
 // CardList shows the opportunity cards largest first (R2 design D12), each
-// with its bytes, its open rows, and what it rests on, and each opening its
-// review list for the same source.
+// with its bytes, its open rows and those decided (r2b D13), and what it
+// rests on, and each opening its review list for the same source.
 export function CardList({ cards, source }: { cards: Card[]; source: string | null }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -29,7 +29,9 @@ export function CardList({ cards, source }: { cards: Card[]; source: string | nu
               {t(`opportunities.list.${card.list}`)}
             </Link>
             <span className="text-2xl font-semibold">{figures.headline}</span>
-            {figures.rows !== null && <span>{figures.rows}</span>}
+            {(figures.rows !== null || figures.decided !== null) && (
+              <span>{[figures.rows, figures.decided].filter((s) => s !== null).join(' · ')}</span>
+            )}
             <span className="text-muted-foreground">{t(`opportunities.help.${card.list}`)}</span>
             <span className="text-xs text-muted-foreground">{t(`opportunities.basis.${card.basis}`)}</span>
           </li>

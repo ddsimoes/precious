@@ -26,19 +26,26 @@ const maxRetryDelay = 30_000
 // growing delay with ?last_event_id= set to the last event received, so no
 // event is lost. A `reset` event (that position is no longer kept), or a
 // connection that starts at the newest event, may have skipped events: the
-// live responses are then fetched again.
+// live responses are then fetched again. On the stream's first connection
+// only the responses older than the stream are (r2b design D9): those
+// fetched since then already hold what happened before it, and fetching
+// them again doubled every request of a page load.
 export class JobEventStream {
   private readonly queryClient: QueryClient
   private source: EventSource | null = null
   private lastEventId = ''
   private retryDelay = minRetryDelay
   private retryTimer: number | undefined
+  // startedAt is when start() was called, until the first connection takes
+  // it.
+  private startedAt: number | undefined
 
   constructor(queryClient: QueryClient) {
     this.queryClient = queryClient
   }
 
   start() {
+    this.startedAt = Date.now()
     this.connect()
   }
 
@@ -57,12 +64,14 @@ export class JobEventStream {
     const source = new EventSource(url)
     this.source = source
     let refreshOnOpen = !resuming
+    const startedAt = this.startedAt
+    this.startedAt = undefined
 
     source.addEventListener('open', () => {
       this.retryDelay = minRetryDelay
       if (refreshOnOpen) {
         refreshOnOpen = false
-        this.refreshLive()
+        this.refreshLive(startedAt)
       }
     })
     source.addEventListener('job', (message: MessageEvent<string>) => {
@@ -91,9 +100,19 @@ export class JobEventStream {
     })
   }
 
-  private refreshLive() {
+  // refreshLive fetches the live responses again: all of them, or with
+  // olderThan only those last updated before it, without cancelling a fetch
+  // already on its way.
+  private refreshLive(olderThan?: number) {
     for (const queryKey of liveQueryRoots) {
-      void this.queryClient.invalidateQueries({ queryKey })
+      if (olderThan === undefined) {
+        void this.queryClient.invalidateQueries({ queryKey })
+      } else {
+        void this.queryClient.invalidateQueries(
+          { queryKey, predicate: (query) => query.state.dataUpdatedAt < olderThan },
+          { cancelRefetch: false },
+        )
+      }
     }
   }
 }

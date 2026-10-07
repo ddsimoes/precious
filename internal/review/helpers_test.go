@@ -90,7 +90,7 @@ func (w *world) relation(kind string, a, b domain.EntryID) int64 {
 // decide sets an own decision as set-decision does.
 func (w *world) decide(id domain.EntryID, d domain.Decision) {
 	w.t.Helper()
-	svc := decisions.New(clock.Real{})
+	svc := decisions.New(clock.Real{}, rules.Default(), nil)
 	err := w.st.Write(context.Background(), func(tx *sql.Tx) error {
 		_, err := svc.SetDecision(context.Background(), tx, decisions.SetDecision{EntryID: id, Decision: d})
 		return err

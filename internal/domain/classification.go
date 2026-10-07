@@ -176,6 +176,15 @@ var Decisions = []Decision{DecisionUndecided, DecisionKeep, DecisionDiscard, Dec
 // included, is invalid_request.
 func ParseDecision(s string) (Decision, error) { return parseEnum("decision", Decisions, s) }
 
+// Override is the owner's classification of one entry, which wins over the
+// rules (§6.6, I4; r2b design D1): a category from the fixed list, and a mark
+// that makes a folder a group or unmakes a rule group. The zero value follows
+// the rules for both.
+type Override struct {
+	Category Category // "" follows the rules
+	Group    *bool    // nil follows the rules
+}
+
 // parseEnum returns the value of values named s, or an invalid_request error
 // naming what kind of value s is not.
 func parseEnum[T ~string](what string, values []T, s string) (T, error) {

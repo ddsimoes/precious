@@ -1,7 +1,7 @@
 // Package sources is the source registry (§6.1, design D4/D5): the sources
 // table, where each source's volume is mounted now, the picker that is the
-// only way to name a folder, and the add-source, rename-source, and
-// remove-source commands.
+// only way to name a folder, and the add-source, rename-source,
+// remove-source, and set-source-schedule commands.
 //
 // A source is recorded as a volume identity plus its root folder relative to
 // that volume, never as an absolute path. Resolving it reads the current mount
@@ -86,6 +86,14 @@ type Source struct {
 	RootEntry  domain.EntryID
 	ScanGen    int64
 	LastScanAt *time.Time
+	// Schedule is the rescan schedule, nil when off (r2b design D6), and
+	// NextScanAt its next due time, nil when off.
+	Schedule   *domain.Schedule
+	NextScanAt *time.Time
+	// SkippedAt is the last due time that was skipped, and SkipReason why:
+	// the source's state then. Both are unset when the last due time ran.
+	SkippedAt  *time.Time
+	SkipReason string
 }
 
 // Opened is an online source with its root folder open. The caller closes
@@ -152,7 +160,8 @@ func (s *Service) AllowedRoots() []string { return append([]string(nil), s.roots
 
 const sourceColumns = `s.id, s.label, s.volume_kind, s.volume_id, s.volume_label, s.fs_type, s.strong,
 	s.rel_root, s.device_key, s.capabilities, s.state, s.state_reason, s.mount_point, s.scan_gen,
-	s.last_scan_at, (SELECT e.id FROM entries e WHERE e.source_id = s.id AND e.path = X'')`
+	s.last_scan_at, (SELECT e.id FROM entries e WHERE e.source_id = s.id AND e.path = X''),
+	s.scan_schedule, s.next_scan_at, s.schedule_skipped_at, s.schedule_skip_reason`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -166,9 +175,12 @@ func scanSource(r rowScanner) (Source, error) {
 		mountPoint                     []byte
 		strong                         int64
 		lastScanAt, rootEntry          sql.NullInt64
+		schedule, skipReason           sql.NullString
+		nextScanAt, skippedAt          sql.NullInt64
 	)
 	err := r.Scan(&src.ID, &src.Label, &kind, &src.Volume.ID, &volumeLabel, &src.Volume.FSType, &strong,
-		&src.RelRoot, &deviceKey, &caps, &state, &reason, &mountPoint, &src.ScanGen, &lastScanAt, &rootEntry)
+		&src.RelRoot, &deviceKey, &caps, &state, &reason, &mountPoint, &src.ScanGen, &lastScanAt, &rootEntry,
+		&schedule, &nextScanAt, &skippedAt, &skipReason)
 	if err != nil {
 		return Source{}, err
 	}
@@ -190,7 +202,26 @@ func scanSource(r rowScanner) (Source, error) {
 		src.LastScanAt = &t
 	}
 	src.RootEntry = domain.EntryID(rootEntry.Int64)
+	if schedule.Valid {
+		var sch domain.Schedule
+		if err := json.Unmarshal([]byte(schedule.String), &sch); err != nil {
+			return Source{}, fmt.Errorf("sources: source %s schedule: %w", src.ID, err)
+		}
+		src.Schedule = &sch
+	}
+	src.NextScanAt = optTime(nextScanAt)
+	src.SkippedAt = optTime(skippedAt)
+	src.SkipReason = skipReason.String
 	return src, nil
+}
+
+// optTime is a stored Unix-millisecond time, nil when NULL.
+func optTime(ms sql.NullInt64) *time.Time {
+	if !ms.Valid {
+		return nil
+	}
+	t := clock.FromMillis(ms.Int64)
+	return &t
 }
 
 // List returns every source, by label then ID, as last recorded.

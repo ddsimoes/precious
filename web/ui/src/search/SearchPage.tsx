@@ -7,8 +7,10 @@ import { searchFilters } from '@/api/search'
 import { useSources } from '@/api/sources'
 import { useTags } from '@/api/tags'
 import { PageTitle } from '@/app/PageTitle'
+import { SourceFilter } from '@/components/SourceFilter'
 import { Button } from '@/components/ui/button'
 import { DetailPanel } from '@/detail/DetailPanel'
+import { useSourceParam } from '@/lib/sourceParams'
 import { cn } from '@/lib/utils'
 import { ManageTags } from '@/search/ManageTags'
 import { SearchFilters } from '@/search/SearchFilters'
@@ -16,11 +18,19 @@ import { SearchResults } from '@/search/SearchResults'
 
 // SearchPage answers "where is it?" (spec §11.3): the filters of design D11,
 // kept in the address with the API's parameter names, the results with
-// bulk decisions and tags, and the detail panel of ?entry=.
+// bulk decisions and tags, and the detail panel of ?entry=. Without a
+// source in the address it searches the remembered one (r2b design D9).
 export function SearchPage() {
   const { t } = useTranslation()
   const [params, setParams] = useSearchParams()
-  const filters = searchFilters(params)
+  const source = useSourceParam()
+  const sourced = new URLSearchParams(params)
+  if (source === null) {
+    sourced.delete('source')
+  } else {
+    sourced.set('source', source)
+  }
+  const filters = searchFilters(sourced)
   const filtersKey = filters.toString()
   const within = params.get('within')
   const tags = useTags()
@@ -39,7 +49,10 @@ export function SearchPage() {
     // it opens over the results (DetailPanel).
     <div className={cn('grid items-start gap-4', params.has('entry') && '3xl:grid-cols-[minmax(0,1fr)_26rem]')}>
       <div className="grid min-w-0 gap-4">
-        <PageTitle>{t('pages.search')}</PageTitle>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <PageTitle>{t('pages.search')}</PageTitle>
+          <SourceFilter />
+        </div>
         {within !== null && <WithinFolder id={within} onRemove={removeWithin} />}
         {/* Keyed by the search: a new search resets the form and the selection. */}
         <SearchFilters key={`filters?${filtersKey}`} params={params} onSearch={(next) => setParams(next)} />

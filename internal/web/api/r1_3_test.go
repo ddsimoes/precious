@@ -13,6 +13,7 @@ import (
 	"precious/internal/corpus"
 	"precious/internal/decisions"
 	"precious/internal/domain"
+	"precious/internal/rules"
 	"precious/internal/web/clientip"
 )
 
@@ -134,12 +135,12 @@ func TestR1_3SearchFindsFilesAnywhere(t *testing.T) {
 					len(got), len(want), difference(want, got), difference(got, want))
 			}
 
-			var first struct {
+			var count struct {
 				Count any `json:"count"`
 			}
-			e.get(t, base+"&limit=1", 200, &first)
-			if fmt.Sprint(first.Count) != fmt.Sprint(len(want)) {
-				t.Errorf("count %v, want %d", first.Count, len(want))
+			e.get(t, base+"&count=only", 200, &count)
+			if fmt.Sprint(count.Count) != fmt.Sprint(len(want)) {
+				t.Errorf("count %v, want %d", count.Count, len(want))
 			}
 		})
 	}
@@ -149,7 +150,7 @@ func TestR1_3SearchFindsFilesAnywhere(t *testing.T) {
 // decisions service as the create-tag and set-tags commands do.
 func createTag(t *testing.T, e *env, name string, ids ...domain.EntryID) int64 {
 	t.Helper()
-	svc := decisions.New(clock.Real{})
+	svc := decisions.New(clock.Real{}, rules.Default(), nil)
 	ctx := clientip.With(context.Background(), clientip.Info{Addr: netip.MustParseAddr("192.0.2.7"), Scheme: "https"})
 	var tag decisions.Tag
 	err := e.st.Write(ctx, func(tx *sql.Tx) error {

@@ -46,6 +46,9 @@ export function fotosSource(overrides: Partial<Source> = {}): Source {
     totals: { bytes: 120 * GiB, files: 410_000, dirs: 31_000 },
     last_scan_at: '2026-10-01T14:30:00Z',
     active_job: null,
+    schedule: null,
+    next_scan_at: null,
+    schedule_skipped: null,
     ...overrides,
   }
 }
@@ -65,6 +68,9 @@ export function usbSource(overrides: Partial<Source> = {}): Source {
     totals: { bytes: 5 * GiB, files: 1_200, dirs: 80 },
     last_scan_at: null,
     active_job: null,
+    schedule: null,
+    next_scan_at: null,
+    schedule_skipped: null,
     ...overrides,
   }
 }
@@ -128,7 +134,15 @@ export function coverage(overrides: Partial<Coverage> = {}): Coverage {
 }
 
 export function card(list: Card['list'], bytes: number, rows: number, overrides: Partial<Card> = {}): Card {
-  return { list, bytes, rows, basis: list === 'duplicates' || list === 'unpacked_archives' ? 'content' : 'rules', ...overrides }
+  return {
+    list,
+    bytes,
+    rows,
+    decided_rows: 0,
+    decided_bytes: 0,
+    basis: list === 'duplicates' || list === 'unpacked_archives' ? 'content' : 'rules',
+    ...overrides,
+  }
 }
 
 // copyOf is a CopyJSON of row, which follows its folder.
@@ -263,7 +277,7 @@ export function folderRow(id: string, name: string, overrides: Partial<EntryRow>
 export function entryDetail(row: EntryRow, overrides: Partial<EntryDetail> = {}): EntryDetail {
   return {
     entry: row,
-    ancestors: [{ id: '1', name: '', name_b64: '' }],
+    ancestors: [{ id: '1', name: '', name_b64: '', only_child: false }],
     classification: {
       category: row.category,
       family: row.family,
@@ -273,6 +287,9 @@ export function entryDetail(row: EntryRow, overrides: Partial<EntryDetail> = {})
       veto: row.veto,
       rules: [],
       indicators: [],
+      owner: { category: null, group: null },
+      rules_category: row.category,
+      rules_group: row.group,
     },
     intent: { decision: row.decision, eff_decision: row.eff_decision, from: null, tags: [] },
     stats: null,
@@ -280,6 +297,8 @@ export function entryDetail(row: EntryRow, overrides: Partial<EntryDetail> = {})
     relations: [],
     archive: null,
     coverage: coverage(),
+    only_folder: null,
+    archive_note: null,
     ...overrides,
   }
 }

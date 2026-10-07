@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"precious/internal/archive"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/search"
@@ -27,12 +28,20 @@ type entryBody struct {
 	Relations []relationJSON `json:"relations"`
 	Archive   *archiveJSON   `json:"archive"`
 	Coverage  coverageJSON   `json:"coverage"`
+	// The r2b fields (design D9, D10): the only child of a folder that
+	// holds exactly one entry, a folder; and why an archive file has no
+	// archive.
+	OnlyFolder  *string      `json:"only_folder"`
+	ArchiveNote *archiveNote `json:"archive_note"`
 }
 
 type ancestor struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	NameB64 []byte `json:"name_b64"`
+	// OnlyChild is true when the ancestor holds nothing but the next
+	// ancestor, or the entry itself for the last one (r2b design D9).
+	OnlyChild bool `json:"only_child"`
 }
 
 type classification struct {
@@ -44,6 +53,18 @@ type classification struct {
 	Veto       bool             `json:"veto"`
 	Rules      []ruleJSON       `json:"rules"`
 	Indicators []indicator      `json:"indicators"`
+	// Owner is what the owner set (r2b design D5), null where the rules
+	// decide; RulesCategory and RulesGroup are what the rules would set,
+	// derived from the stored rule IDs (rules.Policy.Recall). RulesCategory
+	// is null for an entry the scan does not classify.
+	Owner         ownerJSON        `json:"owner"`
+	RulesCategory *domain.Category `json:"rules_category"`
+	RulesGroup    bool             `json:"rules_group"`
+}
+
+type ownerJSON struct {
+	Category *domain.Category `json:"category"`
+	Group    *bool            `json:"group"`
 }
 
 type ruleJSON struct {
@@ -108,7 +129,8 @@ type folderStats struct {
 // explanation and the folder's indicators, its intent (decisions.Effective),
 // and a folder's stats with its notable entries (null for any other kind;
 // zero for a folder not scanned yet); and its content, relations, archive,
-// and the global coverage. A member ("m<id>") reads as readMember says.
+// and the global coverage; a folder's only folder, and an archive file's
+// note. A member ("m<id>") reads as readMember says.
 func (h *handler) entry(w http.ResponseWriter, r *http.Request) {
 	ref, err := pathRef(r)
 	if err == nil {
@@ -141,7 +163,13 @@ func (h *handler) entry(w http.ResponseWriter, r *http.Request) {
 			if body.Archive, err = readArchive(ctx, tx, ref.Entry); err != nil {
 				return nil, err
 			}
+			if body.Entry.Kind == domain.EntryDirectory {
+				if body.OnlyFolder, err = onlyFolder(ctx, tx, ref.Entry); err != nil {
+					return nil, err
+				}
+			}
 		}
+		body.ArchiveNote = archiveNoteOf(ref, &body.Entry, body.Archive)
 		if body.Coverage, err = readCoverage(ctx, tx, ""); err != nil {
 			return nil, err
 		}
@@ -245,6 +273,13 @@ func (h *handler) readEntry(ctx context.Context, tx *sql.Tx, id domain.EntryID) 
 	if err := json.Unmarshal(indicators, &c.Indicators); err != nil {
 		return nil, fmt.Errorf("api: indicators of entry %s: %w", id, err)
 	}
+	if c.Owner, err = readOwner(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	if e.Category != "" {
+		rules := h.pol.Recall(ids, e.Kind == domain.EntryDirectory, len(c.Indicators) > 0)
+		c.RulesCategory, c.RulesGroup = &rules.Category, rules.Group
+	}
 	body.Classification = c
 
 	in, err := decisions.Effective(ctx, tx, id)
@@ -279,14 +314,43 @@ func (h *handler) readEntry(ctx context.Context, tx *sql.Tx, id domain.EntryID) 
 	return body, nil
 }
 
-// ancestors lists the folders above id, from the root to its parent.
+// readOwner reads the owner's override of entry id.
+func readOwner(ctx context.Context, tx *sql.Tx, id domain.EntryID) (ownerJSON, error) {
+	var (
+		o        ownerJSON
+		category sql.NullString
+		mark     sql.NullBool
+	)
+	err := tx.QueryRowContext(ctx, `SELECT category, group_mark FROM entry_overrides WHERE entry_id = ?`, int64(id)).
+		Scan(&category, &mark)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return o, nil
+	case err != nil:
+		return o, fmt.Errorf("api: override of entry %s: %w", id, err)
+	}
+	if category.Valid {
+		c := domain.Category(category.String)
+		o.Category = &c
+	}
+	if mark.Valid {
+		o.Group = &mark.Bool
+	}
+	return o, nil
+}
+
+// ancestors lists the folders above id, from the root to its parent. Each
+// one's only_child is one probe of the children index for a child other
+// than the next ancestor (the entry itself for the parent), in every state,
+// as the children listing shows them.
 func ancestors(ctx context.Context, tx *sql.Tx, id domain.EntryID) ([]ancestor, error) {
-	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE up(id, depth) AS (
-			SELECT parent_id, 1 FROM entries WHERE id = ? AND parent_id IS NOT NULL
+	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE up(id, child, depth) AS (
+			SELECT parent_id, id, 1 FROM entries WHERE id = ? AND parent_id IS NOT NULL
 			UNION ALL
-			SELECT e.parent_id, u.depth + 1 FROM up u JOIN entries e ON e.id = u.id WHERE e.parent_id IS NOT NULL
+			SELECT e.parent_id, e.id, u.depth + 1 FROM up u JOIN entries e ON e.id = u.id WHERE e.parent_id IS NOT NULL
 		)
-		SELECT e.id, e.name FROM up u JOIN entries e ON e.id = u.id ORDER BY u.depth DESC`, int64(id))
+		SELECT e.id, e.name, NOT EXISTS (SELECT 1 FROM entries c WHERE c.parent_id = u.id AND c.id <> u.child)
+		FROM up u JOIN entries e ON e.id = u.id ORDER BY u.depth DESC`, int64(id))
 	if err != nil {
 		return nil, fmt.Errorf("api: ancestors of %s: %w", id, err)
 	}
@@ -296,19 +360,92 @@ func ancestors(ctx context.Context, tx *sql.Tx, id domain.EntryID) ([]ancestor, 
 		var (
 			a    int64
 			name []byte
+			only bool
 		)
-		if err := rows.Scan(&a, &name); err != nil {
+		if err := rows.Scan(&a, &name, &only); err != nil {
 			return nil, fmt.Errorf("api: ancestors of %s: %w", id, err)
 		}
 		if name == nil {
 			name = []byte{}
 		}
-		out = append(out, ancestor{ID: domain.EntryID(a).String(), Name: domain.DisplayName(name), NameB64: name})
+		out = append(out, ancestor{ID: domain.EntryID(a).String(), Name: domain.DisplayName(name), NameB64: name, OnlyChild: only})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("api: ancestors of %s: %w", id, err)
 	}
 	return out, nil
+}
+
+// onlyFolder returns the ID of the only child of folder id when it holds
+// exactly one entry, in any state, and that entry is a folder; nil
+// otherwise (r2b design D9). It reads at most two children by the
+// children index.
+func onlyFolder(ctx context.Context, tx *sql.Tx, id domain.EntryID) (*string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind FROM entries WHERE parent_id = ? LIMIT 2`, int64(id))
+	if err != nil {
+		return nil, fmt.Errorf("api: children of %s: %w", id, err)
+	}
+	defer rows.Close()
+	var (
+		n     int
+		child int64
+		kind  domain.EntryKind
+	)
+	for rows.Next() {
+		if err := rows.Scan(&child, &kind); err != nil {
+			return nil, fmt.Errorf("api: children of %s: %w", id, err)
+		}
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("api: children of %s: %w", id, err)
+	}
+	if n != 1 || kind != domain.EntryDirectory {
+		return nil, nil
+	}
+	s := domain.EntryID(child).String()
+	return &s, nil
+}
+
+// archiveNote says why an archive file has no archive (r2b design D10).
+type archiveNote string
+
+const (
+	// noteUnsupported: a known archive format Precious does not open.
+	noteUnsupported archiveNote = "unsupported"
+	// noteNested: a member that is an archive; archives inside archives
+	// are not opened.
+	noteNested archiveNote = "nested"
+	// noteNotListed: a format Precious opens, not listed yet.
+	noteNotListed archiveNote = "not_listed"
+)
+
+// archiveNoteOf returns the note of the file e that ref names, whose
+// archive is a; nil for anything that is no archive file, or that has an
+// archive (its state says the rest).
+func archiveNoteOf(ref domain.Ref, e *entryRow, a *archiveJSON) *archiveNote {
+	if e.Kind != domain.EntryFile || a != nil {
+		return nil
+	}
+	_, opened := archive.Classify(e.NameB64)
+	unsupported := domain.UnsupportedArchive(e.NameB64)
+	var n archiveNote
+	switch {
+	case ref.IsMember():
+		if !opened && !unsupported {
+			return nil
+		}
+		n = noteNested
+	case unsupported:
+		n = noteUnsupported
+	// A missing or unreadable file is not waiting for its listing: its
+	// state says why.
+	case opened && e.State == "present":
+		n = noteNotListed
+	default:
+		return nil
+	}
+	return &n
 }
 
 func refJSON(r *decisions.Ref) *ref {

@@ -238,7 +238,7 @@ After a failed sign-in, the next attempt is refused for 1 s, and each further co
 
 ### Audit trail
 
-Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, and `tag_deleted`. To read the latest ones, run this as the user that owns the state directory:
+Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, `tag_deleted`, `category_set`, and `group_set`. To read the latest ones, run this as the user that owns the state directory:
 
 ```sh
 sqlite3 <state_dir>/precious.db \
@@ -337,6 +337,16 @@ R2 adds hashing, archives, duplicates, Compare, opportunities, and Gems. Its mig
 3. **Replace and restart.** At startup `0002_content` applies to the R1 database in one transaction, and every online source gets a hashing job, which reads file content in the background (see [Hashing](#hashing)). The first run on a large archive can take hours; scans, pages, and decisions are not blocked while it runs.
 
 To roll back, stop Precious, reinstall the R1 binary or image, [restore](#restoring) the backup taken in step 1, and start it. The R1 binary refuses the migrated database (`database has version 2, binary supports up to 1`) and leaves it unmodified, so the backup is the only way back. Decisions and tags recorded after the upgrade are lost with it.
+
+### Upgrading from R2
+
+The update after R2 adds the owner's category overrides and group marks, scheduled rescans, and the Search, Map, and Compare improvements. Its migration `0003_owner` adds the table of overrides and the schedule columns of each source, both empty, and rebuilds the name index so that a search ignores accents. The rebuild reads every name once, which takes seconds per 100,000 entries. Migration `0004_search` adds a small index of the entries that could not be read. Every entry, decision, tag, digest, and listing stays as it was, and no rescan is needed.
+
+1. **Back up first** with the R2 binary still running: `precious backup`.
+2. **Check the configuration** with the new binary; an R2 configuration stays valid.
+3. **Replace and restart.** The migrations apply at startup, each in one transaction.
+
+To roll back, stop Precious, reinstall the R2 binary, [restore](#restoring) the backup, and start it. The R2 binary refuses the migrated database (`database has version 4, binary supports up to 2`) and leaves it unmodified. Overrides, group marks, and schedules set after the upgrade are lost with it.
 
 ### Moving from curator to precious
 
@@ -496,6 +506,18 @@ A source is found by its volume identity and its folder inside the volume (see [
 
 Under systemd's read-only settings or in a container, a disk mounted after the service started may stay invisible to it until Precious restarts (see [Read-only disk mounts](#read-only-disk-mounts-recommended)).
 
+### Rescan schedule
+
+Each source can be rescanned on a schedule: off (the default), daily at a time of day, or weekly on a day of the week at a time of day. Set it with **Change schedule** on the source's card; the time is in the browser's time zone, which is stored with the schedule, so the scan runs at that wall-clock time there whatever the server's own zone. The card shows the schedule, the time of the next scheduled scan, and, when the last due time was skipped, when and why. See [Scheduled scans](#scheduled-scans) for how the scans run.
+
+| Command | Request | Response |
+|---|---|---|
+| `set-source-schedule` | `{"source_id":"fotos","schedule":{"every":"week","weekday":0,"at":"03:00","zone":"America/Sao_Paulo"}}`; `"every":"day"` has no `weekday`; `"schedule":null` turns it off | 200 `{"source": …}` |
+
+`weekday` is 0 (Sunday) to 6 (Saturday), `at` is `HH:MM` from `00:00` to `23:59`, and `zone` is an IANA time zone name, resolved from a copy of the time zone database built into the binary, so it works on every system. A malformed schedule (a bad time, weekday, or zone, a field missing or unknown, or no `schedule` at all) is refused with `invalid_request`, and an unknown source with `unknown_source`; a refused request changes nothing. Setting a schedule computes its next scan from the current time, and turning it off clears it. Each accepted request writes one `source_schedule_set` audit event with the previous and the new schedule.
+
+Each source in `GET /api/sources` carries `schedule` (the object above, or `null` when off), `next_scan_at` (the next due time, or `null`), and `schedule_skipped` (`{"at","reason"}` for the last due time when it was skipped, or `null` when it ran). The reason is the source's state then, `offline` or `unavailable`, or `invalid_schedule` for a stored schedule that no longer validates, which stops its scans until it is set again.
+
 ### Volumes that cannot be recognized when moved
 
 A source on a volume with the weak `path` identity, reported with `"strong": false`, is recognized only at the mount point it was added at. Mounted anywhere else, it shows as offline. This applies to filesystems with no UUID, dataset, or btrfs identity (network shares, tmpfs, most FUSE filesystems), to disks whose UUID the service cannot see, and to every source on macOS and Windows in this release. To keep such a source:
@@ -506,7 +528,7 @@ A source on a volume with the weak `path` identity, reported with `"strong": fal
 
 ## Scanning and the index
 
-A scan reads a source's folders and records every file, folder, symbolic link, and special file in it, with the folder totals, breakdowns, and classification the screens show. Start one with **Scan now** on the Sources screen, or with the `start-scan` command; adding a source does not scan it.
+A scan reads a source's folders and records every file, folder, symbolic link, and special file in it, with the folder totals, breakdowns, and classification the screens show. Start one with **Scan now** on the Sources screen, or with the `start-scan` command, or let a [rescan schedule](#scheduled-scans) start it; adding a source does not scan it.
 
 ### What a scan reads and records
 
@@ -534,6 +556,16 @@ Every scan walks the whole source again. It compares each entry with the one sto
 Changing the rules between releases does not need anything special: the next scan reclassifies every entry whose classification differs and writes only those.
 
 A scan that finishes successfully starts a hashing job for every online source (see [Hashing](#hashing)); a failed or cancelled scan does not.
+
+### Scheduled scans
+
+A source with a [rescan schedule](#rescan-schedule) is scanned when its time comes, exactly as **Scan now** would: hashing and relations follow it, and it changes no decision, tag, override, or group mark. Precious looks for due sources when it starts and then every minute, so a scan starts within a minute of its time. For each due source:
+
+- An **online** source gets a scan. When one of its scans is already queued, running, or paused, the due scan joins it rather than starting a second.
+- A source that is **offline or unavailable** is skipped until its next time, checked just before. The skip is recorded on the source with its time and the state, and the card shows it; the next scheduled scan that runs clears it.
+- Either way, its next scan becomes the schedule's first time after now, in the same transaction, so a due time is used once and never runs twice.
+
+The next scan time is stored in the database, so it survives restarts. When the server was down at one or more due times, it starts one scan when it is back, not one per missed time, and the next scan is the schedule's next time. A time that a daylight-saving change skips runs once that day, shifted by the change (02:30 on the day clocks go forward an hour runs at 03:30), and a time that occurs twice runs once, the first time.
 
 ### Missing entries
 
@@ -763,7 +795,7 @@ Two exceptions always ask for review: what a disk check recovered (`found.000` a
 
 ### Groups
 
-A group is a folder that is best reviewed as one item: an installed program, a copy of Windows, a project, a program's saved games or profile, a cache, build output, or a drive backup. Folders in the categories `application_installation`, `os_installation`, `source_project`, `application_user_data`, `cache`, `generated_artifacts`, and `backup` are groups. Groups can sit inside other groups; the outermost one is the item to review. Being in a group never hides anything: the Map and Search still reach every file and folder inside, with their own sizes.
+A group is a folder that is best reviewed as one item: an installed program, a copy of Windows, a project, a program's saved games or profile, a cache, build output, or a drive backup. Folders in the categories `application_installation`, `os_installation`, `source_project`, `application_user_data`, `cache`, `generated_artifacts`, and `backup` are groups, unless you unmark them; you can also mark any other folder as a group (see [Your own category and groups](#your-own-category-and-groups)). Groups can sit inside other groups; the outermost one is the item to review. Being in a group never hides anything: the Map and Search still reach every file and folder inside, with their own sizes.
 
 ### What a folder is made of
 
@@ -796,6 +828,18 @@ The detail panel shows each rule behind an entry's classification with a one-sen
 - **Veto:** the triage is review, and the files or folders that hold the folder back are listed with it.
 
 The rules are versioned, and each scan records the version it used (`rules-v2+markers-v3` in this release).
+
+### Your own category and groups
+
+When the rules get an entry wrong, you can correct them. Your choice always wins over the rules, and no rescan, rules change, or later release ever changes it; an item that goes missing and comes back keeps it.
+
+- **Category:** any file or folder can get one of the 16 categories. Its family and suggestion follow from it as for a rule category, and so does the veto: a folder you put in a disposable category that holds your own material is still suggested for review. **Back to the rules** removes your category.
+- **Review as one item:** any folder can be marked as a group, and a group the rules made can be unmarked; **As the rules say** gives the choice back to the rules. Without a mark, a folder is a group when its category (yours or the rules') is a group category, so a project you put in `documents` is no longer a group, and the folders above it count its files one by one under their own families.
+- **Archive members** cannot be changed: they are classified with their archive.
+
+The item itself reads its new category or group at once. The figures of the folders above it (their size by category and what stands out inside them), the review lists, and Gems follow when the scan of its disk that the change starts ends; if that disk is already being scanned, the scan runs once more. A disk that is not connected keeps the change, and its next scan applies it. The detail panel marks each value you set with **set by you** and says what the rules would set.
+
+Through the command API (see [Commands](#commands)): `set-category` with `{"entry_id":"12","category":"documents"}`, `{"entry_ids":[…]}` (1 to 1,000), or `{"selection_id":"…"}`, and `"category":"rules"` to remove yours; `set-group` with the same targets and `"group":true`, `false`, or `"rules"`. Both answer `{"applied":n,"scan":{"job_id","coalesced"}}`, or `"scan":null` when the disk is not connected. An archive member, a `set-group` on anything but a folder, and a category on a symbolic link or special file are refused with `invalid_request`, and a refused request changes nothing. Each accepted request writes one audit event, `category_set` or `group_set`, with the entries or selection, the old values (`rules` when the rules decided), and the new value.
 
 ## Duplicates and Compare
 
@@ -848,7 +892,9 @@ Compare takes two folders, opened archives, or folders inside an archive, and li
 
 A size that the other side does not have at all proves "only here" without reading anything. **Not checked yet** appears for a file that hashing has not read (or could not read, or that changed while it was read) whose size exists on the other side, and for a checked file whose size exists on the other side only among such files: either could be the same content. Click **Check now** to have both sides hashed first; the group empties as hashing proceeds. Unreadable files stay in it.
 
-Compare opens on the first group that holds files, in this order: only on the left, only on the right, same path with different content, not checked yet, and identical. A folder inside another therefore opens on what only the larger one holds, and two copies that are the same open on identical.
+Compare opens on the first group that holds files, in this order: only on the left, only on the right, same path with different content, not checked yet, and identical. A folder inside another therefore opens on what only the larger one holds, and two copies that are the same open on identical. The server picks that group in the same request that computes the comparison, so opening a comparison computes it once.
+
+Each file shows its path inside each side whenever the two paths differ: when `fotos-b/2002/12/img_0001.jpg` is identical to `fotos/2014/celular/IMG_0001.jpg`, the item reads `2002/12/img_0001.jpg` on the left and `2014/celular/IMG_0001.jpg` on the right. When one side holds more copies of a content than the other, the identical group pairs them in path order and lists each copy left over on its own as an **extra copy**, naming the file on the other side that holds the same content ("Extra copy, same as … on the left"). The groups' counts and bytes are unchanged by this: an item counts once, at its left file's size, else its right file's.
 
 When one side holds nothing but a single folder, such as `emule-0.47c/` inside a zip, and dropping it lines up the paths with the other side, Compare drops it. The two sides cannot contain each other: comparing `Fotos` with `Fotos/2005`, or a file, is refused with `400 invalid_request`.
 
@@ -882,6 +928,7 @@ How the bytes are counted:
 - **An empty folder** holds no file at any depth, is readable, and is not where another filesystem is mounted. Folders below an unreadable folder or a mount boundary are never called empty.
 - **A duplicates row** is a relation (its bytes are one side's worth of redundant bytes), or a group of identical files with at least one copy outside every listed relation. A group's bytes are its size times its copies outside the listed relations, less one when none of its copies is inside a relation: the relation already counts the copies inside it. Hard links to one file are one copy. Files inside archives count as copies; the archive itself does not.
 - **Only open rows count.** A row is open while its entry's effective decision is undecided. A duplicates row is open while at least two of its copies are undecided (for a relation, both sides). Deciding an entry, or the folder above it, closes its row at once and shrinks the card by the row's bytes. A card's bytes are always the sum of its list's open rows, read through every page.
+- **Decided rows show as progress.** Besides its open rows, each card and each list's header shows how many rows are no longer open and what they hold, such as "20 decided (4.4 GiB)"; these equal the list of decided rows. A card with no open row left reads **Nothing left to review** instead of zero.
 
 The rows are recomputed by the `relate` job (see Duplicates and Compare), after each scan and as hashing advances, so the classification and duplicates they show are as current as that job's last run. Decisions are never stored in them: they are read live.
 
@@ -898,6 +945,12 @@ A decided row leaves the list. Choose to show decided rows to list the rows that
 Every list except duplicates can select all of its open rows (the `select-list` command, `{"list":"system_junk","source_id":"…"}`; `source_id` is optional). This makes an ordinary selection of the rows' entries, exactly like a search's select-all: the confirmation shows the count, the bytes, and the kept entries, and the bulk decision skips every kept entry and reports it. The selection holds the entries open when it was made; a later refresh of the lists does not change it, and an entry kept in the meantime is skipped.
 
 The duplicates list has no select-all (`400 invalid_request`): Precious never chooses which copy stays. Decide copies one by one, or use Search's duplicate filter ("copies outside this folder") and select its results.
+
+### Similar folders
+
+**Similar folders**, linked under the cards, lists the folders and archives related as `overlap` (see [Folder relations](#folder-relations)), largest bytes in common first, for all sources or the chosen one (a pair shows when either side is on it). Each pair shows both sides, the bytes they have in common, and the files and bytes found only on each side, with a link that opens Compare on the two, such as `Fotos - Copia` against `Fotos` with the one edited photo only in the copy.
+
+The list is read-only: it has no decision controls and no card, because similar folders are not copies, and deleting either side can lose what only it holds. Compare them, then decide in Compare or in the Map.
 
 ### Gems
 
@@ -921,13 +974,15 @@ The interface reads the index through a small JSON API under `/api`. The same en
 | `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). |
 | `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable). |
 | `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. |
-| `GET /api/search?…` | One page of search results, with the match count. See [Search parameters](#search-parameters). |
+| `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
 | `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text` | A file's content, and its text decoded. See [Viewer safety](#viewer-safety). |
 
 Every entry row carries its name and path twice: `name` and `path` are the escaped display form, and `name_b64` and `path_b64` are the exact bytes on disk in base64. A name that is not valid UTF-8 is therefore never lost. For example, a Latin-1 `fé.txt` shows as `f\xE9.txt`, and its raw bytes are `ZukudHh0`. Times are in UTC, in RFC 3339 form, or `null` when unknown.
 
 Every entry row also carries `composition`, its bytes and files by family as a list such as `[{"family":"personal","bytes":400000000000,"files":7},{"family":"programs","bytes":6000000000,"files":5}]`: a folder's composition, or for a file one element under its family. Families with nothing in them are left out. See [What a folder is made of](#what-a-folder-is-made-of).
+
+The detail of `GET /api/entries/{id}` also helps the Map shorten paths and explain archives. Each folder in `ancestors` has `only_child`, true when it holds nothing but the next one (the entry itself for its parent). `only_folder` is the ID of a folder's only item when that item is a folder, and `null` otherwise. `archive_note` says why an archive file has no `archive`: `unsupported` for a format Precious recognizes but does not open (7z, rar, xz, cab, jar, and the like), `nested` for an archive inside an archive, `not_listed` for a format it opens that was not listed yet, and `null` for anything else. Items in every state count, as in the children list.
 
 Children are sorted with `sort=bytes`, `files`, `newest` (the newest change inside a folder), or `name`, and with `order=desc` or `asc`. By default the sort is by bytes, largest first. A sort by name defaults to ascending and compares the raw bytes of the names, so `Zeta` comes before `alfa`. A page holds 200 rows unless `limit` asks for another number, and never more than 1,000. A page with more after it carries `next_cursor`, and the same request with `cursor=` set to it gives the next page. A cursor belongs to the folder's order: changing `sort` or `order` needs a new first page. A cursor holds the position of the last row, not a row count. So a row added or removed while you page does not shift the other rows: a new row is listed only when it sorts after the current page. A row whose size or date a scan changes may move to a page already read.
 
@@ -947,7 +1002,7 @@ Errors use the usual envelope, `{"error":{"code","message"}}`:
 | Parameter | Matches |
 |---|---|
 | `source=ID` | Entries of one source. |
-| `name=TEXT` | Names containing the text, ignoring letter case, matched against the displayed name. |
+| `name=TEXT` | Names containing the text, ignoring letter case, matched against the displayed name. A text of three characters or more also ignores accents: `confraternizacao` finds `Confraternização 2018`. A shorter one matches its accented letters only as typed (`ão` finds `Leilão`, `ao` does not). |
 | `ext=X` (repeats) | Files with the extension, with or without its dot, ignoring letter case. |
 | `file_kind=K` (repeats) | `image`, `video`, `audio`, `document`, `source`, `archive`, `installer`, `executable`, `system`, or `other`. |
 | `min_size=N`, `max_size=N` | Size in bytes, both limits included. A folder's size is everything inside it. |
@@ -957,16 +1012,19 @@ Errors use the usual envelope, `{"error":{"code","message"}}`:
 | `decision=D` (repeats) | The effective decision: `undecided`, `keep`, `discard`, or `later`, set on the entry or followed from a folder above it. |
 | `tag=ID` (repeats) | Entries carrying the tag, and everything inside them. |
 | `within=ID` | Everything inside the folder, not the folder itself. |
+| `state=unreadable` | The folders and files that could not be read, which make Home's figures partial. It is the only state to search for. |
 | `sort`, `order` | As for children; by default by bytes, largest first. |
 | `cursor`, `limit` | As for children: 200 rows by default, at most 1,000. |
+| `count=only` | Answer `{"count":…}`, the number of matches, instead of a page; `cursor` and `limit` are then ignored. |
 
 Speed depends on the filters:
 
 - A `name` of three characters or more is looked up in a name index, and is fast on any index size.
 - A `name` of one or two characters cannot use that index. It is tested on each entry that the other filters select, so on its own it reads every entry, which takes seconds on millions of entries. Add a `within`, `tag`, `source`, or `decision` filter to narrow it.
-- `within`, `tag`, and `decision` also use indexes. Extension, file kind, size, year, category, and triage do not: on their own they read every entry of the source, or of every source.
+- `within`, `tag`, `decision`, `dup`, and `state=unreadable` also use indexes. Extension, file kind, size, year, category, and triage do not: on their own they read every entry of the source, or of every source.
+- On 2 million entries, the first page by bytes (the default order) arrives within a second, and its count within two, with no filter, with any `dup` value, and with or without a source. Other orders on a broad search sort every match, which takes longer.
 
-Results include entries in every state, and each row says whether it is present, missing, or unreadable. `count` is the exact number of matches up to 10,000, and the string `"10000+"` beyond that. A search that lists more than you need is best narrowed rather than paged to the end. "Select all results" works on up to 1,000,000 matches; see [Selecting all the results of a search](#selecting-all-the-results-of-a-search).
+Results include entries in every state, and each row says whether it is present, missing, or unreadable. A page does not carry the number of matches: ask for it with the same parameters and `count=only`, which answers `{"count":1234}`, exact up to 10,000, and `{"count":"10000+"}` beyond that. The Search screen sends both requests at once and shows the results as soon as they arrive, with "Counting…" until the count follows. A search that lists more than you need is best narrowed rather than paged to the end. "Select all results" works on up to 1,000,000 matches; see [Selecting all the results of a search](#selecting-all-the-results-of-a-search).
 
 ### Viewer safety
 
@@ -1013,10 +1071,11 @@ What hashing learns (see [Hashing](#hashing), [Duplicates and Compare](#duplicat
 | `GET /api/entries/{id}/copies?cursor=&limit=` | Every other copy of a file or file member, files first, 100 per page by default and at most 1,000, with their count. A copy names its source, path, archive (for a member), whether it is a hard link of the same file, whether its source is offline, and its effective decision. |
 | `GET /api/entries/{id}/children`, `GET /api/entries/{id}/treemap` | Also for an archive read completely, whose items are its top members, and for a member folder. They sort and page as for folders; a member file has no items. |
 | `GET /api/home` | Also `coverage` (of the chosen source, or of all), `cards` (the seven opportunity cards), and `hashing` (hashing jobs in progress, like the scans, with their kind and progress). |
-| `GET /api/opportunities?source=` | The seven [cards](#the-cards), largest first, with the bytes and rows still open, the coverage of every source, and when the lists were last computed (`computed_at`, `null` before the first pass). |
+| `GET /api/opportunities?source=` | The seven [cards](#the-cards), largest first, with the bytes and rows still open (`bytes`, `rows`) and those of the rows no longer open (`decided_bytes`, `decided_rows`), the coverage of every source, and when the lists were last computed (`computed_at`, `null` before the first pass). |
 | `GET /api/opportunities/{list}?source=&decided=&cursor=&limit=` | One page of a card's open rows (50 by default, at most 500), largest first, with the card; `decided=1` lists the rows no longer open. A row of a rules card has its entry. A duplicates row is either a relation, whose `entry` is one side and whose `relation.other` is the other, or a group of copies of one file, which lists its `copies` (up to 101). Each row has the `summary` the interface writes its line from: category, oldest and newest year, files, bytes, and up to two signals. An unknown list answers `404 not_found`. |
 | `GET /api/gems?section=unique\|rescue\|only_in_copy&source=&cursor=&limit=` | One page of a [Gems](#gems) section, with the coverage its claims rest on. A rescue item names its group; an only-in-copy item names the overlapping folder it is in and the relation, seen from that folder. A missing or unknown section answers `invalid_request`. |
-| `GET /api/compare?left=&right=&bucket=&cursor=&limit=` | Both sides' rows, the files and bytes of the five [Compare](#compare) groups (`only_left`, `only_right`, `identical`, `different`, `unchecked`), and one page of the chosen group's items (100 by default, at most 1,000), each with its path and its row on each side. A side is a folder, an archive read completely, or a member folder. A file, two sides of which one holds the other, an unknown group, or a malformed ID answers `invalid_request`; a side that does not exist answers `not_found`. |
+| `GET /api/compare?left=&right=&bucket=&cursor=&limit=` | Both sides' rows, the files and bytes of the five [Compare](#compare) groups (`only_left`, `only_right`, `identical`, `different`, `unchecked`), and one page of a group's items (100 by default, at most 1,000), with the group listed in `bucket`: the one asked for, or without `bucket` the first holding files in the order Compare opens on. Each item has its `path`, each side's path inside that side (`left_path`, `right_path`, `null` for a side without the file), its row on each side, and for an extra copy `twin`: the `path` and `entry` row of the file on the other side holding the same content (else `null`). A side is a folder, an archive read completely, or a member folder. A file, two sides of which one holds the other, an unknown group, or a malformed ID answers `invalid_request`; a side that does not exist answers `not_found`. |
+| `GET /api/relations?kind=overlap&source=&cursor=&limit=` | One page of the [similar folders](#similar-folders) (50 by default, at most 500): the `overlap` relations of the last relate pass with a side on the source, by bytes in common, then ID, largest first. Each item is a relation as in `GET /api/entries/{id}`, seen from side A (`self` `a`), with side A's row in `a` beside `other`. A missing or other `kind`, or a bad cursor, answers `invalid_request`; an unknown source answers `not_found`. |
 
 **Every claim of no other copy carries the share checked.** A file reads "no other copy" only when its state is `unique_size` or `sampled`, or when it is `hashed` with `copies` 1. A copy can be on any source, so the claim always comes with `coverage` over every source: when 80% of the candidate bytes are checked, a file whose copy sits among the other 20% still reads unique. Archives Precious does not open (7z, rar, and partial ones) count as plain files: a file inside one is never seen as a copy.
 
@@ -1029,7 +1088,7 @@ What hashing learns (see [Hashing](#hashing), [Duplicates and Compare](#duplicat
 | `dup=unique` | Files with no other copy: a unique size, a unique sample, or hashed with one copy. |
 | `dup=unchecked` | Files not checked yet, changed while read, or unreadable. |
 
-The filter has no index of its own: it is tested on each entry the other filters select, so combine it with `within`, `tag`, `source`, or a name. A selection stores the filter like the others, so "Select all results" on, for example, `within=ID&dup=elsewhere` selects the copies of that folder that have another copy outside it, ready to be discarded in one confirmed change.
+The filter uses the index of each file's content state (`unique`, `unchecked`, and pages by bytes) or of the contents with more than one copy (`copies`, `elsewhere`), and tests the exact copies of those files only. A selection stores the filter like the others, so "Select all results" on, for example, `within=ID&dup=elsewhere` selects the copies of that folder that have another copy outside it, ready to be discarded in one confirmed change.
 
 **Viewing a member.** `/content` and `/text` serve a file member under the [viewer's rules](#viewer-safety): the type comes from the member's own name, the same sandbox applies, and HTML is only a download. The member is read from the archive in memory: nothing is written to the state directory, to `TMPDIR`, or to the source. The archive file must still match the index and its listing, else `409 invalid_entry_state` until a rescan; its source must be online, else `source_offline`. A member stored without compression in a zip, and a compressed one up to `archives.view_max_bytes`, answers range requests; a larger one, and every member of a tar-family or gzip archive, is streamed whole without ranges (see [Viewing members](#viewing-members)). A member folder answers `invalid_entry_state`, like a folder.
 
@@ -1115,10 +1174,11 @@ When some folder could not be read, Home says its figures are incomplete rather 
 
 ### The Sources screen
 
-The Sources screen lists each source with its state (online, offline, or unavailable, with the reason), its location and disk, whether the disk will be recognized if it is mounted at another path, what its file system can and cannot record, its totals, and its last scan. The location is the source's folder where its disk is mounted now, such as `/run/media/you/FOTOS/Fotos`; while the disk is not connected it is the folder inside the disk and the disk's label (or identity), such as `Fotos on FOTOS (not connected)`. Each source has these actions:
+The Sources screen lists each source with its state (online, offline, or unavailable, with the reason), its location and disk, whether the disk will be recognized if it is mounted at another path, what its file system can and cannot record, its totals, its last scan, and its rescan schedule with the next scheduled scan and the last skipped one. The location is the source's folder where its disk is mounted now, such as `/run/media/you/FOTOS/Fotos`; while the disk is not connected it is the folder inside the disk and the disk's label (or identity), such as `Fotos on FOTOS (not connected)`. Each source has these actions:
 
 - **Scan now** reads the disk and updates the index. Progress shows on the source and on Home while it runs. A disk that is not connected cannot be scanned.
 - **Open in Map** browses the source, also while it is offline.
+- **Change schedule** sets the rescan schedule: off, daily, or weekly on a day, at a time in your browser's time zone. See [Rescan schedule](#rescan-schedule).
 - **Rename** changes the label only.
 - **Remove** asks first. It forgets the source with its decisions and tag assignments; no file on the disk is changed.
 
@@ -1126,14 +1186,15 @@ The Sources screen lists each source with its state (online, offline, or unavail
 
 ### Map
 
-The Map answers "where is my space?" for one folder at a time. The Map link opens the top folder of the first source; with no source yet, it points to the Sources screen. The folder's path is shown above, each part a link back up.
+The Map answers "where is my space?" for one folder at a time. The Map link opens the source in the address, or else the source you last chose on Home, Opportunities, Gems, or Search, in this browser, or else the first source; with no source yet, it points to the Sources screen. When a source's top folder holds only one folder, which holds only one folder, and so on, the Map opens on the first folder that holds more, and Back leaves the Map. The folder's path is shown above, each part a link back up; a chain of folders that each hold only the next is one part, such as `old-disk/home`, which opens the deepest of them.
 
-- **The treemap** draws each item of the folder as an area sized by its bytes, folders counting everything inside them. It draws the 300 largest items; the rest of a large folder is one gray area labeled with how many items it holds and their size, such as "700 more items, 3 GiB". That area does not open: the table lists every item.
+- **The treemap** draws each item of the folder as an area sized by its bytes, folders counting everything inside them. It draws the 300 largest items; the rest of a large folder is one gray area labeled with how many items it holds, such as "700 smaller items: see the table". Clicking it sorts the table by size and moves the keyboard focus to it, where every item is listed.
 - **The table** lists every item of the folder with its name, size, file count (for folders, everything inside), type or category, the range of modification dates, the suggestion of the rules, and the decision. Under each folder's size, a thin bar shows its composition in the family colors; when at least 1% of a folder's bytes belongs to another family, the category also gives the main family's share, such as "Personal media · 98% personal" (see [What a folder is made of](#what-a-folder-is-made-of)). A decision followed from a folder above reads like "Keep (inherited)". Click a column title (Name, Size, Files, Changed) to sort by it, and click it again to reverse the order. Scrolling down loads more rows; a Load more button does the same. In a narrow window the table hides the Changed column first, then Suggestion, Decision, and Files, and scrolls sideways inside its frame if it still does not fit.
 - **The two follow each other:** pointing at a row outlines its area, and pointing at an area highlights its row.
 - **Clicking a folder's area or its name** opens that folder in both. Clicking a file's area or any row opens the [detail panel](#the-detail-panel) for it.
 - **Color by** paints the areas by category family, file type, age (time since the last change), decision, or tag (choose the tag next to it). By family, each area takes the family holding most of its bytes, so a photo no rule recognized is still Personal and valuable. The legend names each color.
 - **Search in this folder** opens Search limited to the folder.
+- **The keyboard** works in the table, as in the review lists: the up and down arrows move the selected row and open its details, scrolling the table; Enter opens the selected folder, or shows the selected file in the viewer; Escape closes the details. With no row selected, the down arrow selects the first row and the up arrow the last. The keys do nothing while you type in a field, inside a dialog, or in the detail panel, which handles its own keys.
 
 The address keeps the folder, the order, the coloring, and the open details, so it can be bookmarked or reloaded.
 
@@ -1141,14 +1202,17 @@ The address keeps the folder, the order, the coloring, and the open details, so 
 
 Search finds files and folders anywhere in the index, including inside groups (see [Groups](#groups)). The filters are:
 
-- **Name contains:** part of the name, ignoring letter case.
+- **Name contains:** part of the name, ignoring letter case, and accents too from three characters on: `confraternizacao` finds `Confraternização 2018`. One or two characters match accented letters only as typed.
 - **Extensions:** one or more, separated by spaces, such as `jpg png`.
 - **Size:** at least and at most, in B, KiB, MiB, or GiB. A folder's size includes everything inside it.
 - **Year of last change:** from and to.
 - **File type, Category, Decision, Suggestion, and Tags:** tick any number in each list. Decision and Tags match what an item follows from its folders too: searching for the tag `familia` finds the folders tagged `familia` and everything inside them.
 - **Only inside a folder,** set by Search in this folder on the Map or in the detail panel. **Search everywhere** removes it.
+- **Could not be read:** only the folders and files the scan could not read. Home's notice that its figures are partial links here, with Home's source.
 
-Choose **Search** to apply the filters, or **Clear filters** to start again. The filters live in the address, so a search can be bookmarked. The results show how many items match, exactly up to 10,000 and as "More than 10,000 results" beyond. Sort them by clicking a column title, and click a row to open its details.
+The **Source** choice above the results limits the search to one source, or searches all of them. It is remembered in the browser: Home, Opportunities, the review lists, Gems, Search, and the Map's start use the source you chose last on any of them, until you choose another or all sources. A link that names a source, such as Home's partial notice, opens on that source without changing your choice.
+
+Choose **Search** to apply the filters, or **Clear filters** to start again. The filters live in the address, so a search can be bookmarked. The results appear first, and the count follows: "Counting…" shows until it arrives, then how many items match, exactly up to 10,000 and as "More than 10,000 results" beyond. Each result shows under its name the folder that holds it, cut from the left when long, after its source's name when all sources are searched; a source's top folder is listed under the source's name. The Duplicated column says, for a checked file, "3 copies" (this one included) or "No other copy", and for a folder the share of it that is duplicated. An item that could not be read says "Could not be read" and shows "—" for its size, files, and duplicated share. Sort the results by clicking a column title, and click a row to open its details.
 
 To change many items at once:
 
@@ -1168,12 +1232,16 @@ Clicking an item on the Map or in Search opens its details beside the screen, or
 - **A preview of a file,** without choosing Open: a photo scaled to the panel (click it to see it full size), a video or audio player, a PDF, or the first 40 lines of a text, source, or Markdown file. Other types offer the download. A file changed on disk since the last scan, or on a disk that is not connected, says so instead.
 - **For a folder, its size by category** (its composition) and **Inside this folder**, the notable entries below it with their category and size, each opening its own details. See [What a folder is made of](#what-a-folder-is-made-of).
 - **Size by file type and by year** for a folder.
-- **Classification:** the category, family, and suggestion, the traits, and one sentence per rule explaining why. A file no rule recognized reads "Not classified" and says which family its type counts under. When discard was held back because the folder holds your own material, the panel says so and lists the files that caused it, each a link to its details. See [Reading the explanations](#reading-the-explanations).
+- **Classification:** the category, family, and suggestion, the traits, and one sentence per rule explaining why. A file no rule recognized reads "Not classified" and says which family its type counts under. When discard was held back because the folder holds your own material, the panel says so and lists the files that caused it, each a link to its details. See [Reading the explanations](#reading-the-explanations). **Change category** sets your own category or goes back to the rules, and, for a folder, **Review as one item** offers As the rules say, Yes, and No. A value you set reads **set by you**, with what the rules would set beside it, and after a change the panel notes that the figures of the folders above update when the scan ends. See [Your own category and groups](#your-own-category-and-groups).
 - **Decision:** the item's own decision ("None: follows its folder" when it has none) and the one in force, with where it comes from: set on this item, inherited from a named folder (a link), or undecided because no folder above has a decision. The buttons Follow folder, Undecided, Keep, Discard, and Later set this item's own decision, even when it is kept; Follow folder removes it. See [Decisions](#decisions).
 - **Tags:** the item's own tags, each with a button to remove it, and the tags it inherits, each naming the folder it comes from. An inherited tag can be removed only at that folder. Add an existing tag from the list, or type a new name and choose **Create and add**; a name that already exists, in any letter case, is refused with a message.
 - **Technical details,** collapsed until opened: the entry ID, the source, the raw bytes of the name, and the raw path.
 
-**Show in Map** opens the item's folder on the Map, **Search in this folder** limits Search to a folder, and **Open** shows a file in the viewer.
+**Show in Map** opens the item's folder on the Map, **Search in this folder** limits Search to a folder, and **Open** shows a file in the viewer. For an archive Precious read completely, the main button is **Open as a folder**, which browses its items on the Map; Open comes second, and Show in Map shows the folder that holds the archive.
+
+**Archives that were not opened** say why in their **Archive** section: their format is one Precious does not open, such as 7z or rar; they are inside another archive; they were not read yet; or reading stopped (encrypted, damaged, over the limits). Either way, what is inside is not checked for copies.
+
+Closing the viewer or a confirmation, with Escape or a button, puts the keyboard focus back on the control that opened it. So Escape closes the viewer, and a second Escape closes the details.
 
 ### The viewer
 
