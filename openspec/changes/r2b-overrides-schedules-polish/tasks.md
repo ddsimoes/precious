@@ -77,7 +77,7 @@
   - the remembered source (D9), used by Home, Opportunities, Gems, Search, and the Map's start.
 
   Verify with Vitest for each, including the remembered source carrying from Home to the Map.
-- [ ] 4.6 Add the slow test at 2 million entries: first page within 1 s and count within 2 s at p95, with no filter, each duplicate state, and with and without a source, run without the race detector in the second pass of `make test-slow`. Verify with `make test-slow`, and record the figures in the design addendum.
+- [x] 4.6 Add the slow test at 2 million entries: first page within 1 s and count within 2 s at p95, with no filter, each duplicate state, and with and without a source, run without the race detector in the second pass of `make test-slow`. Verify with `make test-slow`, and record the figures in the design addendum.
 - [x] 4.7 Update the Search section of `docs/operator.md` (accents, location, copies, source, unreadable, counting). Verify with the docs tests.
 
 ## 5. Map, detail panel, and archives
