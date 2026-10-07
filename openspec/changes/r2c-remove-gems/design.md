@@ -117,3 +117,19 @@ Stays:
 - **B3. Ties in bytes page by path.** `rescueRows` writes its rows in reverse card order, so among rows of equal bytes the higher ID, which pages first, has the smaller path. The list then pages exactly in the ground truth's order (bytes descending, then path).
 - **B4. Ground-truth paths are display paths.** `rescue: [{path, group}]` holds the display form of each path (as `Entry.path`), with no base64; every rescue path in the corpus is valid UTF-8.
 - **B5. `group` only on rescue rows.** `Row.Group` is still set on `unpacked_archives` rows (the folder the archive was unpacked into, used for their relation), but the review row JSON serves `group` only for `rescue` rows and `null` elsewhere, per the Interfaces.
+- **V1. Verification (task 5.2)** on the integration branch:
+  - gofmt is clean; both vet runs pass; `go test -race ./...` passes;
+  - `make cross` builds all six targets;
+  - UI lint, Vitest (225 tests), and build pass; Playwright passes 36 tests; `scripts/e2e-docker.sh` passes; `openspec validate --strict` passes.
+
+  `make test-slow` passed everything but `TestReviewPagesStayFastAt2MillionEntries`, whose cards p95 read 1.05, 1.15, and 1.19 s against the 1 s target. Another process held about five cores at the time, and the r2b binary's own test (`e4e0f1f`), run under the same load, read 1.44 s. So r2c, whose cards no longer read Gems' 780,000 rows, is faster than r2b, and the miss is the load. The test is to be rerun on a quiet machine before 5.2 is ticked.
+- **V2. Deploy on the reference server (task 5.4)**, binary `r2c-smoke-cc64e49`.
+  - **Before:** the r2b database was copied with `precious backup` (51 s, `backups/r2b-before-r2c.db`).
+  - **Upgrade:** `0005` ran at startup, and the server answered within 3 s. The relate pass that startup enqueued finished 48 s later. It took the rescue rows from Gems' 6 to the card's 5, `save/Joao/profile.sav` going as an inner item (B2).
+  - **Owner data:** his decisions and his tag read as before. Every other card is unchanged.
+  - **Results:** the rescue card comes first, with 3 of his documents inside one of his folders that the rules treat as a group, and the corpus's 2. `GET /api/gems` is 404. `GET /api/opportunities` answers in 0.22–0.39 s.
+- **V3. 5.3 smoke:** an r2b database built by the r2b binary (98 Gems rows, 3 rescue) opened by r2c:
+  - schema 5, no Gems rows, `foreign_key_check` empty, eight cards with rescue first;
+  - the spreadsheet inside `Microsoft Office`, and `GET /api/gems` 404;
+  - after the startup refresh, 2 rescue rows;
+  - a backup whose `integrity_check` is `ok`.
