@@ -2,7 +2,7 @@
 // (§11, design D11 and the Interfaces section; R2 design D16 and its
 // Interfaces): Home, an entry with its detail and copies, a folder's or an
 // archive's children and treemap, search, the tag list, the opportunity
-// cards and their review lists, Gems, and Compare.
+// cards and their review lists, and Compare.
 //
 // Each request reads one snapshot: its statements run in one read
 // transaction, so a page and its count, or an entry and its ancestors,
@@ -48,7 +48,6 @@ import (
 //   - GET /api/tags
 //   - GET /api/opportunities[?source=ID]
 //   - GET /api/opportunities/{list}?source=&decided=&cursor=&limit=
-//   - GET /api/gems?section=&source=&cursor=&limit=
 //   - GET /api/compare?left=&right=&bucket=&cursor=&limit=
 //   - GET /api/relations?kind=overlap&source=&cursor=&limit=
 func Register(mux *http.ServeMux, st *store.Store, pol *rules.Policy, log *slog.Logger) {
@@ -65,7 +64,6 @@ func Register(mux *http.ServeMux, st *store.Store, pol *rules.Policy, log *slog.
 	mux.HandleFunc("GET /api/tags", h.tags)
 	mux.HandleFunc("GET /api/opportunities", h.opportunities)
 	mux.HandleFunc("GET /api/opportunities/{list}", h.reviewList)
-	mux.HandleFunc("GET /api/gems", h.gems)
 	mux.HandleFunc("GET /api/compare", h.compare)
 	mux.HandleFunc("GET /api/relations", h.relations)
 }

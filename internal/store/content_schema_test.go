@@ -220,7 +220,7 @@ func TestContentChecksRejectBadValues(t *testing.T) {
 		{"archive_members.state", []string{entry1, archive1}, memberSQL, []any{"file", "unique_size"}, []any{"file", "sampled"}},
 		{"archive_members.kind_state", []string{entry1, archive1}, memberSQL, []any{"directory", nil}, []any{"directory", "pending"}},
 		{"relations.kind", []string{entry1, entry2}, relationSQL, []any{"overlap"}, []any{"contains"}},
-		{"review_rows.list", []string{entry1}, rowSQL, []any{"gems_only_in_copy", 1, nil}, []any{"keeper", 1, nil}},
+		{"review_rows.list", []string{entry1}, rowSQL, []any{"leftovers", 1, nil}, []any{"keeper", 1, nil}},
 		{"review_rows.one_target", []string{entry1, content1}, rowSQL, []any{"duplicates", nil, 1}, []any{"duplicates", 1, 1}},
 		{"review_state.id", nil, stateSQL, []any{1}, []any{2}},
 	}
@@ -300,7 +300,7 @@ func TestSourceDeleteCascadesContent(t *testing.T) {
 		mustWrite(t, s, `INSERT INTO review_rows (gen, list, source_id, entry_id, bytes, files, sort_key)
 			VALUES (1, 'leftovers', ?, ?, 0, 0, 0)`, src, file)
 		mustWrite(t, s, `INSERT INTO review_rows (gen, list, source_id, entry_id, group_id, bytes, files, sort_key)
-			VALUES (1, 'gems_rescue', ?, ?, ?, 0, 0, 0)`, src, file, dir)
+			VALUES (1, 'rescue', ?, ?, ?, 0, 0, 0)`, src, file, dir)
 		relRow := lastID(t, mustWrite(t, s, `INSERT INTO review_rows (gen, list, relation_id, bytes, files, sort_key)
 			VALUES (1, 'duplicates', ?, 5, 1, 5)`, rel))
 		for _, row := range []int64{relRow, shared} {

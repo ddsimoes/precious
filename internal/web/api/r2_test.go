@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -16,7 +18,7 @@ import (
 // The R2 read API over the content corpus (tasks 6.2, 6.3): rows and
 // details with content, copies, relations, archives, and coverage; member
 // rows, details, children, and treemaps; Home, Opportunities, review
-// lists, Gems, and Compare with their errors.
+// lists, and Compare with their errors.
 func TestR2ReadAPI(t *testing.T) {
 	w := newContentWorld(t)
 	cov, err := content.CoverageOf(context.Background(), w.st.Reader(), "")
@@ -275,7 +277,7 @@ func TestR2ReadAPI(t *testing.T) {
 			} `json:"hashing"`
 		}
 		w.get(t, "/api/home", 200, &home)
-		if home.Coverage != wantCov || len(home.Cards) != 7 || len(home.Hashing) != 1 || home.Hashing[0].Kind != "hash" ||
+		if home.Coverage != wantCov || len(home.Cards) != 8 || len(home.Hashing) != 1 || home.Hashing[0].Kind != "hash" ||
 			home.Hashing[0].State != "running" || home.Hashing[0].Progress["checked_files"] != 7 {
 			t.Errorf("home: %+v", home)
 		}
@@ -286,13 +288,18 @@ func TestR2ReadAPI(t *testing.T) {
 			ComputedAt *string     `json:"computed_at"`
 		}
 		w.get(t, "/api/opportunities", 200, &opp)
-		if len(opp.Cards) != 7 || opp.Coverage != wantCov || opp.ComputedAt == nil || !slices.Equal(opp.Cards, home.Cards) {
+		if len(opp.Cards) != 8 || opp.Coverage != wantCov || opp.ComputedAt == nil || !slices.Equal(opp.Cards, home.Cards) {
 			t.Errorf("opportunities: %+v", opp)
+		}
+		// The rescue card first while it has open rows, then largest first
+		// (r2c D3).
+		if c := opp.Cards[0]; c.List != "rescue" || c.Rows != int64(len(w.gt.Rescue)) || c.Basis != "rules" {
+			t.Errorf("first card %+v, want rescue with %d rows, basis rules", c, len(w.gt.Rescue))
 		}
 		var dups *cardRes
 		for i := range opp.Cards {
-			if i > 0 && opp.Cards[i].Bytes > opp.Cards[i-1].Bytes {
-				t.Errorf("cards are not largest first: %+v", opp.Cards)
+			if i > 1 && opp.Cards[i].Bytes > opp.Cards[i-1].Bytes {
+				t.Errorf("cards are not largest first after rescue: %+v", opp.Cards)
 			}
 			if opp.Cards[i].List == "duplicates" {
 				dups = &opp.Cards[i]
@@ -309,6 +316,7 @@ func TestR2ReadAPI(t *testing.T) {
 				Bytes    int64        `json:"bytes"`
 				Files    int64        `json:"files"`
 				Entry    *contentRow  `json:"entry"`
+				Group    *contentRow  `json:"group"`
 				Relation *relationRes `json:"relation"`
 				Copies   []copyRes    `json:"copies"`
 				Summary  struct {
@@ -327,6 +335,9 @@ func TestR2ReadAPI(t *testing.T) {
 		relRows, groupRows := 0, 0
 		for _, it := range list.Items {
 			sum += it.Bytes
+			if it.Group != nil {
+				t.Errorf("duplicates row %s has a group", it.ID)
+			}
 			switch {
 			case it.Relation != nil:
 				relRows++
@@ -352,7 +363,7 @@ func TestR2ReadAPI(t *testing.T) {
 		}
 		w.get(t, "/api/opportunities/system_junk?source=corpus", 200, &list)
 		for _, it := range list.Items {
-			if it.Entry == nil || it.Relation != nil || it.Copies != nil || it.Summary.Bytes != it.Bytes {
+			if it.Entry == nil || it.Group != nil || it.Relation != nil || it.Copies != nil || it.Summary.Bytes != it.Bytes {
 				t.Errorf("system_junk row %+v", it)
 			}
 		}
@@ -362,49 +373,6 @@ func TestR2ReadAPI(t *testing.T) {
 		w.fails(t, "/api/opportunities/caches?source=nada", 404, "not_found")
 		w.fails(t, "/api/opportunities/caches?cursor=x", 400, "invalid_request")
 		w.fails(t, "/api/opportunities?source=nada", 404, "not_found")
-	})
-
-	t.Run("gems", func(t *testing.T) {
-		type gem struct {
-			Entry    contentRow   `json:"entry"`
-			Group    *contentRow  `json:"group"`
-			Relation *relationRes `json:"relation"`
-		}
-		var page struct {
-			Section  string      `json:"section"`
-			Items    []gem       `json:"items"`
-			Coverage coverageRes `json:"coverage"`
-		}
-		w.get(t, "/api/gems?section=unique&limit=500", 200, &page)
-		if page.Section != "unique" || len(page.Items) != len(w.gt.Gems.Unique) || page.Coverage != wantCov {
-			t.Errorf("unique: %d items, ground truth %d", len(page.Items), len(w.gt.Gems.Unique))
-		}
-		w.get(t, "/api/gems?section=rescue&limit=500", 200, &page)
-		for _, g := range page.Items {
-			if g.Group == nil || !strings.HasPrefix(g.Entry.Path, g.Group.Path+"/") {
-				t.Errorf("rescue %+v", g)
-			}
-		}
-		w.get(t, "/api/gems?section=only_in_copy&limit=500", 200, &page)
-		// The real relate pass finds the ground truth's overlaps among
-		// others, so its files are among the items.
-		listed := map[string]bool{}
-		for _, g := range page.Items {
-			listed[g.Entry.Path] = true
-		}
-		for _, g := range w.gt.Gems.OnlyInCopy {
-			if !listed[g.Path.Path] {
-				t.Errorf("only_in_copy lacks %s", g.Path.Path)
-			}
-		}
-		for _, g := range page.Items {
-			if g.Group == nil || g.Relation == nil || g.Relation.Kind != "overlap" || g.Relation.Other.ID == g.Group.ID ||
-				!strings.HasPrefix(g.Entry.Path, g.Group.Path+"/") || g.Relation.OnlyHere.Files == 0 {
-				t.Errorf("only_in_copy %+v", g)
-			}
-		}
-		w.fails(t, "/api/gems", 400, "invalid_request")
-		w.fails(t, "/api/gems?section=keeper", 400, "invalid_request")
 	})
 
 	t.Run("compare", func(t *testing.T) {
@@ -444,6 +412,99 @@ func TestR2ReadAPI(t *testing.T) {
 		w.fails(t, fmt.Sprintf("/api/compare?left=%s&right=%s&bucket=all", folder, zip), 400, "invalid_request")
 		w.fails(t, fmt.Sprintf("/api/compare?left=x&right=%s", zip), 400, "invalid_request")
 	})
+}
+
+// R2.6 (r2c): the rescue card lists the spreadsheet inside Microsoft
+// Office, each row naming its group; discarding Microsoft Office leaves the
+// row open, reading an inherited discard; keeping the file closes it. The
+// removed GET /api/gems is 404.
+func TestR2_6RescueCard(t *testing.T) {
+	w := newContentWorld(t)
+	const (
+		office    = "Backup_PC_2004/C/Arquivos de programas/Microsoft Office"
+		orcamento = office + "/OFFICE11/Meu orcamento casamento.xls"
+	)
+	type page struct {
+		Card struct {
+			List        string `json:"list"`
+			Rows        int64  `json:"rows"`
+			DecidedRows int64  `json:"decided_rows"`
+			Basis       string `json:"basis"`
+		} `json:"card"`
+		Items []struct {
+			ID    string      `json:"id"`
+			Bytes int64       `json:"bytes"`
+			Entry *contentRow `json:"entry"`
+			Group *contentRow `json:"group"`
+		} `json:"items"`
+		NextCursor *string `json:"next_cursor"`
+	}
+	find := func(p page) *contentRow {
+		for _, it := range p.Items {
+			if it.Entry != nil && it.Entry.Path == orcamento {
+				return it.Entry
+			}
+		}
+		return nil
+	}
+
+	// Every row, one page at a time, in the ground truth's order.
+	var got, want []string
+	cursor := ""
+	for {
+		var p page
+		w.get(t, "/api/opportunities/rescue?limit=1"+cursor, 200, &p)
+		for _, it := range p.Items {
+			if it.Entry == nil || it.Group == nil || it.Group.Kind != "directory" || !it.Group.Group ||
+				!strings.HasPrefix(it.Entry.Path, it.Group.Path+"/") || it.Bytes != it.Entry.TotalBytes {
+				t.Fatalf("rescue row %+v", it)
+			}
+			got = append(got, it.Entry.Path+" inside "+it.Group.Path)
+		}
+		if p.NextCursor == nil {
+			break
+		}
+		cursor = "&cursor=" + *p.NextCursor
+	}
+	for _, r := range w.gt.Rescue {
+		want = append(want, r.Path+" inside "+r.Group)
+	}
+	if !slices.Equal(got, want) || !slices.Contains(got, orcamento+" inside "+office) {
+		t.Fatalf("rescue rows:\n got %q\nwant %q, %s inside %s among them", got, want, orcamento, office)
+	}
+
+	cmds := w.commands(t)
+	decide := func(path, decision string) {
+		t.Helper()
+		if code, body := w.post(t, cmds, "set-decision",
+			fmt.Sprintf(`{"entry_id":%q,"decision":%q}`, w.id(path), decision)); code != 200 {
+			t.Fatalf("%s %s: %d %s", decision, path, code, body)
+		}
+	}
+	decide(office, "discard")
+	var p page
+	w.get(t, "/api/opportunities/rescue?limit=500", 200, &p)
+	if e := find(p); e == nil || e.Decision != nil || e.EffDecision != "discard" ||
+		p.Card.Rows != int64(len(w.gt.Rescue)) || p.Card.DecidedRows != 0 {
+		t.Fatalf("after discarding %s: card %+v, row %+v; want the row open with an inherited discard", office, p.Card, e)
+	}
+
+	decide(orcamento, "keep")
+	w.get(t, "/api/opportunities/rescue?limit=500", 200, &p)
+	if find(p) != nil || p.Card.Rows != int64(len(w.gt.Rescue))-1 || p.Card.DecidedRows != 1 {
+		t.Fatalf("after keeping the file: card %+v, items %+v; want its row closed", p.Card, p.Items)
+	}
+	w.get(t, "/api/opportunities/rescue?decided=1", 200, &p)
+	if e := find(p); e == nil || len(p.Items) != 1 || e.EffDecision != "keep" || p.Items[0].Group == nil ||
+		p.Items[0].Group.Path != office {
+		t.Fatalf("decided rescue rows %+v, want the kept file inside %s", p.Items, office)
+	}
+
+	rec := httptest.NewRecorder()
+	w.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/gems?section=unique", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /api/gems: %d %s, want 404", rec.Code, rec.Body)
+	}
 }
 
 type cardRes struct {

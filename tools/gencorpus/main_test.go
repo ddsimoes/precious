@@ -106,11 +106,11 @@ func TestCorpusMatchesGroundTruth(t *testing.T) {
 		t.Fatalf("ground_truth.json lists %d entries, the corpus %d", len(g.Entries), len(want.Entries))
 	}
 	countWalk(t, dir, g)
-	// The R2 sections (design D19) round-trip through the file.
-	if len(g.Duplicates) == 0 || len(g.Members) == 0 || len(g.Relations) == 0 ||
-		len(g.Gems.Unique) == 0 || len(g.Gems.Rescue) == 0 || len(g.Gems.OnlyInCopy) == 0 {
-		t.Errorf("ground_truth.json lacks R2 sections: %d duplicates, %d archives, %d relations, gems %d/%d/%d",
-			len(g.Duplicates), len(g.Members), len(g.Relations), len(g.Gems.Unique), len(g.Gems.Rescue), len(g.Gems.OnlyInCopy))
+	// The R2 sections (design D19) and the rescue rows (r2c design D6)
+	// round-trip through the file.
+	if len(g.Duplicates) == 0 || len(g.Members) == 0 || len(g.Relations) == 0 || len(g.Rescue) == 0 {
+		t.Errorf("ground_truth.json lacks R2 sections: %d duplicates, %d archives, %d relations, %d rescue rows",
+			len(g.Duplicates), len(g.Members), len(g.Relations), len(g.Rescue))
 	}
 	if !reflect.DeepEqual(g, want) {
 		t.Error("ground_truth.json differs from the corpus's ground truth")

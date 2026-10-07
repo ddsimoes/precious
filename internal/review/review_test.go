@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"precious/internal/corpus"
 	"precious/internal/domain"
 	"precious/internal/index/indextest"
 )
@@ -463,12 +462,15 @@ func TestRefreshSkipsDeletedEntriesAndRedoesItsGeneration(t *testing.T) {
 // R2.5: on the seeded corpus, every card's bytes and row count equal the
 // sums over its review list read through all its pages, for all sources and
 // for each one, with some rows decided; and its decided bytes and rows
-// equal the sums over its decided list (r2b D13).
+// equal the sums over its decided list (r2b D13). The rescue card holds a
+// row kept (decided) and a row whose group is discarded (open).
 func TestR2_5CardBytesEqualTheirLists(t *testing.T) {
 	w := newCorpusWorld(t)
 	w.decide(w.all(ListSystemJunk, "", false, 1)[0].Entry, domain.DecisionDiscard)
 	w.decide(w.corpus.ID("Downloads/Setup(1).exe"), domain.DecisionDiscard)
 	w.decide(w.corpus.ID("Projetos/app_react"), domain.DecisionKeep)
+	w.decide(w.corpus.ID(office), domain.DecisionDiscard)
+	w.decide(w.corpus.ID(saveFolder), domain.DecisionKeep)
 	sum := func(rows []Row) (bytes, n int64) {
 		for _, r := range rows {
 			bytes += r.Bytes
@@ -481,12 +483,12 @@ func TestR2_5CardBytesEqualTheirLists(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(cards) != 7 {
-			t.Fatalf("%d cards, want 7", len(cards))
+		if len(cards) != len(CardLists) {
+			t.Fatalf("%d cards, want %d", len(cards), len(CardLists))
 		}
 		decided := map[List]int64{}
 		for i, c := range cards {
-			if i > 0 && c.Bytes > cards[i-1].Bytes {
+			if i > 0 && c.Bytes > cards[i-1].Bytes && (i > 1 || cards[0].List != ListRescue || cards[0].Rows == 0) {
 				t.Errorf("source %q: card %s is larger than the one before", src, c.List)
 			}
 			if bytes, n := sum(w.all(c.List, src, false, 2)); bytes != c.Bytes || n != c.Rows {
@@ -501,117 +503,119 @@ func TestR2_5CardBytesEqualTheirLists(t *testing.T) {
 			}
 			decided[c.List] = c.DecidedRows
 		}
-		if src != "pen" && decided[ListSystemJunk] == 0 {
-			t.Errorf("source %q: decided rows %v, want the discarded system junk row among them", src, decided)
+		if src != "pen" && (decided[ListSystemJunk] == 0 || decided[ListRescue] != 1) {
+			t.Errorf("source %q: decided rows %v, want the discarded system junk row and the kept rescue row among them",
+				src, decided)
 		}
 	}
 }
 
-// R2.6: Gems lists the ground truth's unique personal files oldest first,
-// the rescue indicators under their groups, and the only-in-copy files by
-// relation, and never a file that is not checked.
-func TestR2_6GemsListTheCorpusUniquePersonalFiles(t *testing.T) {
+// The corpus paths the rescue tests decide.
+const (
+	office     = "Backup_PC_2004/C/Arquivos de programas/Microsoft Office"
+	orcamento  = office + "/OFFICE11/Meu orcamento casamento.xls"
+	saveFolder = "Jogos/Need for Speed Underground 2/save"
+)
+
+// R2.6: the rescue card lists the ground truth's rows, each inside its
+// outermost group, in the card's order (largest first, then by path), the
+// spreadsheet inside Microsoft Office among them, and nothing of pen.
+func TestR2_6RescueListsTheOwnersFilesInsidePrograms(t *testing.T) {
 	w := newCorpusWorld(t)
-	paths := func(rows []Row) []string {
-		var out []string
-		for _, r := range rows {
-			out = append(out, w.path(r.Entry))
-		}
-		return out
-	}
-	want := func(gems []corpus.Gem) []string {
-		var out []string
-		for _, g := range gems {
-			out = append(out, raw(t, g.PathB64))
-		}
-		return out
-	}
-
-	unique := w.all(ListGemsUnique, "", false, 4)
-	if got, want := paths(unique), want(w.gt.Gems.Unique); !slices.Equal(got, want) {
-		t.Errorf("unique:\n got %q\nwant %q", got, want)
-	}
-	for _, r := range unique {
-		if r.Source != "corpus" {
-			t.Errorf("unique lists %s's entry %s", r.Source, w.path(r.Entry))
+	var got, want []string
+	for _, r := range w.all(ListRescue, "", false, 2) {
+		got = append(got, w.path(r.Entry)+" inside "+w.path(r.Group))
+		if r.SortKey != r.Bytes {
+			t.Errorf("%s: sort key %d, bytes %d", w.path(r.Entry), r.SortKey, r.Bytes)
 		}
 	}
-
-	rescue := w.all(ListGemsRescue, "", false, 2)
-	var gotRescue, wantRescue []string
-	for _, r := range rescue {
-		gotRescue = append(gotRescue, w.path(r.Group)+" > "+w.path(r.Entry))
+	// The rescue paths are valid UTF-8, so their display and raw forms agree.
+	for _, r := range w.gt.Rescue {
+		want = append(want, r.Path+" inside "+r.Group)
 	}
-	for _, g := range w.gt.Gems.Rescue {
-		wantRescue = append(wantRescue, raw(t, g.Group.PathB64)+" > "+raw(t, g.PathB64))
+	if !slices.Equal(got, want) {
+		t.Errorf("rescue:\n got %q\nwant %q", got, want)
 	}
-	slices.Sort(gotRescue)
-	slices.Sort(wantRescue)
-	if !slices.Equal(gotRescue, wantRescue) {
-		t.Errorf("rescue:\n got %q\nwant %q", gotRescue, wantRescue)
+	if !slices.Contains(got, orcamento+" inside "+office) {
+		t.Errorf("rescue does not list %s inside %s", orcamento, office)
 	}
-	const orcamento = "Backup_PC_2004/C/Arquivos de programas/Microsoft Office/OFFICE11/Meu orcamento casamento.xls"
-	if !slices.Contains(paths(rescue), orcamento) {
-		t.Errorf("rescue does not list %s", orcamento)
-	}
-
-	only := w.all(ListGemsOnlyInCopy, "", false, 3)
-	var gotOnly, wantOnly []string
-	for _, r := range only {
-		gotOnly = append(gotOnly, fmt.Sprint(w.path(r.Entry), " @", r.Relation))
-	}
-	for _, g := range w.gt.Gems.OnlyInCopy {
-		wantOnly = append(wantOnly, fmt.Sprint(raw(t, g.PathB64), " @", w.rels[*g.Relation]))
-	}
-	if !slices.Equal(gotOnly, wantOnly) {
-		t.Errorf("only in copy:\n got %q\nwant %q", gotOnly, wantOnly)
-	}
-	const editada = "Fotos - Copia/2006/Praia/DSC_editada.JPG"
-	if !slices.Contains(paths(only), editada) {
-		t.Errorf("only in copy does not list %s", editada)
-	}
-
-	// Never a file that is not checked: pen's pending photo is absent, and
-	// a unique corpus photo whose digest is dropped leaves Gems.
-	for _, r := range append(slices.Clone(unique), only...) {
-		if r.Source == "pen" {
-			t.Errorf("Gems lists pen's %s", w.path(r.Entry))
-		}
-		w.checkUnique(r.Entry)
-	}
-	first := w.gt.Gems.Unique[0]
-	w.corpus.SetContent(w.st, raw(t, first.PathB64), indextest.Content{State: domain.ContentPending})
-	w.refresh()
-	if slices.Contains(paths(w.all(ListGemsUnique, "", false, 50)), raw(t, first.PathB64)) {
-		t.Errorf("a not-checked file %s is listed as unique", first.Path)
-	}
-	if p, err := Rows(context.Background(), w.st.Reader(), ListGemsUnique, "", true, "", 10); err != nil || len(p.Items) != 0 {
-		t.Errorf("decided Gems page %+v, %v: want empty", p, err)
+	if rows := w.all(ListRescue, "pen", false, 10); len(rows) != 0 {
+		t.Errorf("pen's rescue rows %+v, want none", rows)
 	}
 }
 
-// checkUnique fails unless the file's content state proves it has no other
-// copy (D8).
-func (w *corpusWorld) checkUnique(id domain.EntryID) {
-	w.t.Helper()
-	var (
-		state  string
-		copies int
-	)
-	if err := w.st.Reader().QueryRow(`SELECT fc.state,
-			(SELECT count(*) FROM file_content o WHERE o.content_id = fc.content_id)
-			+ (SELECT count(*) FROM archive_members m WHERE m.content_id = fc.content_id)
-		FROM file_content fc WHERE fc.entry_id = ?`, id).Scan(&state, &copies); err != nil {
-		w.t.Fatalf("content of %s: %v", w.path(id), err)
-	}
-	switch domain.ContentState(state) {
-	case domain.ContentUniqueSize, domain.ContentSampled:
-	case domain.ContentHashed:
-		if copies != 1 {
-			w.t.Errorf("Gems lists %s, which has %d copies", w.path(id), copies)
+// r2c D2: a rescue row stays open until the owner decides its file or the
+// file is kept. An inherited discard or later leaves it open; an inherited
+// keep closes it; the file's own keep, discard, or later closes it; its own
+// explicit undecided leaves it open.
+func TestRescueRowStaysOpenUntilTheFileIsDecided(t *testing.T) {
+	w := newCorpusWorld(t)
+	file, group := w.corpus.ID(orcamento), w.corpus.ID(office)
+	check := func(step string, wantOpen bool, wantEff domain.Decision) {
+		t.Helper()
+		open := slices.ContainsFunc(w.all(ListRescue, "", false, 50), func(r Row) bool { return r.Entry == file })
+		decided := slices.ContainsFunc(w.all(ListRescue, "", true, 50), func(r Row) bool { return r.Entry == file })
+		if open != wantOpen || decided == wantOpen {
+			t.Errorf("%s: open %v, decided %v; want open %v", step, open, decided, wantOpen)
 		}
-	default:
-		w.t.Errorf("Gems lists %s, which is %s", w.path(id), state)
+		var eff string
+		if err := w.st.Reader().QueryRow(`SELECT eff_decision FROM entries WHERE id = ?`, file).Scan(&eff); err != nil {
+			t.Fatal(err)
+		}
+		if domain.Decision(eff) != wantEff {
+			t.Errorf("%s: effective decision %s, want %s", step, eff, wantEff)
+		}
+	}
+	check("no decision", true, domain.DecisionUndecided)
+	w.decide(group, domain.DecisionDiscard)
+	check("inherited discard", true, domain.DecisionDiscard)
+	w.decide(group, domain.DecisionLater)
+	check("inherited later", true, domain.DecisionLater)
+	w.decide(group, domain.DecisionKeep)
+	check("inherited keep", false, domain.DecisionKeep)
+	w.decide(group, domain.DecisionDiscard)
+	for _, d := range []domain.Decision{domain.DecisionKeep, domain.DecisionDiscard, domain.DecisionLater} {
+		w.decide(file, d)
+		check("own "+string(d), false, d)
+	}
+	w.decide(file, domain.DecisionUndecided)
+	check("own undecided", true, domain.DecisionUndecided)
+	w.inherit(file)
+	check("inherit again", true, domain.DecisionDiscard)
+}
+
+// r2c D3: the rescue card comes first while it has open rows, however few
+// its bytes; once every row is decided, it ranks by its bytes like the
+// others.
+func TestRescueCardFirstWhileOpen(t *testing.T) {
+	w := newCorpusWorld(t)
+	cards, err := Cards(context.Background(), w.st.Reader(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cards[0].List != ListRescue || cards[0].Rows != int64(len(w.gt.Rescue)) {
+		t.Fatalf("first card %+v, want rescue with %d open rows", cards[0], len(w.gt.Rescue))
+	}
+	if cards[1].Bytes <= cards[0].Bytes {
+		t.Fatalf("cards %+v: the rescue card is not smaller than the next, so the order proves nothing", cards)
+	}
+	for _, r := range w.all(ListRescue, "", false, 50) {
+		w.decide(r.Entry, domain.DecisionKeep)
+	}
+	if cards, err = Cards(context.Background(), w.st.Reader(), ""); err != nil {
+		t.Fatal(err)
+	}
+	var rescue int
+	for i, c := range cards {
+		if i > 0 && c.Bytes > cards[i-1].Bytes {
+			t.Errorf("card %s is larger than the one before: %+v", c.List, cards)
+		}
+		if c.List == ListRescue {
+			rescue = i
+		}
+	}
+	if c := cards[rescue]; rescue == 0 || c.Rows != 0 || c.DecidedRows != int64(len(w.gt.Rescue)) {
+		t.Errorf("rescue card at %d: %+v, want ranked by its 0 bytes with every row decided", rescue, c)
 	}
 }
 
