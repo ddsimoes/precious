@@ -56,6 +56,67 @@ func (w *corpusWorld) corpusTotals(p string) int64 {
 	return n
 }
 
+// Spec "Opportunity cards", scenario "A downloads folder is not an
+// installer" (r2d D1): every installer and disk image the ground truth
+// asserts, Downloads/Setup.exe and the ISOs among them, is a row of the
+// installers card with its own bytes; every row is an installer_download
+// entry; and no row is a downloads folder, which keeps its category.
+func TestDownloadsFolderIsNotAnInstaller(t *testing.T) {
+	w := newCorpusWorld(t)
+	rows := map[string]int64{}
+	for _, r := range w.all(ListInstallers, "", false, 3) {
+		rows[w.path(r.Entry)] = r.Bytes
+		var category string
+		if err := w.st.Reader().QueryRow(`SELECT coalesce(category, '') FROM entries WHERE id = ?`, r.Entry).Scan(&category); err != nil {
+			t.Fatal(err)
+		}
+		if category != string(domain.CategoryInstallerDownload) {
+			t.Errorf("installers lists %s, of category %q", w.path(r.Entry), category)
+		}
+	}
+	var want []string
+	for _, e := range w.gt.Entries {
+		if e.Category == string(domain.CategoryInstallerDownload) {
+			want = append(want, raw(t, e.PathB64))
+		}
+	}
+	for _, p := range []string{"Downloads/Setup.exe", "ISOs/Windows XP Professional SP2.iso", "ISOs/Office 2003.iso",
+		"ISOs/copia/Windows XP Professional SP2.iso"} {
+		if !slices.Contains(want, p) {
+			t.Fatalf("the ground truth does not assert %s an installer; the test proves less than it says", p)
+		}
+	}
+	for _, p := range want {
+		if bytes, ok := rows[p]; !ok || bytes != w.sizes[p] {
+			t.Errorf("installers row %s: listed %v with %d bytes, want its %d bytes", p, ok, bytes, w.sizes[p])
+		}
+	}
+	folders, err := w.st.Reader().Query(`SELECT path FROM entries WHERE category = ?`, domain.CategoryDownloadCollection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer folders.Close()
+	var downloads []string
+	for folders.Next() {
+		var p []byte
+		if err := folders.Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		downloads = append(downloads, string(p))
+	}
+	if err := folders.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(downloads, "Downloads") {
+		t.Fatalf("downloads folders %q, want Downloads among them", downloads)
+	}
+	for _, p := range downloads {
+		if _, ok := rows[p]; ok {
+			t.Errorf("installers lists the downloads folder %s", p)
+		}
+	}
+}
+
 // 5.1: no entry counts twice in a card: an entry card names each entry
 // once and never an entry below another of its rows; duplicates names each
 // relation and each content once.

@@ -1,6 +1,6 @@
 // Package review turns the index, the rules' classification, and the
 // relations into the opportunity cards and their review lists (R2 design
-// D12–D13, r2c design D2–D4, §11.4).
+// D12–D13, r2c design D2–D4, r2d design D1, §11.4).
 //
 // Refresh, the relate job's after hook, writes one generation of
 // review_rows (and review_row_sources for duplicates rows) from the index

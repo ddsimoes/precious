@@ -55,3 +55,8 @@ There is no new job or write path. D1 changes what the relate job's after hook w
 
 - [The installers card grows from about 25 rows to many file rows on the owner's disk] → Rows are ordered largest first, and select-all applies as on every card. The bytes drop to real installers.
 - [A downloads folder full of installers no longer shows its total on the card] → The Map shows its size, and its installers are each a row.
+
+## Addendum: decisions made during implementation
+
+- **B1.** D1 takes `download_collection` off the installers card only. An empty downloads folder is still a row of the leftovers card, which selects empty folders by their emptiness, not by category.
+- **B2.** The review test of "A downloads folder is not an installer" asserts more than the scenario names: every installer and disk image the corpus's ground truth asserts is a row with its own size, every row is of category `installer_download`, and no `download_collection` folder is a row, while `Downloads` keeps that category. The API test checks the same rows through `GET /api/opportunities/installers`, and that the card's bytes are the sum of its rows (R2.5).
