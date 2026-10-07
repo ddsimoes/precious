@@ -33,6 +33,7 @@ type Policy struct {
 	fileRules    []rule // by priority, highest first, then file order
 	folderRules  []rule
 	explain      map[string]string // rule ID -> explain sentence
+	byID         map[string]*rule  // rule ID -> its rule, for Recall
 }
 
 // Load decodes and validates a markers file and a rules file. Every problem
