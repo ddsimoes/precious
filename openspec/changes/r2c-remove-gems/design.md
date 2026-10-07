@@ -133,3 +133,4 @@ Stays:
   - the spreadsheet inside `Microsoft Office`, and `GET /api/gems` 404;
   - after the startup refresh, 2 rescue rows;
   - a backup whose `integrity_check` is `ok`.
+- **V4. Owner sign-off (task 5.4).** On 2026-10-07 the owner looked at Opportunities on the reference server and signed off ("ok"), with no findings.

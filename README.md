@@ -64,13 +64,14 @@ The screenshots show the built-in regression corpus, a generated copy of a typic
 
 ## Status and roadmap
 
-Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so is R2b, the short step after R2, accepted on 2026-10-07. There are no tagged releases yet, and things may change incompatibly until 1.0.
+Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so are R2b and R2c, the short steps after R2, accepted on 2026-10-07. There are no tagged releases yet, and things may change incompatibly until 1.0.
 
 | Milestone | Scope | Status |
 |---|---|---|
 | **R1** Full index and explorer | Scanning and rescans, folder sizes and composition, classification rules, Home, Map, Search, detail panel, viewer, decisions and tags, sources with volume identity | ✅ Done |
-| **R2** Duplicates and gems | Content hashing, duplicate files and folders, a zip against its unpacked folder and browsing inside archives, folder comparison with the files unique to each side, opportunities, files with no other copy | ✅ Done |
+| **R2** Duplicates and opportunities | Content hashing, duplicate files and folders, a zip against its unpacked folder and browsing inside archives, folder comparison with the files unique to each side, opportunities, files with no other copy | ✅ Done |
 | **R2b** Your corrections and polish | Your own categories and group marks, scheduled rescans, search without accents, Map keyboard, both paths and extra copies in Compare, similar folders | ✅ Done |
+| **R2c** Gems removed | Gems could not tell what is valuable and is gone ([ADR 0009](docs/adr/0009-remove-gems.md)); its list of your files inside programs is now an opportunity card | ✅ Done |
 | **R3** Organizing | Moves and renames with undo, through one journaled, no-overwrite executor | Planned |
 | **R4** Cleanup | Cleanup plans, a reversible quarantine, a pre-delete check that every file has a verified copy, and purge | Planned |
 | **R5** Media dates | Photo and video dates from metadata, corrections, and organizing by date | Planned |

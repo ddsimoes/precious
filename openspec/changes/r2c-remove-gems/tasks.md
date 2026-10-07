@@ -83,4 +83,4 @@
   - a backup with integrity checked.
 
   Verify that it reports success, then delete the script.
-- [ ] 5.4 Back up the reference server's database, deploy, and have the owner look at Opportunities on his dataset. Verify with his sign-off, recorded in the design addendum.
+- [x] 5.4 Back up the reference server's database, deploy, and have the owner look at Opportunities on his dataset. Verify with his sign-off, recorded in the design addendum.
