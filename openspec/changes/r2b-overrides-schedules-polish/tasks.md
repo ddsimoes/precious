@@ -2,19 +2,20 @@
 
 ## 1. Foundation
 
-- [ ] 1.1 Prove with a store test that the bundled SQLite's trigram tokenizer accepts `remove_diacritics 1`, and that `confraternizacao` matches `Confraternização 2018`. If it does not, record the Go-folding fallback (design D7) as a decision before 1.2.
-- [ ] 1.2 Write migration `0003_owner.sql` (design Interfaces):
+- [x] 1.1 Prove with a store test that the bundled SQLite's trigram tokenizer accepts `remove_diacritics 1`, and that `confraternizacao` matches `Confraternização 2018`. If it does not, record the Go-folding fallback (design D7) as a decision before 1.2.
+- [x] 1.2 Write migration `0003_owner.sql` (design Interfaces):
   - `entry_overrides`;
   - the `sources` schedule and `rescan_requested` columns;
-  - the `entry_names` rebuild through a `precious_display_name` SQL function that `store` registers;
-  - the search indexes.
+  - the `entry_names` rebuild through a `precious_display_name` SQL function that `store` registers.
+
+  The search indexes moved to `0004_search.sql` with task 4.2 (design D8).
 
   Verify with an upgrade test from an R2 database:
   - schema version 3, rows kept;
   - every name indexed as the scanner writes it, a non-UTF-8 name included;
   - the schema-version tests updated.
-- [ ] 1.3 Add the domain types `Override` and `Schedule` (parse, validate, next occurrence after a time in its zone). Verify with unit tests: daily, weekly, a daylight-saving gap, a repeated hour, a zone without daylight saving, and malformed times, days, and zones.
-- [ ] 1.4 Write the R2 → R2b upgrade and rollback notes in `docs/operator.md`. Verify with the docs tests.
+- [x] 1.3 Add the domain types `Override` and `Schedule` (parse, validate, next occurrence after a time in its zone). Verify with unit tests: daily, weekly, a daylight-saving gap, a repeated hour, a zone without daylight saving, and malformed times, days, and zones.
+- [x] 1.4 Write the R2 → R2b upgrade and rollback notes in `docs/operator.md`. Verify with the docs tests.
 
 ## 2. Owner overrides and group marks
 
@@ -62,7 +63,10 @@
 ## 4. Search
 
 - [ ] 4.1 Search names with folded accents through the rebuilt index (D7). Verify with a search test (`confraternizacao` finds `Confraternização 2018`; short searches unchanged), and document the short-search limit in the search package doc.
-- [ ] 4.2 Build the page in two stages, using the new indexes and the driving duplicate filters (D8). Verify that `TestDupFilter` and `TestDupFilterHardLinks` pass unchanged, and add plan tests showing that no driver does a full scan.
+- [ ] 4.2 Build the page in two stages, with the driving duplicate filters, and write `0004_search.sql` with only the indexes that the plan tests prove necessary (D8). Verify:
+  - `TestDupFilter` and `TestDupFilterHardLinks` pass unchanged;
+  - plan tests show that no driver does a full scan;
+  - `walkbench` shows no scan regression from the new indexes.
 - [ ] 4.3 Add `count=only`, and make the UI show "Counting…" until the count arrives. Verify with an API test and Vitest.
 - [ ] 4.4 Add the `state=unreadable` filter (server and UI), and link Home's partial notice to it with the source. Verify with the inventory-explorer scenario as an API test and Vitest.
 - [ ] 4.5 Search UI:
