@@ -55,3 +55,13 @@ There is no new job or write path. D1 changes what the relate job's after hook w
 
 - [The installers card grows from about 25 rows to many file rows on the owner's disk] → Rows are ordered largest first, and select-all applies as on every card. The bytes drop to real installers.
 - [A downloads folder full of installers no longer shows its total on the card] → The Map shows its size, and its installers are each a row.
+
+## Addendum: decisions made during implementation
+
+- **U1. The column hint's description is `hidden`, beside the header row.** The Has copies column is not sortable, so it has no header button: the `title` and `aria-describedby` go on its `columnheader`. The description it points to is a `hidden` span outside the header row. Inside the header it would join the header's name and text ("Has copies Files here…"), and a visually hidden span outside it would be read twice, once as table text and once as the description. A `hidden` element still gives its text to `aria-describedby`.
+- **U2. Two hint keys.** `map.columns.duplicatedHint` is plain text, for the `title` and the description. `detail.duplicatedHint` carries the same words, with "Opportunities" a link to `/opportunities` (Trans), shown as a muted line under the figure in the panel.
+- **U3. The panel line shows wherever the figure does,** for a file (0% or 100%) as for a folder, like the column header, which hints for every row.
+- **U4. Keys replaced.** `detail.relationFigures` (bytes in common and both only-side counts) became `detail.inCommon` ("{{bytes}} in common"), and `similar.onlyIn` is gone. `units.files` stays, used elsewhere.
+- **U5. The catalog test matches the word.** It refuses `duplicated` as a whole word, in any case, in every string of the English catalog. That catches the old label and legend bands, and leaves "duplicates" and "Duplicate folders and files".
+- **U6. The installers card's help** reads "Setup programs and disk images, wherever they are." It said "and download folders".
+- **U7. Docs.** `docs/operator.md` keeps the heading "Percent duplicated", the duplicates capability's term, so its anchor holds, and says the interface names it Has copies. The Map paragraph now says the column hides after Decision, as the table does (it said "after Changed and Suggestion"). The installers card's row of the cards table is left to task 2.1.

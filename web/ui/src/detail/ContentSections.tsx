@@ -136,8 +136,6 @@ export function RelationsSection({
   const { t } = useTranslation()
   const fmt = useFormat()
   const entryLink = useEntryLink()
-  const amount = (a: { files: number; bytes: number }) =>
-    `${t('units.files', { count: a.files, formatted: fmt.count(a.files) })} (${fmt.bytes(a.bytes)})`
 
   if (relations.length === 0) {
     return (
@@ -168,11 +166,7 @@ export function RelationsSection({
               />
             </span>
             <span className="text-xs text-muted-foreground">
-              {t('detail.relationFigures', {
-                matched: fmt.bytes(relation.matched_bytes),
-                here: amount(relation.only_here),
-                there: amount(relation.only_there),
-              })}
+              {t('detail.inCommon', { bytes: fmt.bytes(relation.matched_bytes) })}
             </span>
             <div>
               <Button asChild size="sm" variant="outline">
