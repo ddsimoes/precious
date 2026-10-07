@@ -268,16 +268,16 @@ Each group adds its section of `docs/operator.md` at its `<!-- owner: X -->` mar
 
 ## 9. Findings of the owner's walkthrough (option A, chosen 2026-10-06)
 
-- [ ] 9.1 Detail panel: an `overlap` reads by side, side `a` as "Most of it is also in B" and side `b` as "Most of A is also in it" (B16). Verify with Vitest for both sides.
-- [ ] 9.2 A folder's candidate bytes leave out unreadable files, and member folders count `sampled` as checked (B17, duplicates). Verify with a Go test: a folder whose only unchecked file is unreadable reads as checked, while coverage still counts the file as unreadable.
-- [ ] 9.3 The preview of an unreadable file says Precious could not read it (B18, inventory-explorer). Verify with Vitest.
-- [ ] 9.4 Zip member names that are not valid UTF-8 are displayed decoded from code page 850 at every display site, with the raw bytes kept (B19, archive-contents). Verify with Go tests of the decoder and of a member row built from a raw-named zip.
-- [ ] 9.5 Epoch modification times are unknown: the folder aggregates, the by-year unknown bucket, null API times, and the UI wording (B20, file-index). Verify with Go tests (aggregates, by-year sums, API nulls, a rescan refreshing older aggregates) and Vitest (the unknown year label).
-- [ ] 9.6 After a key decision removes the selected row, the next row is selected (B21, review-lists). Verify with Vitest (D then K decides two rows) and the Playwright review-keys test.
-- [ ] 9.7 J on the last loaded row loads and selects the next page (B21, review-lists). Verify with Vitest over two pages.
-- [ ] 9.8 Compare without a bucket opens the first bucket that holds files (B22, duplicates). Verify with Vitest (an inside pair opens on only right, a same pair on identical) and the Playwright Compare tests.
-- [ ] 9.9 `unpacked_archives` rows name their folder and link Compare (B23, review-lists). Verify with a Go API test and Vitest.
-- [ ] 9.10 Duplicates relation rows count files as the Map does; group rows show no file count (B24, review-lists). Verify with the Go API test and Vitest.
-- [ ] 9.11 Wording: lower-case signals in summaries, the count first on a card with no bytes, and "Not checked or unreadable" in Search (B25, review-lists). Verify with Vitest.
-- [ ] 9.12 Copies carry their own decision, shown as the active button in a group's copies (B26). Verify with Go tests of `content.Copies` and the API, and Vitest.
-- [ ] 9.13 Merge, then run the verification of task 8.5. Redeploy the smoke instance and rescan the owner's source, so that folder dates and duplicates figures refresh. Then check A1–A12 on the owner's dataset.
+- [x] 9.1 Detail panel: an `overlap` reads by side, side `a` as "Most of it is also in B" and side `b` as "Most of A is also in it" (B16). Verify with Vitest for both sides.
+- [x] 9.2 A folder's candidate bytes leave out unreadable files, and member folders count `sampled` as checked (B17, duplicates). Verify with a Go test: a folder whose only unchecked file is unreadable reads as checked, while coverage still counts the file as unreadable.
+- [x] 9.3 The preview of an unreadable file says Precious could not read it (B18, inventory-explorer). Verify with Vitest.
+- [x] 9.4 Zip member names that are not valid UTF-8 are displayed decoded from code page 850 at every display site, with the raw bytes kept (B19, archive-contents). Verify with Go tests of the decoder and of a member row built from a raw-named zip.
+- [x] 9.5 Epoch modification times are unknown: the folder aggregates, the by-year unknown bucket, null API times, and the UI wording (B20, file-index). Verify with Go tests (aggregates, by-year sums, API nulls, a rescan refreshing older aggregates) and Vitest (the unknown year label).
+- [x] 9.6 After a key decision removes the selected row, the next row is selected (B21, review-lists). Verify with Vitest (D then K decides two rows) and the Playwright review-keys test.
+- [x] 9.7 J on the last loaded row loads and selects the next page (B21, review-lists). Verify with Vitest over two pages.
+- [x] 9.8 Compare without a bucket opens the first bucket that holds files (B22, duplicates). Verify with Vitest (an inside pair opens on only right, a same pair on identical) and the Playwright Compare tests.
+- [x] 9.9 `unpacked_archives` rows name their folder and link Compare (B23, review-lists). Verify with a Go API test and Vitest.
+- [x] 9.10 Duplicates relation rows count files as the Map does; group rows show no file count (B24, review-lists). Verify with the Go API test and Vitest.
+- [x] 9.11 Wording: lower-case signals in summaries, the count first on a card with no bytes, and "Not checked or unreadable" in Search (B25, review-lists). Verify with Vitest.
+- [x] 9.12 Copies carry their own decision, shown as the active button in a group's copies (B26). Verify with Go tests of `content.Copies` and the API, and Vitest.
+- [x] 9.13 Merge, then run the verification of task 8.5. Redeploy the smoke instance and rescan the owner's source, so that folder dates and duplicates figures refresh. Then check A1–A12 on the owner's dataset.
