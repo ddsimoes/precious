@@ -12,6 +12,7 @@ import {
   origin,
   type TruthEntry,
   type TruthMember,
+  type TruthPath,
 } from './env'
 
 // The suite drives one browser session through the R1 and R2 acceptance
@@ -26,6 +27,11 @@ const keptThumbs = 'Fotos/2006/Praia/Thumbs.db'
 const tagName = 'Fotos de 2006'
 const pendrive = 'Downloads/fotos_2005_do_pendrive'
 const pendriveZip = `${pendrive}.zip`
+// At the default window the Map's table sits beside the treemap, too
+// narrow for its Decision column, which hides before Duplicated (r2b design
+// D9); the tests that read Decision widen the window for it.
+const defaultWindow = devices['Desktop Chrome'].viewport
+const wideWindow = { width: 1920, height: 1080 }
 
 const corpus = groundTruth()
 const truth = corpus.entries
@@ -245,10 +251,13 @@ test('R1.7: discarding a folder decides its subtree and changes Home', async () 
   await expect(details.getByRole('button', { name: 'Discard' })).toHaveAttribute('aria-pressed', 'true')
   await expect(term(details, 'Effective decision')).toContainText('Discard')
 
+  // The table is wide enough for its Decision column only in a wide window.
+  await page.setViewportSize(wideWindow)
   await page.getByRole('table', { name: /^Contents of / }).getByRole('link', { name: backup, exact: true }).click()
   const inside = page.getByRole('table', { name: `Contents of ${backup}` })
   const drive = inside.getByRole('row').filter({ has: page.getByRole('link', { name: 'C', exact: true }) })
-  await expect(drive.getByRole('cell').last()).toHaveText('Discard ↑')
+  await expect(await cellUnder(inside, drive, 'Decision')).toHaveText('Discard ↑')
+  await page.setViewportSize(defaultWindow)
 
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home' }).click()
   await expect(decisions.getByRole('listitem').filter({ hasText: /^Discard/ })).toHaveText(spaced(discarded))
@@ -435,6 +444,16 @@ test('R2.2: Compare of Fotos with Fotos - Copia, chosen from the detail panel', 
     await expectGroupFigures('Not checked yet', 0, 0)
     await expectGroupFigures('Same name, different content', 0, 0)
   }
+  // The rest is identical, each file at the same path on both sides: one
+  // path, both sides, and no extra copy (r2b design D11).
+  const identical = truth
+    .filter((e) => e.size !== undefined && e.path.startsWith('Fotos/'))
+    .map((e) => e.path.slice('Fotos/'.length))
+    .filter((p) => !onlyLeft.includes(p))
+  expect(await compareGroup('Identical')).toEqual(identical.toSorted())
+  const pairs = page.getByRole('list', { name: 'Files: Identical' }).locator(':scope > li')
+  await expect(pairs.locator(':scope > div > div')).toHaveCount(2 * identical.length)
+  await expect(pairs.getByText(/^Extra copy, same as/)).toHaveCount(0)
 })
 
 test('R2.3: the pendrive zip is the same as its unpacked folder, in the panel and in Compare', async () => {
@@ -465,6 +484,9 @@ test('R2.3: the pendrive zip is the same as its unpacked folder, in the panel an
   await expect(sides.nth(0).getByText(pendriveZip, { exact: true })).toBeVisible()
   await expect(sides.nth(1).getByText(pendrive, { exact: true })).toBeVisible()
   expect(await compareGroup('Identical')).toEqual(files.map((m) => m.path).toSorted())
+  const pairs = page.getByRole('list', { name: 'Files: Identical' }).locator(':scope > li')
+  await expect(pairs.locator(':scope > div > div')).toHaveCount(2 * files.length)
+  await expect(pairs.getByText(/^Extra copy, same as/)).toHaveCount(0)
   await expectGroupFigures('Identical', files.length, files.reduce((sum, m) => sum + (m.size ?? 0), 0))
   for (const group of ['Only on the left', 'Only on the right', 'Same name, different content', 'Not checked yet']) {
     await expectGroupFigures(group, 0, 0)
@@ -490,6 +512,7 @@ test('browsing inside the pendrive zip in the Map shows its members, decided wit
   }
 
   const folder = folders[0]?.path ?? ''
+  await page.setViewportSize(wideWindow)
   await openFolder(`${pendriveZip}/${folder}`)
   const inside = page.getByRole('table', { name: `Contents of ${folder}` })
   const photos = filesUnder(folder)
@@ -499,11 +522,12 @@ test('browsing inside the pendrive zip in the Map shows its members, decided wit
     const row = inside.getByRole('row').filter({ has: page.getByRole('link', { name, exact: true }) })
     await expect(row.getByRole('cell').nth(1), name).toHaveText(bytes(photo.size ?? 0))
     // A member that follows an undecided archive leaves Decision blank.
-    await expect(row.getByRole('cell').last(), name).toHaveText('')
+    await expect(await cellUnder(inside, row, 'Decision'), name).toHaveText('')
     await expect(
       areas.getByRole('button', { name: `Details of ${name} (${bytes(photo.size ?? 0)})`, exact: true }),
     ).toBeAttached()
   }
+  await page.setViewportSize(defaultWindow)
 
   const photo = photos[0]?.path ?? ''
   const name = photo.slice(folder.length + 1)
@@ -790,6 +814,355 @@ test('review keys decide and move through the system junk list', async () => {
   }
 })
 
+test('r2b D11: Compare shows both paths of a pair and names the twin of an extra copy', async () => {
+  // Documentos holds two copies of the curriculum, and the old My Documents
+  // one; they share nothing else.
+  const left = 'Documentos'
+  const right = 'Backup_PC_2004/C/Documents and Settings/Joao/Meus documentos'
+  const rightContents = new Set(filesBelow(right).map((e) => e.sha256))
+  const shared = filesBelow(left)
+    .filter((e) => rightContents.has(e.sha256))
+    .map((e) => e.path)
+  const copies = copiesOf(`${left}/curriculo.doc`)
+  expect(shared.toSorted()).toEqual(copies.filter((p) => parent(p) === left).toSorted())
+  const inLeft = shared.map((p) => p.slice(left.length + 1)).toSorted()
+  const inRight = copies.filter((p) => parent(p) === right).map((p) => p.slice(right.length + 1))
+  expect(inLeft).toEqual(['curriculo (1).doc', 'curriculo.doc'])
+  expect(inRight).toEqual(['curriculo.doc'])
+  // The copies pair in path order: the first left one with the right one,
+  // at another path; the second left one is an extra copy of it.
+  const [paired, extra] = inLeft
+  const [twin] = inRight
+
+  await page.goto(`/compare?left=${await entryId(left)}&right=${await entryId(right)}&bucket=identical`)
+  expect(await compareGroup('Identical')).toEqual([paired, extra])
+  const items = page.getByRole('list', { name: 'Files: Identical' }).locator(':scope > li')
+  const pair = items.nth(0).locator(':scope > div > div')
+  await expect(pair).toHaveCount(2)
+  await expect(pair.nth(0)).toContainText('Left')
+  await expect(pair.nth(0).getByText(paired ?? '', { exact: true })).toBeVisible()
+  await expect(pair.nth(1)).toContainText('Right')
+  await expect(pair.nth(1).getByText(twin ?? '', { exact: true })).toBeVisible()
+  await expect(items.nth(0).getByText(/^Extra copy/)).toHaveCount(0)
+
+  const lone = items.nth(1)
+  await expect(lone.locator(':scope > div > div')).toHaveCount(1)
+  await expect(lone.locator(':scope > div > div')).toContainText('Left')
+  const note = lone.getByText(/^Extra copy, same as/)
+  await expect(note).toHaveText(`Extra copy, same as ${twin} on the right`)
+  // The twin's link opens the right side's copy.
+  await note.getByRole('link', { name: twin, exact: true }).click()
+  const panel = page.getByRole('complementary', { name: twin })
+  await expect(panel.getByRole('navigation', { name: 'Location' })).toContainText('Meus documentos')
+})
+
+test('r2b D12: Similar folders lists the declared overlaps with their figures', async () => {
+  const declared = corpus.relations.filter((r) => r.kind === 'overlap')
+  expect(declared.length).toBeGreaterThan(0)
+  const listed = await allPages<Overlap>('/api/relations', { kind: 'overlap' })
+  const amount = (paths: TruthPath[]): Amount => ({
+    files: paths.length,
+    bytes: paths.reduce((sum, p) => sum + (truth.find((e) => e.path === p.path)?.size ?? 0), 0),
+  })
+  const found: Overlap[] = []
+  for (const relation of declared) {
+    const { a, b } = relation
+    const item = listed.items.find(
+      (i) => (i.a.path === a.path && i.other.path === b.path) || (i.a.path === b.path && i.other.path === a.path),
+    )
+    if (item === undefined) {
+      throw new Error(`the similar folders lack ${a.path} and ${b.path}`)
+    }
+    // Side a is the ground truth's a: what is only in each side is the
+    // ground truth's, and what a shares is the rest of a.
+    const [here, there] =
+      item.a.path === a.path ? [relation.a_only, relation.b_only] : [relation.b_only, relation.a_only]
+    expect(item.only_here, a.path).toEqual(amount(here))
+    expect(item.only_there, a.path).toEqual(amount(there))
+    const aBytes = filesBelow(a.path).reduce((sum, e) => sum + (e.size ?? 0), 0)
+    expect(item.matched_bytes, a.path).toBe(aBytes - amount(relation.a_only).bytes)
+    found.push(item)
+  }
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Opportunities' }).click()
+  await page.getByRole('link', { name: 'Similar folders', exact: true }).click()
+  await expect(page).toHaveURL(/\/opportunities\/similar$/)
+  await expect(page.getByRole('heading', { name: 'Similar folders', level: 1 })).toBeVisible()
+  const rows = page.getByRole('list', { name: 'Similar folders' }).locator(':scope > li')
+  const more = page.getByRole('button', { name: 'Load more' })
+  await expect(rows.first()).toBeVisible()
+  while (await more.isVisible()) {
+    await more.click()
+  }
+  await expect(rows).toHaveCount(listed.items.length)
+  const shown: Locator[] = []
+  for (const item of found) {
+    const row = rows
+      .filter({ has: page.getByRole('link', { name: item.a.path, exact: true }) })
+      .filter({ has: page.getByRole('link', { name: item.other.path, exact: true }) })
+    await expect(row, item.a.path).toContainText(
+      [
+        `${bytes(item.matched_bytes)} in common`,
+        `Only in ${item.a.path}: ${fileCount(item.only_here.files)} (${bytes(item.only_here.bytes)})`,
+        `Only in ${item.other.path}: ${fileCount(item.only_there.files)} (${bytes(item.only_there.bytes)})`,
+      ].join(' · '),
+    )
+    shown.push(row)
+  }
+  // Compare opens on the two sides.
+  const [first] = found
+  const [firstRow] = shown
+  if (first === undefined || firstRow === undefined) {
+    throw new Error('no declared overlap')
+  }
+  await firstRow.getByRole('link', { name: 'Compare', exact: true }).click()
+  await expect(page).toHaveURL(new RegExp(`/compare\\?left=${first.a.id}&right=${first.other.id}`))
+  const sides = page.getByRole('region', { name: 'Folders compared' }).locator(':scope > div')
+  await expect(sides.nth(0).getByText(first.a.path, { exact: true })).toBeVisible()
+  await expect(sides.nth(1).getByText(first.other.path, { exact: true })).toBeVisible()
+})
+
+test('r2b D7: a search without accents finds the accented name', async () => {
+  const accented = 'Configurações locais'
+  const query = 'configuracoes'
+  // The names that read as the query once their accents are dropped.
+  const matches = truth
+    .filter((e) => (e.path.split('/').at(-1) ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().includes(query))
+    .map((e) => e.path)
+  expect(matches.filter((p) => p.endsWith(`/${accented}`)).length).toBeGreaterThan(0)
+
+  const found = await allPages<{ path: string }>('/api/search', { name: query })
+  expect(found.items.map((i) => i.path).toSorted()).toEqual(matches.toSorted())
+  await search({ name: query })
+  const results = page.getByRole('region', { name: 'Results' })
+  await expect(results.getByRole('status').first()).toHaveText(
+    `${count(matches.length)} ${matches.length === 1 ? 'result' : 'results'}`,
+  )
+  await expect(results.getByRole('link', { name: accented, exact: true }).first()).toBeVisible()
+})
+
+test('r2b 4.4: Home’s partial notice lists exactly the folders that could not be read', async () => {
+  // The corpus's privado folder is mode 000, which root reads anyway.
+  test.skip(process.getuid?.() === 0, 'running as root, which can read the mode-000 privado folder')
+  const unreadable = truth.filter((e) => e.unreadable === true).map((e) => e.path)
+  expect(unreadable.length).toBeGreaterThan(0)
+  const source = await corpusSource()
+  const found = await allPages<{ path: string }>('/api/search', { state: 'unreadable', source: source.id })
+  expect(found.items.map((i) => i.path).toSorted()).toEqual(unreadable.toSorted())
+
+  // Home showing one source links to what could not be read in it.
+  await page.goto(`/?source=${source.id}`)
+  await page
+    .getByRole('status')
+    .filter({ hasText: 'Some folders could not be read' })
+    .getByRole('link', { name: 'See what could not be read' })
+    .click()
+  await expect(page).toHaveURL(new RegExp(`/search\\?state=unreadable&source=${source.id}$`))
+  const results = page.getByRole('region', { name: 'Results' })
+  await expect(results.getByRole('status').first()).toHaveText(
+    `${count(unreadable.length)} ${unreadable.length === 1 ? 'result' : 'results'}`,
+  )
+  for (const path of unreadable) {
+    const name = path.split('/').at(-1) ?? ''
+    const row = results.getByRole('row').filter({ has: page.getByRole('link', { name, exact: true }) })
+    await expect(row, path).toContainText('Could not be read')
+  }
+})
+
+test('r2b M4: the Map keys walk the rows, open a folder or a file, and close the panel', async () => {
+  await openFolder(programs)
+  const table = page.getByRole('table', { name: 'Contents of Arquivos de programas' })
+  const row = (index: number) => table.locator(`[role="row"][aria-rowindex="${index + 2}"]`)
+  const names: string[] = []
+  for (const index of [0, 1, 2]) {
+    names.push((await row(index).getByRole('link').first().textContent()) ?? '')
+  }
+  const folderAddress = page.url()
+
+  // The arrows select a row and open its details; the walk is one history
+  // entry, which each further arrow replaces.
+  await page.keyboard.press('ArrowDown')
+  await expect(row(0)).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('complementary', { name: names[0] })).toBeVisible()
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('ArrowDown')
+  await expect(row(2)).toHaveAttribute('aria-selected', 'true')
+  await expect(row(2)).toBeFocused()
+  await expect(page.getByRole('complementary', { name: names[2] })).toBeVisible()
+  await page.goBack()
+  await expect(page).toHaveURL(folderAddress)
+  await expect(page.getByRole('complementary')).toHaveCount(0)
+
+  // Enter opens a folder row.
+  const third = truth.find((e) => e.path === `${programs}/${names[2]}`)
+  expect(third?.kind).toBe('directory')
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('ArrowDown')
+  }
+  await expect(row(2)).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('table', { name: `Contents of ${names[2]}` })).toBeVisible()
+  await expect(page.getByRole('complementary')).toHaveCount(0)
+
+  // Enter opens a file in the viewer, and Escape closes the details.
+  await openFolder('Midia')
+  const midia = page.getByRole('table', { name: 'Contents of Midia' })
+  await expect(midia.locator('[role="row"][aria-rowindex="2"]').getByRole('link').first()).toHaveText('foto.jpg')
+  await page.keyboard.press('ArrowDown')
+  const panel = page.getByRole('complementary', { name: 'foto.jpg' })
+  await expect(panel).toBeVisible()
+  await page.keyboard.press('Enter')
+  const viewer = page.getByRole('dialog', { name: 'foto.jpg' })
+  await expect
+    .poll(() => viewer.getByRole('img', { name: 'foto.jpg' }).evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBe(320)
+  await closeViewer(viewer)
+  await page.keyboard.press('Escape')
+  await expect(panel).toBeHidden()
+  await expect(page).not.toHaveURL(/[?&]entry=/)
+})
+
+test('r2b D6: a daily rescan shows on the source card with its next scan, and turns off', async () => {
+  // Twelve hours from now, so that it cannot come due during the run. The
+  // browser's zone is UTC.
+  const now = new Date()
+  const hour = (now.getUTCHours() + 12) % 24
+  const at = `${String(hour).padStart(2, '0')}:00`
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour))
+  if (next <= now) {
+    next.setUTCDate(next.getUTCDate() + 1)
+  }
+  const { id } = await corpusSource()
+  const scheduleOf = async () => {
+    const body: { sources: { id: string; schedule: unknown; next_scan_at: string | null }[] } = await (
+      await page.request.get('/api/sources')
+    ).json()
+    const source = body.sources.find((s) => s.id === id)
+    return { schedule: source?.schedule, next: source?.next_scan_at ?? null }
+  }
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Sources' }).click()
+  const card = page.getByRole('article', { name: sourceLabel })
+  await expect(term(card, 'Rescan')).toHaveText('Off')
+  await card.getByRole('button', { name: 'Change schedule' }).click()
+  let form = card.getByRole('form', { name: 'Rescan schedule' })
+  await form.getByLabel('Rescan').selectOption({ label: 'Daily' })
+  await form.getByLabel('Time').fill(at)
+  await form.getByRole('button', { name: 'Save' }).click()
+  await expect(form).toBeHidden()
+  await expect(term(card, 'Rescan')).toHaveText(`Daily at ${at}`)
+  const set = await scheduleOf()
+  expect(set.schedule).toEqual({ every: 'day', at, zone: 'UTC' })
+  expect(new Date(set.next ?? '').getTime()).toBe(next.getTime())
+  const shown = await page.evaluate(
+    (time) => new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(time)),
+    next.toISOString(),
+  )
+  await expect(term(card, 'Next scan')).toHaveText(shown)
+
+  await card.getByRole('button', { name: 'Change schedule' }).click()
+  form = card.getByRole('form', { name: 'Rescan schedule' })
+  await form.getByLabel('Rescan').selectOption({ label: 'Off' })
+  await form.getByRole('button', { name: 'Save' }).click()
+  await expect(form).toBeHidden()
+  await expect(term(card, 'Rescan')).toHaveText('Off')
+  await expect(term(card, 'Next scan')).toHaveCount(0)
+  expect(await scheduleOf()).toEqual({ schedule: null, next: null })
+})
+
+test('r2b D1–D5: a category and a group mark set in the panel change the folders above after the scan, and go back to the rules', async () => {
+  const praia = parent(keptThumbs)
+  const above = [parent(praia), parent(parent(praia))]
+  const praiaId = await entryId(praia)
+  const aboveIds: string[] = []
+  for (const path of above) {
+    aboveIds.push(await entryId(path))
+  }
+  const start = await detailOf(praiaId)
+  expect(start.classification).toMatchObject({
+    owner: { category: null, group: null },
+    rules_category: 'personal_media',
+    group: false,
+  })
+  // Praia's photos count as personal, its Thumbs.db as disposable.
+  const own = byFamily(start.entry.composition)
+  expect(own.disposable).toEqual({ bytes: truth.find((e) => e.path === keptThumbs)?.size, files: 1 })
+  const before: Composition[] = []
+  for (const id of aboveIds) {
+    before.push(byFamily((await detailOf(id)).entry.composition))
+  }
+  const expectAbove = async (expected: (composition: Composition) => Composition) => {
+    for (const [i, id] of aboveIds.entries()) {
+      expect(byFamily((await detailOf(id)).entry.composition), above[i]).toEqual(expected(before[i] ?? {}))
+    }
+  }
+
+  await openFolder(parent(praia))
+  await page.getByRole('link', { name: 'Details of Praia', exact: true }).click()
+  const panel = page.getByRole('complementary', { name: 'Praia' })
+  const classification = panel.getByRole('region', { name: 'Classification' })
+  const category = classification.getByRole('combobox', { name: 'Change category' })
+  const group = classification.getByRole('group', { name: 'Review as one item' })
+  const personal = en.entry.category.personal_media
+  await expect(category.locator('option[value="rules"]')).toHaveText(`As the rules say (${personal})`)
+  await expect(group.getByRole('button', { name: 'As the rules say (No)' })).toHaveAttribute('aria-pressed', 'true')
+
+  // A cache folder is a group: the folders above count Praia whole under
+  // the cache's family.
+  await overrideAndScan(() => category.selectOption({ label: en.entry.category.cache }))
+  await expect(classification.getByRole('status')).toHaveText(en.detail.override.afterScan)
+  await expect(term(classification, 'Category')).toContainText(en.entry.category.cache)
+  await expect(term(classification, 'Category')).toContainText('set by you')
+  await expect(classification.getByText(`The rules say: ${personal}`)).toBeVisible()
+  await expect(category.locator('option[value="rules"]')).toHaveText(`Back to the rules (${personal})`)
+  const cached = await detailOf(praiaId)
+  expect(cached.classification).toMatchObject({
+    owner: { category: 'cache', group: null },
+    rules_category: 'personal_media',
+    group: true,
+  })
+  expect(cached.entry.family).toBe('disposable')
+  await expectAbove((composition) => countedWhole(composition, own, 'disposable'))
+
+  await overrideAndScan(() => category.selectOption('rules'))
+  await expect(term(classification, 'Category')).not.toContainText('set by you')
+  await expect(category.locator('option[value="rules"]')).toHaveText(`As the rules say (${personal})`)
+  await expectAbove((composition) => composition)
+
+  // Marked as one item, Praia counts whole as personal, its Thumbs.db too.
+  await overrideAndScan(() => group.getByRole('button', { name: 'Yes', exact: true }).click())
+  await expect(classification.getByText(en.detail.group)).toContainText('set by you')
+  await expect(classification.getByText('The rules say: item by item')).toBeVisible()
+  await expect(group.getByRole('button', { name: 'Yes', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  expect((await detailOf(praiaId)).classification).toMatchObject({ owner: { category: null, group: true }, group: true })
+  await expectAbove((composition) => countedWhole(composition, own, 'personal'))
+  // The folder above shows it.
+  await panel.getByRole('navigation', { name: 'Location' }).getByRole('link', { name: '2006', exact: true }).click()
+  const bars = page
+    .getByRole('complementary', { name: '2006' })
+    .getByRole('list', { name: 'Size by category' })
+    .getByRole('listitem')
+  const grouped = countedWhole(before[0] ?? {}, own, 'personal')
+  await expect(bars).toHaveCount(Object.keys(grouped).length)
+  for (const [family, label] of Object.entries(en.home.family)) {
+    const amount = grouped[family]
+    if (amount === undefined) {
+      await expect(bars.filter({ hasText: label }), family).toHaveCount(0)
+    } else {
+      await expect(bars.filter({ hasText: label }), family).toContainText(`${bytes(amount.bytes)} · ${fileCount(amount.files)}`)
+    }
+  }
+
+  await page.getByRole('link', { name: 'Details of Praia', exact: true }).click()
+  await overrideAndScan(() => group.getByRole('button', { name: 'As the rules say (No)' }).click())
+  await expect(classification.getByText('set by you')).toHaveCount(0)
+  await expect(classification.getByText(en.detail.group)).toHaveCount(0)
+  expect((await detailOf(praiaId)).classification).toMatchObject({ owner: { category: null, group: null }, group: false })
+  await expectAbove((composition) => composition)
+  // The scans asked for hashing and relations again; let them end.
+  await awaitDuplicates(page.request, startHash)
+})
+
 // spaced matches text, ignoring the whitespace between its words, so a list
 // item whose parts are separate elements matches what it reads as.
 function spaced(text: string): RegExp {
@@ -801,6 +1174,15 @@ function spaced(text: string): RegExp {
 // inside scope.
 function term(scope: Locator, name: string): Locator {
   return scope.locator(`xpath=.//dt[normalize-space()="${name}"]/following-sibling::dd[1]`)
+}
+
+// cellUnder returns row's cell in the column of table headed name, so a
+// hidden column fails instead of reading another one.
+async function cellUnder(table: Locator, row: Locator, name: string): Promise<Locator> {
+  await expect(table.getByRole('columnheader', { name, exact: true })).toBeVisible()
+  const index = (await table.getByRole('columnheader').allTextContents()).indexOf(name)
+  expect(index, `the ${name} column`).toBeGreaterThanOrEqual(0)
+  return row.getByRole('cell').nth(index)
 }
 
 function parent(path: string): string {
@@ -818,12 +1200,7 @@ function filesBelow(path: string): TruthEntry[] {
 // top folder's address, rather than the Map link, so that it never acts on
 // the folder path of the page it leaves.
 async function openFolder(path: string) {
-  const sources: { sources: { label: string; root_entry_id: string }[] } = await (
-    await page.request.get('/api/sources')
-  ).json()
-  const root = sources.sources.find((s) => s.label === sourceLabel)?.root_entry_id ?? ''
-  expect(root, sourceLabel).not.toBe('')
-  await page.goto(`/map/${root}`)
+  await page.goto(`/map/${(await corpusSource()).root_entry_id}`)
   await expect(page.getByRole('navigation', { name: 'Folder path' }).getByRole('link')).toHaveCount(0)
   await expect(page.getByRole('table', { name: /^Contents of / })).toBeVisible()
   for (const name of path === '' ? [] : path.split('/')) {
@@ -909,9 +1286,7 @@ async function command<T = unknown>(name: string, body: unknown): Promise<{ stat
 
 // startHash starts a hashing job of the corpus source and returns its ID.
 async function startHash(): Promise<string> {
-  const sources: { sources: { id: string; label: string }[] } = await (await page.request.get('/api/sources')).json()
-  const source = sources.sources.find((s) => s.label === sourceLabel)
-  const started = await command<{ job_id: string }>('start-hash', { source_id: source?.id })
+  const started = await command<{ job_id: string }>('start-hash', { source_id: (await corpusSource()).id })
   expect(started.status).toBe(202)
   return started.body.job_id
 }
@@ -963,18 +1338,34 @@ interface IntentState {
   tags: string[]
 }
 
-// intentOf reads the decision, suggestion, and tags of the entry at path
-// in the corpus source, from the read API.
-async function intentOf(path: string): Promise<IntentState> {
-  const sources: { sources: { label: string; root_entry_id: string }[] } = await (
+// corpusSource reads the corpus source from the read API.
+async function corpusSource(): Promise<{ id: string; root_entry_id: string }> {
+  const sources: { sources: { id: string; label: string; root_entry_id: string | null }[] } = await (
     await page.request.get('/api/sources')
   ).json()
-  let id = sources.sources.find((s) => s.label === sourceLabel)?.root_entry_id ?? ''
+  const source = sources.sources.find((s) => s.label === sourceLabel)
+  if (source === undefined || source.root_entry_id === null) {
+    throw new Error(`${sourceLabel} is not a scanned source`)
+  }
+  return { id: source.id, root_entry_id: source.root_entry_id }
+}
+
+// entryId finds the entry at path in the corpus source, folder by folder,
+// from the read API.
+async function entryId(path: string): Promise<string> {
+  let id = (await corpusSource()).root_entry_id
   for (const name of path.split('/')) {
     const children = await allPages<{ id: string; name: string }>(`/api/entries/${id}/children`, { sort: 'name' })
     id = children.items.find((c) => c.name === name)?.id ?? ''
     expect(id, `${path}: ${name}`).not.toBe('')
   }
+  return id
+}
+
+// intentOf reads the decision, suggestion, and tags of the entry at path
+// in the corpus source, from the read API.
+async function intentOf(path: string): Promise<IntentState> {
+  const id = await entryId(path)
   const detail: {
     entry: { decision: string | null; eff_decision: Decision; triage: string | null }
     intent: { tags: { name: string }[] }
@@ -996,7 +1387,97 @@ async function compareGroup(label: string): Promise<string[]> {
 async function expectGroupFigures(label: string, files: number, size: number) {
   await expect(
     page.getByRole('navigation', { name: 'Groups' }).getByRole('link', { name: new RegExp(`^${label}`) }),
-  ).toHaveText(spaced(`${label} ${count(files)} ${files === 1 ? 'file' : 'files'} · ${bytes(size)}`))
+  ).toHaveText(spaced(`${label} ${fileCount(files)} · ${bytes(size)}`))
+}
+
+// fileCount reads a number of files as the app does: "1 file", "2 files".
+function fileCount(n: number): string {
+  return `${count(n)} ${n === 1 ? 'file' : 'files'}`
+}
+
+// Amount is a number of files and their bytes.
+interface Amount {
+  files: number
+  bytes: number
+}
+
+// Overlap is an item of GET /api/relations?kind=overlap: side a, the other
+// side, and their figures.
+interface Overlap {
+  a: { id: string; path: string }
+  other: { id: string; path: string }
+  matched_bytes: number
+  only_here: Amount
+  only_there: Amount
+}
+
+// Composition is a folder's bytes and files by family.
+type Composition = Record<string, Amount>
+
+// ClassifiedEntry is what the override test reads of GET /api/entries/{id}.
+interface ClassifiedEntry {
+  entry: { family: string | null; composition: (Amount & { family: string })[] }
+  classification: {
+    owner: { category: string | null; group: boolean | null }
+    rules_category: string | null
+    group: boolean
+  }
+}
+
+// detailOf reads the entry with ID id from the read API.
+async function detailOf(id: string): Promise<ClassifiedEntry> {
+  const resp = await page.request.get(`/api/entries/${id}`)
+  expect(resp.status()).toBe(200)
+  const detail: ClassifiedEntry = await resp.json()
+  return detail
+}
+
+// byFamily keys a composition by family.
+function byFamily(amounts: (Amount & { family: string })[]): Composition {
+  return Object.fromEntries(amounts.map((a) => [a.family, { files: a.files, bytes: a.bytes }]))
+}
+
+// countedWhole returns the composition of a folder above group, once the
+// group counts whole under family instead of by its own composition (a
+// group outside the containers family, design D21).
+function countedWhole(composition: Composition, group: Composition, family: string): Composition {
+  const out: Composition = { ...composition }
+  const whole: Amount = { files: 0, bytes: 0 }
+  for (const [f, a] of Object.entries(group)) {
+    const was = out[f] ?? { files: 0, bytes: 0 }
+    out[f] = { files: was.files - a.files, bytes: was.bytes - a.bytes }
+    whole.files += a.files
+    whole.bytes += a.bytes
+  }
+  const was = out[family] ?? { files: 0, bytes: 0 }
+  out[family] = { files: was.files + whole.files, bytes: was.bytes + whole.bytes }
+  // A family holding nothing is left out.
+  return Object.fromEntries(Object.entries(out).filter(([, a]) => a.files > 0 || a.bytes > 0))
+}
+
+// overrideAndScan does act, which sets or clears a category or a group mark
+// in the detail panel, and waits for the scan its command started to end:
+// only then do the folders above count the change (r2b design D3).
+async function overrideAndScan(act: () => Promise<unknown>) {
+  const sent = page.waitForResponse((r) => /^\/api\/commands\/set-(category|group)$/.test(new URL(r.url()).pathname))
+  await act()
+  const response = await sent
+  expect(response.ok(), await response.text()).toBe(true)
+  const result: { applied: number; scan: { job_id: string } | null } = await response.json()
+  expect(result.applied).toBe(1)
+  if (result.scan === null) {
+    throw new Error('the override started no scan')
+  }
+  const job = result.scan.job_id
+  await expect
+    .poll(
+      async () => {
+        const status: { state: string } = await (await page.request.get(`/api/jobs/${job}`)).json()
+        return status.state
+      },
+      { message: `scan ${job} ends`, timeout: 60_000 },
+    )
+    .toBe('succeeded')
 }
 
 // expectNoScriptRan checks that no fixture script set its flag in any frame

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -94,6 +94,46 @@ describe('Map keys', () => {
 
     await userEvent.keyboard('{ArrowDown}')
     await waitFor(() => expect(router.state.location.search).toBe('?entry=4'))
+  })
+
+  it('walks on from the row the last arrow chose before the address follows', async () => {
+    stubApi(routes())
+    const { router } = renderApp('/map/1')
+    await screen.findByRole('table', { name: 'Contents of Fotos' })
+
+    // Three arrows in one task: the route renders only after the last one.
+    act(() => {
+      for (let i = 0; i < 3; i++) {
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+      }
+    })
+    await waitFor(() => expect(router.state.location.search).toBe('?entry=2'))
+    // The first arrow added the walk to history, the others replaced it.
+    expect(router.state.historyAction).toBe('REPLACE')
+    await waitFor(() => expect(rowOf('Ferias')).toHaveFocus())
+  })
+
+  it('keeps walking in a window that opens the panel over the Map, which a link still focuses', async () => {
+    // Below 1,600 px the panel is a drawer, which takes the focus (D23).
+    vi.stubGlobal('matchMedia', (media: string) => ({ media, matches: false }))
+    stubApi(routes())
+    const { router } = renderApp('/map/1')
+    await screen.findByRole('table', { name: 'Contents of Fotos' })
+
+    await userEvent.keyboard('{ArrowDown}')
+    expect(await screen.findByRole('complementary', { name: 'NATAL.JPG' })).toBeInTheDocument()
+    await waitFor(() => expect(rowOf('NATAL.JPG')).toHaveFocus())
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}')
+    await waitFor(() => expect(router.state.location.search).toBe('?entry=2'))
+    await waitFor(() => expect(rowOf('Ferias')).toHaveFocus())
+    expect(await screen.findByRole('complementary', { name: 'Ferias' })).toBeInTheDocument()
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(router.state.location.search).toBe(''))
+
+    screen.getByRole('link', { name: 'Details of Downloads' }).focus()
+    await userEvent.keyboard('{Enter}')
+    const panel = await screen.findByRole('complementary', { name: 'Downloads' })
+    await waitFor(() => expect(panel).toHaveFocus())
   })
 
   it('opens a file in the viewer with Enter, and gives the focus back to its row', async () => {
