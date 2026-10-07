@@ -118,7 +118,7 @@ CREATE TABLE entry_overrides (
 ### D8. Search: a two-stage page, driving filters, a separate count
 
 - **The page.** It first selects only entry IDs, with the filter and the sort, and limits them. A second statement reads the full columns, including copies, for those IDs alone.
-- **New indexes** in `0003`: `entries(total_bytes, id)`, `entries(source_id, total_bytes, id)`, and `entries(source_id, path) WHERE state = 'unreadable'`.
+- **New indexes** go in their own migration, `0004_search.sql`, which the Search slice writes after measuring the plans: candidates are `entries(total_bytes, id)`, `entries(source_id, total_bytes, id)`, and `entries(source_id, path) WHERE state = 'unreadable'`. Each one also costs every scan's writes, so only those that a plan test proves necessary are added, and `walkbench` confirms that the scan does not regress (R1.14). (Decided while applying task 1.2: the foundation adds no speculative index.)
 - **Driving the filters:**
   - `dup=copies` drives from the contents with two or more copies (entries and members), and keeps the exact `otherCopy` test on those candidates only;
   - `dup=unique` and `dup=unchecked` drive from `file_content_by_source(source_id, state, size)`.
@@ -177,9 +177,9 @@ The panel words each reason, and says that what is inside is not checked for cop
   - `entry_overrides` (D1);
   - `sources` columns `scan_schedule`, `next_scan_at`, `schedule_skipped_at`, `schedule_skip_reason`, and `rescan_requested INTEGER NOT NULL DEFAULT 0`;
   - the `entry_names` rebuild (D7);
-  - the indexes of D8.
 
   Schema version 3. An R2 database upgrades in place with no rescan.
+- **Migration `0004_search.sql`:** the search indexes of D8. Schema version 4.
 - **Commands:**
   - `set-category` and `set-group` (D5), audits `category_set` and `group_set`;
   - `set-source-schedule` (D6), audit `source_schedule_set`.

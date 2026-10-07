@@ -338,6 +338,16 @@ R2 adds hashing, archives, duplicates, Compare, opportunities, and Gems. Its mig
 
 To roll back, stop Precious, reinstall the R1 binary or image, [restore](#restoring) the backup taken in step 1, and start it. The R1 binary refuses the migrated database (`database has version 2, binary supports up to 1`) and leaves it unmodified, so the backup is the only way back. Decisions and tags recorded after the upgrade are lost with it.
 
+### Upgrading from R2
+
+The update after R2 adds the owner's category overrides and group marks, scheduled rescans, and the Search, Map, and Compare improvements. Its migration `0003_owner` adds the table of overrides and the schedule columns of each source, both empty, and rebuilds the name index so that a search ignores accents. The rebuild reads every name once, which takes seconds per 100,000 entries. Every entry, decision, tag, digest, and listing stays as it was, and no rescan is needed.
+
+1. **Back up first** with the R2 binary still running: `precious backup`.
+2. **Check the configuration** with the new binary; an R2 configuration stays valid.
+3. **Replace and restart.** The migrations apply at startup, each in one transaction.
+
+To roll back, stop Precious, reinstall the R2 binary, [restore](#restoring) the backup, and start it. The R2 binary refuses the migrated database (`database has version 3, binary supports up to 2`) and leaves it unmodified. Overrides, group marks, and schedules set after the upgrade are lost with it.
+
 ### Moving from curator to precious
 
 Precious replaces the earlier `curator` release; the two share no data. Moving over is a fresh installation:

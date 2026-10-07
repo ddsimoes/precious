@@ -21,13 +21,26 @@ import (
 // new tables.
 
 // baselineOnly is the embedded migrations cut to the R1 baseline.
-func baselineOnly(t *testing.T) fs.FS {
+func baselineOnly(t *testing.T) fs.FS { return migrationsUpTo(t, 1) }
+
+// migrationsUpTo is the embedded migrations cut to version last, so an
+// upgrade test starts from the schema a release shipped.
+func migrationsUpTo(t *testing.T, last int) fs.FS {
 	t.Helper()
-	data, err := fs.ReadFile(migrations.FS, "0001_baseline.sql")
+	ms, err := LoadMigrations(migrations.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fstest.MapFS{"0001_baseline.sql": {Data: data}}
+	out := fstest.MapFS{}
+	for _, m := range ms {
+		if m.Version <= last {
+			out[fmt.Sprintf("%04d_%s.sql", m.Version, m.Name)] = &fstest.MapFile{Data: []byte(m.SQL)}
+		}
+	}
+	if len(out) != last {
+		t.Fatalf("migrations up to %d: found %d", last, len(out))
+	}
+	return out
 }
 
 // tableRows returns every row of every non-internal table as a string per
@@ -127,7 +140,7 @@ func TestR1DatabaseMigratesToContentKeepingRows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err = Open(ctx, dir, Options{})
+	s, err = Open(ctx, dir, Options{Migrations: migrationsUpTo(t, 2)})
 	if err != nil {
 		t.Fatalf("open the R1 database with 0002: %v", err)
 	}
