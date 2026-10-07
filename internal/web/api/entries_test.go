@@ -105,7 +105,8 @@ func TestEntryDetail(t *testing.T) {
 	assertJSON(t, "intent", got.Intent, wantIntent)
 	assertJSON(t, "stats", got.Stats, `null`)
 	assertJSON(t, "classification", got.Classification,
-		`{"category":null,"family":null,"traits":[],"triage":null,"group":false,"veto":false,"rules":[],"indicators":[]}`)
+		`{"category":null,"family":null,"traits":[],"triage":null,"group":false,"veto":false,"rules":[],"indicators":[],`+
+			`"owner":{"category":null,"group":null},"rules_category":null,"rules_group":false}`)
 
 	// An own decision has no origin but itself.
 	var kept struct {
@@ -157,10 +158,13 @@ func TestEntryClassification(t *testing.T) {
 		t.Fatal("rule system_file has no explanation")
 	}
 	sentence, _ := json.Marshal(explain)
+	// What the rules would set comes from the stored rule IDs (here a file
+	// rule's, as seeded), an unknown one ignored.
 	assertJSON(t, "classification", got.Classification, fmt.Sprintf(`{"category":"application_installation","family":"programs",`+
 		`"traits":["contains_user_material"],"triage":"review","group":true,"veto":true,`+
 		`"rules":[{"id":"system_file","explain":%s},{"id":"retired_rule","explain":""}],`+
-		`"indicators":[{"entry_id":"%s","path":"Arquivos de programas/Office/orcamento.xls","path_b64":"QXJxdWl2b3MgZGUgcHJvZ3JhbWFzL09mZmljZS9vcmNhbWVudG8ueGxz","signal":"office_document"}]}`,
+		`"indicators":[{"entry_id":"%s","path":"Arquivos de programas/Office/orcamento.xls","path_b64":"QXJxdWl2b3MgZGUgcHJvZ3JhbWFzL09mZmljZS9vcmNhbWVudG8ueGxz","signal":"office_document"}],`+
+		`"owner":{"category":null,"group":null},"rules_category":"system_junk","rules_group":false}`,
 		sentence, xls))
 	if !got.Entry.Group || !got.Entry.Veto || str(got.Entry.Category) != "application_installation" ||
 		str(got.Entry.Family) != "programs" || str(got.Entry.Triage) != "review" || str(got.Entry.MainKind) != "executable" {

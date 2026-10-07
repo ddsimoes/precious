@@ -44,6 +44,18 @@ type classification struct {
 	Veto       bool             `json:"veto"`
 	Rules      []ruleJSON       `json:"rules"`
 	Indicators []indicator      `json:"indicators"`
+	// Owner is what the owner set (r2b design D5), null where the rules
+	// decide; RulesCategory and RulesGroup are what the rules would set,
+	// derived from the stored rule IDs (rules.Policy.Recall). RulesCategory
+	// is null for an entry the scan does not classify.
+	Owner         ownerJSON        `json:"owner"`
+	RulesCategory *domain.Category `json:"rules_category"`
+	RulesGroup    bool             `json:"rules_group"`
+}
+
+type ownerJSON struct {
+	Category *domain.Category `json:"category"`
+	Group    *bool            `json:"group"`
 }
 
 type ruleJSON struct {
@@ -245,6 +257,13 @@ func (h *handler) readEntry(ctx context.Context, tx *sql.Tx, id domain.EntryID) 
 	if err := json.Unmarshal(indicators, &c.Indicators); err != nil {
 		return nil, fmt.Errorf("api: indicators of entry %s: %w", id, err)
 	}
+	if c.Owner, err = readOwner(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	if e.Category != "" {
+		rules := h.pol.Recall(ids, e.Kind == domain.EntryDirectory, len(c.Indicators) > 0)
+		c.RulesCategory, c.RulesGroup = &rules.Category, rules.Group
+	}
 	body.Classification = c
 
 	in, err := decisions.Effective(ctx, tx, id)
@@ -277,6 +296,31 @@ func (h *handler) readEntry(ctx context.Context, tx *sql.Tx, id domain.EntryID) 
 		body.Stats = stats
 	}
 	return body, nil
+}
+
+// readOwner reads the owner's override of entry id.
+func readOwner(ctx context.Context, tx *sql.Tx, id domain.EntryID) (ownerJSON, error) {
+	var (
+		o        ownerJSON
+		category sql.NullString
+		mark     sql.NullBool
+	)
+	err := tx.QueryRowContext(ctx, `SELECT category, group_mark FROM entry_overrides WHERE entry_id = ?`, int64(id)).
+		Scan(&category, &mark)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return o, nil
+	case err != nil:
+		return o, fmt.Errorf("api: override of entry %s: %w", id, err)
+	}
+	if category.Valid {
+		c := domain.Category(category.String)
+		o.Category = &c
+	}
+	if mark.Valid {
+		o.Group = &mark.Bool
+	}
+	return o, nil
 }
 
 // ancestors lists the folders above id, from the root to its parent.
