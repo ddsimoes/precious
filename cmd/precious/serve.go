@@ -25,6 +25,7 @@ import (
 	"precious/internal/relations"
 	"precious/internal/review"
 	"precious/internal/rules"
+	"precious/internal/schedule"
 	"precious/internal/sources"
 	"precious/internal/store"
 	"precious/internal/viewer"
@@ -78,8 +79,8 @@ func runServe(ctx context.Context, e env, args []string) int {
 	return 0
 }
 
-// serve runs the web server, the job runner, and the source refresh loop until
-// ctx is cancelled.
+// serve runs the web server, the job runner, the source refresh loop, and the
+// rescan schedule loop until ctx is cancelled.
 func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps) error {
 	origin, err := middleware.ParseOrigin(cfg.Server.ExternalOrigin)
 	if err != nil {
@@ -182,6 +183,15 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		defer close(refreshDone)
 		srcs.Run(refreshCtx, log)
 	}()
+	// Scheduled rescans (r2b design D6) start their scans on the runner, so
+	// the loop stops before it.
+	scheduleCtx, stopSchedule := context.WithCancel(ctx)
+	defer stopSchedule()
+	scheduleDone := make(chan struct{})
+	go func() {
+		defer close(scheduleDone)
+		schedule.New(st, runner, srcs, d.Clock, log).Run(scheduleCtx)
+	}()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 	log.Info("serving", "addr", ln.Addr().String(), "origin", origin.String())
@@ -212,6 +222,8 @@ loop:
 	sctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	shutdownErr := srv.Shutdown(sctx)
+	stopSchedule()
+	<-scheduleDone
 	// Running jobs stop at their next checkpoint and resume at the next start.
 	stopErr := runner.Stop(sctx)
 	stopRefresh()
