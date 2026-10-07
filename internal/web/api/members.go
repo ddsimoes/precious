@@ -297,7 +297,8 @@ func memberByID(ctx context.Context, tx *sql.Tx, pol *rules.Policy, id domain.Me
 }
 
 // memberAncestors lists what holds member m, from the source root: the
-// archive's folders, the archive entry, then the member folders above m.
+// archive's folders, the archive entry, then the member folders above m,
+// each with its only_child as ancestors computes it.
 func memberAncestors(ctx context.Context, tx *sql.Tx, m *member) ([]ancestor, error) {
 	out, err := ancestors(ctx, tx, m.archive)
 	if err != nil {
@@ -308,25 +309,42 @@ func memberAncestors(ctx context.Context, tx *sql.Tx, m *member) ([]ancestor, er
 		return nil, fmt.Errorf("api: archive %s: %w", m.archive, err)
 	}
 	out = append(out, ancestor{ID: m.archive.String(), Name: domain.DisplayName(name), NameB64: name})
-	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE up(id, depth) AS (
-			SELECT parent_id, 1 FROM archive_members WHERE id = ? AND parent_id IS NOT NULL
+	archiveAt := len(out) - 1
+	// top is the member at the top of the archive that holds m, m included.
+	top := int64(m.row.Member)
+	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE up(id, child, depth) AS (
+			SELECT parent_id, id, 1 FROM archive_members WHERE id = ? AND parent_id IS NOT NULL
 			UNION ALL
-			SELECT m.parent_id, u.depth + 1 FROM up u JOIN archive_members m ON m.id = u.id WHERE m.parent_id IS NOT NULL
+			SELECT m.parent_id, m.id, u.depth + 1 FROM up u JOIN archive_members m ON m.id = u.id WHERE m.parent_id IS NOT NULL
 		)
-		SELECT m.id, m.name FROM up u JOIN archive_members m ON m.id = u.id ORDER BY u.depth DESC`, int64(m.row.Member))
+		SELECT m.id, m.name, NOT EXISTS (SELECT 1 FROM archive_members c WHERE c.parent_id = u.id AND c.id <> u.child)
+		FROM up u JOIN archive_members m ON m.id = u.id ORDER BY u.depth DESC`, int64(m.row.Member))
 	if err != nil {
 		return nil, fmt.Errorf("api: ancestors of %s: %w", domain.Ref{Member: m.row.Member}, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id, &name); err != nil {
+		var (
+			id   int64
+			only bool
+		)
+		if err := rows.Scan(&id, &name, &only); err != nil {
 			return nil, err
 		}
+		if len(out) == archiveAt+1 {
+			top = id
+		}
 		out = append(out, ancestor{ID: domain.Ref{Member: domain.MemberID(id)}.String(),
-			Name: domain.MemberDisplayName(name, m.row.Zip), NameB64: name})
+			Name: domain.MemberDisplayName(name, m.row.Zip), NameB64: name, OnlyChild: only})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM archive_members
+		WHERE archive_id = ? AND parent_id IS NULL AND id <> ?)`, int64(m.archive), top).Scan(&out[archiveAt].OnlyChild); err != nil {
+		return nil, fmt.Errorf("api: archive %s: %w", m.archive, err)
+	}
+	return out, nil
 }
 
 // level is what children and treemap list: an entry's children, or the
