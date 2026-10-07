@@ -169,24 +169,27 @@ func TestScanUnknownTimes(t *testing.T) {
 	velhas := root.Dir("Velhas")
 	velhas.File("a.txt", 30, mtime)
 	velhas.File("sem-data.txt", 70, time.Unix(0, 0))
-	velhas.Dir("antes").File("b.txt", 5, time.Unix(-3600, 0))
+	antes := velhas.Dir("antes")
+	antes.File("b.txt", 5, time.Unix(-3600, 0))
+	// A zeroed time with sub-second noise, as found on the owner's disk.
+	antes.File("ruido.txt", 7, time.Unix(0, 344_664_630))
 	e.scan("disk")
 
 	check := func(when string) {
 		t.Helper()
 		rows := e.entries("disk")
-		for _, p := range []string{"Velhas/sem-data.txt", "Velhas/antes/b.txt", "Velhas/antes"} {
+		for _, p := range []string{"Velhas/sem-data.txt", "Velhas/antes/b.txt", "Velhas/antes/ruido.txt", "Velhas/antes"} {
 			if r := get(t, rows, p); r.Newest.Valid || r.Oldest.Valid {
 				t.Errorf("%s: %s newest %v oldest %v; want NULL", when, p, r.Newest, r.Oldest)
 			}
 		}
-		if r := get(t, rows, "Velhas/antes"); !r.MainKind.Valid || r.ByYear.String != `{"0":{"files":1,"bytes":5}}` {
+		if r := get(t, rows, "Velhas/antes"); !r.MainKind.Valid || r.ByYear.String != `{"0":{"files":2,"bytes":12}}` {
 			t.Errorf("%s: antes main kind %v, by_year %s", when, r.MainKind, r.ByYear.String)
 		}
 		for _, p := range []string{"Velhas", ""} {
 			r := get(t, rows, p)
 			if r.Newest.Int64 != mtime.UnixNano() || r.Oldest.Int64 != mtime.UnixNano() ||
-				r.ByYear.String != `{"0":{"files":2,"bytes":75},"2004":{"files":1,"bytes":30}}` {
+				r.ByYear.String != `{"0":{"files":3,"bytes":82},"2004":{"files":1,"bytes":30}}` {
 				t.Errorf("%s: %q newest %v oldest %v by_year %s", when, p, r.Newest, r.Oldest, r.ByYear.String)
 			}
 		}

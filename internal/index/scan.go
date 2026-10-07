@@ -67,7 +67,7 @@ type frame struct {
 	listed, unreadable, boundary bool
 
 	// The subtree's facts. newest and oldest span the files with a known
-	// time (dated, knownTime).
+	// time (dated, domain.KnownModTime).
 	files, bytes                               int64
 	newest, oldest                             int64
 	dated                                      bool
@@ -120,17 +120,13 @@ func (f *frame) addRange(oldest, newest int64) {
 	f.newest = max(f.newest, newest)
 }
 
-// knownTime reports whether a modification time is known: one at or before
-// the epoch is a placeholder (a lost or zeroed time), not a date.
-func knownTime(ns int64) bool { return ns > 0 }
-
 // unknownYear is the by_year key of the files without a known time.
 const unknownYear = 0
 
 // ownRange is a file's or leaf's own newest and oldest time: its
 // modification time when known, else none.
 func ownRange(mtime opt) (newest, oldest opt) {
-	if !mtime.ok || !knownTime(mtime.v) {
+	if !mtime.ok || !domain.KnownModTime(mtime.v) {
 		return opt{}, opt{}
 	}
 	return mtime, mtime
@@ -141,7 +137,7 @@ func (f *frame) addFile(kind domain.FileKind, size, mtime int64, family domain.F
 	f.files++
 	f.bytes += size
 	y := unknownYear
-	if knownTime(mtime) {
+	if domain.KnownModTime(mtime) {
 		f.addRange(mtime, mtime)
 		y = time.Unix(0, mtime).UTC().Year()
 	}

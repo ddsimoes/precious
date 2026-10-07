@@ -119,12 +119,12 @@ While a hashing job runs, its progress SHALL report the files and bytes it has t
 - **WHEN** a hashing job is running
 - **THEN** successive reads of `GET /api/jobs/{id}` show the checked files and bytes growing
 
-### Requirement: A modification time at the epoch is unknown
-A modification time at or before 1970-01-01T00:00:00Z SHALL be treated as unknown. It SHALL NOT set a folder's newest or oldest time. The by-year breakdowns SHALL count its file under an unknown year, listed after the years, so their sums still equal the totals. The read API SHALL return no time for it, and the stored value SHALL be kept as the platform gave it. A rescan SHALL bring folders indexed before this rule up to date.
+### Requirement: A modification time on the epoch's first day is unknown
+A modification time before 1970-01-02T00:00:00Z SHALL be treated as unknown: a lost or zeroed time reads as the epoch, with sub-second noise or a local-time shift of hours. Such a time SHALL NOT set a folder's newest or oldest time. The by-year breakdowns SHALL count its file under an unknown year, listed after the years, so their sums still equal the totals. The read API SHALL return no time for it, and the stored value SHALL be kept as the platform gave it. A rescan SHALL bring folders indexed before this rule up to date.
 
 #### Scenario: A file stamped at the epoch
-- **WHEN** a folder holds a photo from 2004 and a file whose modification time is 0
-- **THEN** the folder's oldest time is in 2004, its by-year breakdown has 2004 and an unknown year, and the file's own time is shown as unknown
+- **WHEN** a folder holds a photo from 2004, a file whose modification time is 0, and a file whose modification time is 0.34 seconds after the epoch
+- **THEN** the folder's oldest time is in 2004, its by-year breakdown has 2004 and an unknown year, and both files' own times are shown as unknown
 
 ## MODIFIED Requirements
 

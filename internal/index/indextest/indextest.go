@@ -13,8 +13,8 @@
 //     0 bytes and 0 files.
 //   - newest_ns and oldest_ns are a leaf's own mtime, and a folder's range over
 //     the mtimes of the files in its subtree (NULL when it holds none). An
-//     mtime at or before the epoch is unknown: a leaf's own are then NULL,
-//     and a folder's range leaves it out.
+//     unknown mtime (domain.KnownModTime: the epoch's first day or earlier)
+//     gives a leaf NULL for both, and a folder's range leaves it out.
 //   - A file's ext is the ASCII-lowercased text after the last '.' of its
 //     name, NULL when there is none or the only '.' is the first byte; its
 //     file_kind defaults to other. Other kinds have neither.
@@ -550,11 +550,11 @@ func aggregate(n *node) {
 			n.files++
 			n.totalBytes += c.Size
 			n.totalFiles++
-			if mt := c.MTime.UnixNano(); mt > 0 {
+			if mt := c.MTime.UnixNano(); domain.KnownModTime(mt) {
 				n.addRange(mt, mt)
 				addTo(n.byYear, strconv.Itoa(c.MTime.UTC().Year()), one)
 			} else {
-				addTo(n.byYear, "0", one) // an unknown time: at or before the epoch
+				addTo(n.byYear, "0", one) // an unknown time (domain.KnownModTime)
 			}
 			addTo(n.byKind, c.fileKind(), one)
 			addTo(n.byFamily, fileFamily(c), one)
@@ -708,9 +708,9 @@ func (w writer) write(n *node, path string, parent any) error {
 }
 
 // ownTime is a file's or leaf's own newest (and oldest) time: its
-// modification time, or NULL when it is at or before the epoch (unknown).
+// modification time, or NULL when it is unknown (domain.KnownModTime).
 func ownTime(t time.Time) any {
-	if ns := t.UnixNano(); ns > 0 {
+	if ns := t.UnixNano(); domain.KnownModTime(ns) {
 		return ns
 	}
 	return nil

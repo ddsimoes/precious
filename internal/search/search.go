@@ -472,8 +472,8 @@ func composition(raw []byte) ([]FamilyAmount, error) {
 	return out, nil
 }
 
-// NsTime is a stored time, the zero time when NULL. A time at or before
-// the epoch is kept as stored, since orders and cursors read the stored
+// NsTime is a stored time, the zero time when NULL. A time on the epoch's
+// first day is kept as stored, since orders and cursors read the stored
 // column, but it is not known (KnownTime).
 func NsTime(ns sql.NullInt64) time.Time {
 	if !ns.Valid {
@@ -483,9 +483,8 @@ func NsTime(ns sql.NullInt64) time.Time {
 }
 
 // KnownTime reports whether t is a known modification time: neither zero
-// (NULL) nor at or before the epoch, which is a placeholder for a lost or
-// zeroed time, not a date.
-func KnownTime(t time.Time) bool { return t.After(time.Unix(0, 0)) }
+// (NULL) nor a placeholder for a lost time (domain.KnownModTime).
+func KnownTime(t time.Time) bool { return !t.IsZero() && domain.KnownModTime(t.UnixNano()) }
 
 // LoadTags fills the own tag IDs of items, ascending, with one indexed
 // read.

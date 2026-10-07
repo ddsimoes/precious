@@ -116,7 +116,7 @@ func nonEmpty[T ~string](p *T) *T {
 }
 
 // known is p, or nil for a time that is not known (search.KnownTime): NULL,
-// or at or before the epoch (null in JSON).
+// or a placeholder for a lost time (null in JSON).
 func known(p *time.Time) *time.Time {
 	if !search.KnownTime(*p) {
 		return nil
