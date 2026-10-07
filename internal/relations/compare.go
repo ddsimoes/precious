@@ -32,6 +32,11 @@ const (
 // Buckets lists the buckets in summary order.
 var Buckets = []Bucket{BucketOnlyLeft, BucketOnlyRight, BucketIdentical, BucketDifferent, BucketUnchecked}
 
+// openingOrder is the order in which Compare without a bucket looks for
+// the first bucket holding files (R2 B22): what sets the sides apart
+// first, so a pair with nothing apart opens on its identical files.
+var openingOrder = []Bucket{BucketOnlyLeft, BucketOnlyRight, BucketDifferent, BucketUnchecked, BucketIdentical}
+
 // Valid reports whether b is one of the five buckets.
 func (b Bucket) Valid() bool { return slices.Contains(Buckets, b) }
 
@@ -40,17 +45,25 @@ func (b Bucket) Valid() bool { return slices.Contains(Buckets, b) }
 type Count struct{ Files, Bytes int64 }
 
 // CompareItem is one item of a bucket: a pair (identical, different) or
-// one file. Path is the left file's path relative to its side (wrapper
-// dropped, see Compare), else the right file's. A file is an entry, or a
-// member with its archive's entry.
+// one file. LeftPath and RightPath are each file's path relative to its
+// side (wrapper dropped, see Compare), nil for a side without a file; Path
+// is LeftPath, else RightPath. An identical item with one file is an extra
+// copy: Twin is the file on the other side holding the same content (its
+// first in path order), and TwinPath its path in that side. A file is an
+// entry, or a member with its archive's entry.
 type CompareItem struct {
-	Path        []byte
-	Left, Right *domain.Ref
+	Path                []byte
+	LeftPath, RightPath []byte
+	Left, Right         *domain.Ref
+	Twin                *domain.Ref
+	TwinPath            []byte
 }
 
 // CompareResult is a page of one bucket and the summary of all five.
+// Bucket is the bucket listed: the one asked for, else the opening one.
 type CompareResult struct {
 	Summary    map[Bucket]Count
+	Bucket     Bucket
 	Items      []CompareItem
 	NextCursor string
 }
@@ -84,7 +97,10 @@ const (
 // A side must be a folder, a complete archive, or a folder inside one;
 // another file is 400 invalid_request, and so are two sides of which one
 // contains the other. An unknown side is 404 not_found. bucket selects
-// the items listed ("" lists none); cursor continues a previous page.
+// the items listed; "" lists the first bucket holding files in the order
+// only on the left, only on the right, different, unchecked, identical
+// (R2 B22), so opening a comparison computes it once. cursor continues a
+// previous page.
 func Compare(ctx context.Context, q store.Queryer, left, right domain.Ref, bucket Bucket, cursor string, limit int) (CompareResult, error) {
 	if bucket != "" && !bucket.Valid() {
 		return CompareResult{}, domain.Errorf(domain.CodeInvalidRequest, "unknown bucket %q", bucket)
@@ -134,8 +150,15 @@ func Compare(ctx context.Context, q store.Queryer, left, right domain.Ref, bucke
 		res.Summary[b] = c
 	}
 	if bucket == "" {
-		return res, nil
+		bucket = BucketOnlyLeft // two empty sides
+		for _, b := range openingOrder {
+			if res.Summary[b].Files > 0 {
+				bucket = b
+				break
+			}
+		}
 	}
+	res.Bucket = bucket
 	items := all[bucket]
 	if offset > len(items) {
 		offset = len(items)
@@ -412,23 +435,25 @@ func bucketize(l, r []cfile) map[Bucket][]bucketItem {
 	byPath(r)
 	out := map[Bucket][]bucketItem{}
 	usedL, usedR := make([]bool, len(l)), make([]bool, len(r))
-	pair := func(b Bucket, i, j int) {
+	pair := func(b Bucket, i, j int) *bucketItem {
 		var it bucketItem
 		if i >= 0 {
 			usedL[i] = true
-			it.Path, it.Left, it.bytes = l[i].rel, &l[i].ref, l[i].size
+			it.Path, it.LeftPath, it.Left, it.bytes = l[i].rel, l[i].rel, &l[i].ref, l[i].size
 		}
 		if j >= 0 {
 			usedR[j] = true
-			it.Right = &r[j].ref
+			it.RightPath, it.Right = r[j].rel, &r[j].ref
 			if i < 0 {
 				it.Path, it.bytes = r[j].rel, r[j].size
 			}
 		}
 		out[b] = append(out[b], it)
+		return &out[b][len(out[b])-1]
 	}
 
-	// Identical: contents on both sides, paired in path order.
+	// Identical: contents on both sides, paired in path order; an extra
+	// copy names the other side's first file of its content as its twin.
 	keysL, keysR := map[int64][]int{}, map[int64][]int{}
 	for i := range l {
 		if k := l[i].key(); k != 0 {
@@ -453,7 +478,13 @@ func bucketize(l, r []cfile) map[Bucket][]bucketItem {
 			if n < len(ri) {
 				j = ri[n]
 			}
-			pair(BucketIdentical, i, j)
+			it := pair(BucketIdentical, i, j)
+			switch {
+			case i < 0:
+				it.Twin, it.TwinPath = &l[li[0]].ref, l[li[0]].rel
+			case j < 0:
+				it.Twin, it.TwinPath = &r[ri[0]].ref, r[ri[0]].rel
+			}
 		}
 	}
 

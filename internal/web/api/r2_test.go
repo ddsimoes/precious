@@ -410,6 +410,7 @@ func TestR2ReadAPI(t *testing.T) {
 			Left    contentRow           `json:"left"`
 			Right   contentRow           `json:"right"`
 			Summary map[string]amountRes `json:"summary"`
+			Bucket  string               `json:"bucket"`
 			Items   []struct {
 				Path  string      `json:"path"`
 				Left  *contentRow `json:"left"`
@@ -428,8 +429,10 @@ func TestR2ReadAPI(t *testing.T) {
 				t.Errorf("item %+v", it)
 			}
 		}
+		// Without a bucket, the first holding files: nothing sets the two
+		// apart, so their identical files (r2b D11).
 		w.get(t, fmt.Sprintf("/api/compare?left=%s&right=%s", folder, w.member(t, "Downloads/eMule0.47c-Installer.zip", "emule-0.47c")), 200, &res)
-		if len(res.Items) != 0 || res.Summary["identical"].Files != 6 || !strings.HasPrefix(res.Right.ID, "m") {
+		if res.Bucket != "identical" || len(res.Items) != 6 || res.Summary["identical"].Files != 6 || !strings.HasPrefix(res.Right.ID, "m") {
 			t.Errorf("compare with the member folder: %+v", res)
 		}
 		w.fails(t, fmt.Sprintf("/api/compare?left=%s&right=%s", w.id("Fotos"), w.id("Fotos/2004")), 400, "invalid_request")
