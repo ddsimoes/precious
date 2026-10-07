@@ -97,8 +97,8 @@ function routes() {
         200,
         entryDetail(memberFile, {
           ancestors: [
-            { id: '1', name: '', name_b64: '' },
-            { id: '61', name: 'eMule0.47c-Installer.zip', name_b64: btoa('eMule0.47c-Installer.zip') },
+            { id: '1', name: '', name_b64: '', only_child: false },
+            { id: '61', name: 'eMule0.47c-Installer.zip', name_b64: btoa('eMule0.47c-Installer.zip'), only_child: false },
           ],
           content: { state: 'hashed', sha256: 'ab'.repeat(32), checked_at: null, copies: [], copies_count: 1 },
         }),
@@ -256,7 +256,9 @@ describe('Map inside archives', () => {
     expect(panel.getByRole('region', { name: 'Copies' })).toBeInTheDocument()
   })
 
-  it('names the archive’s listing in its details', async () => {
+  // The archive-contents scenario "A listed zip": opening it as a folder is
+  // the panel's main action, before the viewer's Open.
+  it('names the archive’s listing in its details, and opens it as a folder first', async () => {
     stubApi(routes())
     renderApp('/map/1?entry=61')
 
@@ -265,8 +267,14 @@ describe('Map inside archives', () => {
     expect(archive.getByText('ZIP')).toBeInTheDocument()
     expect(archive.getByText('Read completely')).toBeInTheDocument()
     expect(archive.getByText('5 MiB')).toBeInTheDocument()
-    expect(archive.getByRole('link', { name: 'Open as a folder' })).toHaveAttribute('href', '/map/61')
-    expect(panel.getByRole('link', { name: 'Show in Map' })).toHaveAttribute('href', '/map/61?entry=61')
+    expect(archive.queryByText('What is inside is not checked for copies.')).not.toBeInTheDocument()
+    const openFolder = panel.getByRole('link', { name: 'Open as a folder' })
+    expect(openFolder).toHaveAttribute('href', '/map/61')
+    const open = panel.getByRole('button', { name: 'Open' })
+    expect(openFolder.compareDocumentPosition(open) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(open).toHaveClass('border')
+    // Show in Map shows where the archive is.
+    expect(panel.getByRole('link', { name: 'Show in Map' })).toHaveAttribute('href', '/map/1?entry=61')
     expect(panel.getByRole('button', { name: 'Compare with…' })).toBeInTheDocument()
   })
 })

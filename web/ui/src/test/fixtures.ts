@@ -277,7 +277,7 @@ export function folderRow(id: string, name: string, overrides: Partial<EntryRow>
 export function entryDetail(row: EntryRow, overrides: Partial<EntryDetail> = {}): EntryDetail {
   return {
     entry: row,
-    ancestors: [{ id: '1', name: '', name_b64: '' }],
+    ancestors: [{ id: '1', name: '', name_b64: '', only_child: false }],
     classification: {
       category: row.category,
       family: row.family,
@@ -294,6 +294,8 @@ export function entryDetail(row: EntryRow, overrides: Partial<EntryDetail> = {})
     relations: [],
     archive: null,
     coverage: coverage(),
+    only_folder: null,
+    archive_note: null,
     ...overrides,
   }
 }

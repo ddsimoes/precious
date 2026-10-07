@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 
-import type { ArchiveInfo, Coverage, EntryContent, Relation } from '@/api/content'
+import type { ArchiveInfo, ArchiveNote, Coverage, EntryContent, Relation } from '@/api/content'
 import type { Decision, Family, FamilyAmount, FileKind, KindAmount, YearAmount } from '@/api/home'
 import { isTerminal, scanKind, type JobEvent } from '@/api/jobs'
 import { searchQueryRoot } from '@/api/search'
@@ -162,6 +162,9 @@ export interface Ancestor {
   id: string
   name: string
   name_b64: string
+  // only_child is true when the ancestor holds nothing but the next one
+  // (the entry itself for the last), r2b design D9.
+  only_child: boolean
 }
 
 // Ref names the entry a decision or a tag comes from.
@@ -250,6 +253,11 @@ export interface EntryDetail {
   relations: Relation[]
   archive: ArchiveInfo | null
   coverage: Coverage
+  // only_folder is the only child of a folder holding exactly one entry, a
+  // folder (r2b design D9); archive_note says why an archive file has no
+  // archive (D10).
+  only_folder: string | null
+  archive_note: ArchiveNote | null
 }
 
 export type ChildSort = 'bytes' | 'files' | 'newest' | 'name'

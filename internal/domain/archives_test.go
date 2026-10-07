@@ -28,6 +28,20 @@ func TestArchiveFormats(t *testing.T) {
 	}
 }
 
+func TestUnsupportedArchive(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"backup.7z", "BACKUP.7Z", "fotos.part1.rar", "dump.tar.xz", "old.Z", "lib.jar", "a.cpio"} {
+		if !UnsupportedArchive([]byte(name)) {
+			t.Errorf("%q is not an unsupported archive", name)
+		}
+	}
+	for _, name := range []string{"", "7z", ".7z", "a.zip", "a.tar.gz", "a.7zz", "a7z", "rar", "notas.txt", "a.7z.bak", "a.7\xff"} {
+		if UnsupportedArchive([]byte(name)) {
+			t.Errorf("%q is an unsupported archive", name)
+		}
+	}
+}
+
 func TestArchiveStates(t *testing.T) {
 	t.Parallel()
 	// The archives.state CHECK list.

@@ -32,6 +32,51 @@ func (f ArchiveFormat) Valid() bool {
 // member in that pass (R2 design D7). Only zip is read by random access.
 func (f ArchiveFormat) Streamed() bool { return f.Valid() && f != ArchiveZip }
 
+// UnsupportedArchiveExtensions are the extensions, in lower case and without
+// the dot, of archive formats that Precious recognizes but does not open
+// (r2b design D10): the detail says why such a file has no listing. None of
+// them is an extension the archive package opens.
+var UnsupportedArchiveExtensions = []string{
+	"7z", "rar", "xz", "txz", "lz", "lzma", "zst", "z", "cab", "arj", "lzh", "lha", "ace", "cpio", "jar", "war",
+}
+
+// UnsupportedArchive reports whether a raw file name ends with one of the
+// UnsupportedArchiveExtensions, comparing ASCII letters case-insensitively.
+// A name needs at least one byte before the dot.
+func UnsupportedArchive(name []byte) bool {
+	dot := -1
+	for i := len(name) - 1; i > 0; i-- {
+		if name[i] == '.' {
+			dot = i
+			break
+		}
+	}
+	if dot < 1 {
+		return false
+	}
+	ext := name[dot+1:]
+	for _, u := range UnsupportedArchiveExtensions {
+		if len(ext) != len(u) {
+			continue
+		}
+		match := true
+		for i := range len(u) {
+			c := ext[i]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != u[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 // ArchiveState is the state of an archive's listing (R2 design D6, D7). Its
 // values are the archives.state column's.
 type ArchiveState string
