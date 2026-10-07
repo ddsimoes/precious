@@ -12,6 +12,13 @@
 // now and not from the missed time; and the state survives restarts because
 // it is persisted. A scheduled scan is a scan like any other, so hashing and
 // relations follow it.
+//
+// The same look settles the owner's rescan requests that no scan will read
+// (r2b design O2 and O6): an override that joined a scan just after its last
+// pass read sources.rescan_requested leaves the flag set with no scan
+// running. A queued or paused scan reads the overrides when it starts, so
+// the request is only cleared; with no active scan, an online source starts
+// one, and any other applies the overrides at its next scan.
 package schedule
 
 import (
@@ -92,13 +99,14 @@ type due struct {
 // RunDue handles every source whose next scan is at or before now: an online
 // source's scan is started, or joined when one is active; any other source
 // records the skip, at its due time and with its state. Each one's next scan
-// becomes its schedule's first time after now. It refreshes availability
-// first when a source is due, so a disk unplugged since the last refresh is
+// becomes its schedule's first time after now. It then settles the rescan
+// requests no running scan will read. It refreshes availability first when
+// there is anything to do, so a disk unplugged since the last refresh is
 // seen as offline.
 func (s *Scheduler) RunDue(ctx context.Context, now time.Time) error {
 	var pending bool
-	if err := s.st.Reader().QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sources WHERE next_scan_at <= ?)`,
-		clock.Millis(now)).Scan(&pending); err != nil || !pending {
+	if err := s.st.Reader().QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sources WHERE next_scan_at <= ?)
+		OR EXISTS (`+unreadRequestsSQL+`)`, clock.Millis(now)).Scan(&pending); err != nil || !pending {
 		return err
 	}
 	rctx, cancel := context.WithTimeout(ctx, refreshWait)
@@ -118,7 +126,7 @@ func (s *Scheduler) RunDue(ctx context.Context, now time.Time) error {
 				return err
 			}
 		}
-		return nil
+		return s.settleRequests(ctx, tx)
 	})
 }
 
@@ -162,6 +170,52 @@ func (s *Scheduler) handle(ctx context.Context, tx *jobs.Tx, d due, now time.Tim
 	_, err = tx.SQL().ExecContext(ctx, `UPDATE sources SET next_scan_at = ?, schedule_skipped_at = NULL,
 		schedule_skip_reason = NULL WHERE id = ?`, next, string(d.id))
 	return err
+}
+
+// unreadRequestsSQL selects the sources whose rescan request no running scan
+// will read, with whether a queued or paused scan of theirs will start.
+const unreadRequestsSQL = `SELECT s.id, s.state, EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'scan'
+	AND j.source_id = s.id AND j.state IN ('queued', 'paused')) FROM sources s WHERE s.rescan_requested = 1
+	AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'scan' AND j.source_id = s.id AND j.state = 'running')`
+
+// settleRequests clears the rescan requests no running scan will read, and
+// starts a scan of each online source that has none queued or paused.
+func (s *Scheduler) settleRequests(ctx context.Context, tx *jobs.Tx) error {
+	type request struct {
+		id      domain.SourceID
+		state   string
+		waiting bool
+	}
+	rows, err := tx.SQL().QueryContext(ctx, unreadRequestsSQL+` ORDER BY s.id`)
+	if err != nil {
+		return err
+	}
+	var list []request
+	for rows.Next() {
+		var r request
+		if err := rows.Scan(&r.id, &r.state, &r.waiting); err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range list {
+		if !r.waiting && r.state == string(sources.StateOnline) {
+			acc, err := index.StartScan(ctx, tx, r.id)
+			if err != nil {
+				return err
+			}
+			s.log.Info("schedule: scan for an override no scan read", "source", r.id, "job", acc.JobID)
+		}
+		if _, err := tx.SQL().ExecContext(ctx, `UPDATE sources SET rescan_requested = 0 WHERE id = ?`, string(r.id)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // nextAfter is the stored schedule's first time after now, as stored.

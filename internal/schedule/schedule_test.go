@@ -377,3 +377,73 @@ func TestNextScanAdvancesPastNow(t *testing.T) {
 		t.Fatalf("%d scans, want 2", n)
 	}
 }
+
+// r2b design O6: an override that joined a scan just after its last pass
+// read rescan_requested leaves the flag set with no scan running. The next
+// look starts a scan of an online source with none active and clears the
+// flag. A queued or paused scan reads the overrides when it starts, so it is
+// left as it is and the flag cleared; so is an offline source's, whose next
+// scan applies them. A running scan keeps the flag, which it reads when its
+// pass finishes.
+func TestUnreadRescanRequestStartsScan(t *testing.T) {
+	e := newEnv(t)
+	for _, id := range []domain.SourceID{"idle", "running", "queued", "paused", "offline"} {
+		e.disk(id)
+	}
+	for _, id := range []domain.SourceID{"running", "queued", "paused"} {
+		if err := e.runner.Write(context.Background(), func(tx *jobs.Tx) error {
+			_, err := index.StartScan(context.Background(), tx, id)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		e.exec(`UPDATE jobs SET state = ? WHERE source_id = ?`, string(id), string(id))
+	}
+	e.fs.Unmount(e.devs["offline"])
+	e.exec(`UPDATE sources SET rescan_requested = 1`)
+	requested := func(id domain.SourceID) bool {
+		t.Helper()
+		var b bool
+		if err := e.st.Reader().QueryRow(`SELECT rescan_requested FROM sources WHERE id = ?`, string(id)).Scan(&b); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	jobState := func(id domain.SourceID) string {
+		t.Helper()
+		var s string
+		if err := e.st.Reader().QueryRow(`SELECT state FROM jobs WHERE source_id = ? ORDER BY id DESC LIMIT 1`, string(id)).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	for _, now := range []time.Time{at(0, 12, 0), at(0, 12, 1)} {
+		e.runDue(now)
+		for id, want := range map[domain.SourceID]int{"idle": 1, "running": 1, "queued": 1, "paused": 1, "offline": 0} {
+			if n := e.scans(id); n != want {
+				t.Errorf("%s at %s: %d scans, want %d", id, now, n, want)
+			}
+			if got := requested(id); got != (id == "running") {
+				t.Errorf("%s at %s: rescan_requested %v", id, now, got)
+			}
+			e.wantNoSkip(id)
+		}
+		for _, id := range []domain.SourceID{"idle", "queued"} {
+			if s := jobState(id); s != "queued" {
+				t.Errorf("%s's scan is %s, want queued", id, s)
+			}
+		}
+		if s := jobState("paused"); s != "paused" {
+			t.Errorf("the paused scan is %s", s)
+		}
+	}
+
+	// The running scan ends with the flag still set, as an override that
+	// joined it after its pass leaves it: the next look scans once more.
+	e.finishScans("running")
+	e.runDue(at(0, 12, 2))
+	if n := e.scans("running"); n != 2 || requested("running") {
+		t.Errorf("after the running scan ended: %d scans, rescan_requested %v", n, requested("running"))
+	}
+}
