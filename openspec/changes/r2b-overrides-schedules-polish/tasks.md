@@ -118,7 +118,7 @@
   - similar folders.
 
   Verify with `npx playwright test` passing headless, with no console error.
-- [ ] 7.2 Run the R2 task 8.5 verification:
+- [x] 7.2 Run the R2 task 8.5 verification:
   - gofmt and vet;
   - `go test -race ./...`;
   - `make test-slow`;
