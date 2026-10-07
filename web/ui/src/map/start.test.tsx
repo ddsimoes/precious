@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Ancestor } from '@/api/entries'
 import { rememberSource } from '@/app/sourceChoice'
-import { entryDetail, entryRow, folderRow, fotosSource } from '@/test/fixtures'
+import { entryDetail, entryRow, folderRow, fotosSource, homeResponse } from '@/test/fixtures'
 import { jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
 
 // vi.mock is hoisted above the static imports, so its factory loads the
@@ -103,5 +103,16 @@ describe('Map start', () => {
     stubApi(routes())
     const addressed = renderApp('/map?source=archive')
     await waitFor(() => expect(addressed.router.state.location.pathname).toBe('/map/22'))
+  })
+
+  // The remembered source (D9) carries from Home to the Map's start.
+  it('starts on the source chosen on Home', async () => {
+    stubApi({ ...routes(), 'GET /api/home': () => jsonResponse(200, homeResponse()) })
+    const { router } = renderApp('/')
+    await screen.findByRole('option', { name: 'archive' })
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Source' }), 'archive')
+    await userEvent.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('link', { name: 'Map' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/map/22'))
+    expect(await screen.findByRole('table', { name: 'Contents of home' })).toBeInTheDocument()
   })
 })
