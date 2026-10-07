@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useId, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams, type To } from 'react-router'
@@ -14,7 +14,7 @@ import {
   type Selection,
 } from '@/api/decisions'
 import { childSorts, type ChildSort, type EntryRow, type SortOrder } from '@/api/entries'
-import { fetchSearch, searchQueryKey, selectionQuery } from '@/api/search'
+import { fetchSearch, fetchSearchCount, searchCountQueryKey, searchQueryKey, selectionQuery } from '@/api/search'
 import { refreshAfterTagChange, setTags, useTags, type TagTargets } from '@/api/tags'
 import { ApiError } from '@/app/api'
 import { ErrorBanner } from '@/app/ErrorBanner'
@@ -60,7 +60,12 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
     getNextPageParam: (page) => page.next_cursor,
   })
   const rows = useMemo(() => results.data?.pages.flatMap((page) => page.items) ?? [], [results.data])
-  const count = results.data?.pages[0]?.count
+  // The count has its own request, slower than the page (r2b design D8).
+  const counted = useQuery({
+    queryKey: searchCountQueryKey(filters),
+    queryFn: ({ signal }) => fetchSearchCount(filters, signal),
+  })
+  const count = counted.data
   const { fetchNextPage, hasNextPage, isFetchingNextPage } = results
   const loadMore = useCallback(() => void fetchNextPage(), [fetchNextPage])
 
@@ -144,6 +149,8 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
     countText = t('search.countCapped', { formatted: fmt.count(countCap) })
   } else if (count !== undefined) {
     countText = t('search.count', { count, formatted: fmt.count(count) })
+  } else if (counted.isPending) {
+    countText = t('search.counting')
   }
 
   return (
@@ -158,6 +165,7 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
           </Button>
         )}
       </div>
+      {counted.isError && <ErrorBanner error={counted.error} onRetry={() => void counted.refetch()} />}
       {selectAll.isError && <ErrorBanner error={selectAll.error} onDismiss={() => selectAll.reset()} />}
 
       {(picked.size > 0 || selection !== null) && (
@@ -247,6 +255,7 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
           emptyText={t('search.noResults')}
           sort={{ sort, order, onSort: sortBy }}
           folderLink={folderLink}
+          location={filters.has('source') ? 'folder' : 'sourceAndFolder'}
           selectedId={params.get('entry')}
           selection={tableSelection}
           hasMore={hasNextPage}
