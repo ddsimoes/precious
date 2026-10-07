@@ -1,6 +1,17 @@
 import { createColumnHelper, tableFeatures, useTable } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { createContext, use, useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
+import {
+  createContext,
+  use,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+  type UIEvent,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, type To } from 'react-router'
 
@@ -27,7 +38,8 @@ import { cn } from '@/lib/utils'
 // near the end asks for the next page. Clicking a row opens its detail
 // panel (?entry=); a folder's name drills into it. The table stays inside
 // its card (design D23): when the card is narrow its lowest-priority
-// columns hide, and what still does not fit scrolls sideways inside it.
+// columns hide, and what still does not fit scrolls sideways inside it. The
+// Map turns on the keys (TableKeyboard).
 
 export interface TableSort {
   sort: ChildSort
@@ -38,6 +50,15 @@ export interface TableSort {
 export interface TableSelection {
   isSelected: (id: string) => boolean
   toggle: (row: EntryRow) => void
+}
+
+// TableKeyboard turns on the Map's keys (r2b design D9), the review lists'
+// model: the up and down arrows move the selected row, which opens its
+// details; Enter opens it (onOpen); Escape closes the details (onClose).
+// Keys typed in a field, in a dialog, or in the detail panel are theirs.
+export interface TableKeyboard {
+  onOpen: (row: EntryRow) => void
+  onClose: () => void
 }
 
 interface EntryTableProps {
@@ -53,6 +74,9 @@ interface EntryTableProps {
   onHover?: (id: string | null) => void
   selectedId: string | null
   selection?: TableSelection
+  keyboard?: TableKeyboard
+  // tableRef receives the table, which can take the focus.
+  tableRef?: Ref<HTMLDivElement>
   hasMore: boolean
   loadingMore: boolean
   onLoadMore: () => void
@@ -312,6 +336,8 @@ export function EntryTable({
   onHover,
   selectedId,
   selection,
+  keyboard,
+  tableRef,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -387,6 +413,74 @@ export function EntryTable({
     }
   }, [selectedIndex, virtualizer])
 
+  // focusId is the row the keys selected: it takes the focus once the
+  // virtualizer has drawn it, so assistive technology follows.
+  const focusId = useRef<string | null>(null)
+  useEffect(() => {
+    const id = focusId.current
+    if (id === null || id !== selectedId) {
+      return
+    }
+    const row = scrollRef.current?.querySelector<HTMLElement>(`[data-row-id="${id}"]`)
+    if (row !== null && row !== undefined) {
+      focusId.current = null
+      row.focus({ preventScroll: true })
+    }
+  })
+
+  const onKey = useEffectEvent((event: KeyboardEvent) => {
+    if (keyboard === undefined || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+      return
+    }
+    const origin = event.target instanceof Element ? event.target : null
+    const fields = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), dialog, aside'
+    if (origin?.closest(fields) != null || document.querySelector('dialog[open]') !== null) {
+      return
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (tableRows.length === 0) {
+        return
+      }
+      event.preventDefault()
+      const down = event.key === 'ArrowDown'
+      const index = selectedIndex < 0 ? (down ? 0 : tableRows.length - 1) : selectedIndex + (down ? 1 : -1)
+      if (index >= tableRows.length) {
+        // Past the last loaded row, the next page comes first.
+        if (hasMore && !loadingMore) {
+          onLoadMore()
+        }
+        return
+      }
+      const row = tableRows[Math.max(0, index)]
+      if (row === undefined || row.id === selectedId) {
+        return
+      }
+      focusId.current = row.id
+      // Walking the rows replaces the address instead of adding to history.
+      void navigate({ search: entryLink(row.id) }, { replace: selectedId !== null })
+    } else if (event.key === 'Enter') {
+      // A focused link or button acts on Enter itself.
+      const row = tableRows[selectedIndex]
+      if (row !== undefined && origin?.closest('a, button, summary') == null) {
+        event.preventDefault()
+        keyboard.onOpen(row.original)
+      }
+    } else if (event.key === 'Escape' && selectedId !== null) {
+      event.preventDefault()
+      keyboard.onClose()
+    }
+  })
+
+  const keys = keyboard !== undefined
+  useEffect(() => {
+    if (!keys) {
+      return
+    }
+    const listener = (event: KeyboardEvent) => onKey(event)
+    document.addEventListener('keydown', listener)
+    return () => document.removeEventListener('keydown', listener)
+  }, [keys])
+
   const headerCell = (id: ColumnId): ReactNode => {
     const content = id === 'select' ? <span className="sr-only">{t('map.columns.select')}</span> : t(`map.columns.${id}`)
     const key = columnSorts[id]
@@ -409,9 +503,11 @@ export function EntryTable({
   return (
     <RowLinksContext value={links}>
       <div
+        ref={tableRef}
         role="table"
         aria-label={label}
         aria-rowcount={(rowCount ?? tableRows.length) + 1}
+        tabIndex={tableRef === undefined ? undefined : -1}
         className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-sm"
       >
         {/* The header follows the rows' sideways scroll; both reserve the
@@ -465,6 +561,9 @@ export function EntryTable({
                   aria-rowindex={item.index + 2}
                   aria-selected={entry.id === selectedId}
                   data-hovered={entry.id === hoveredId ? 'true' : undefined}
+                  data-row-id={entry.id}
+                  // With the keys, the selected row is the table's tab stop.
+                  tabIndex={keyboard === undefined ? undefined : entry.id === selectedId ? 0 : -1}
                   className={cn(
                     'absolute top-0 left-0 grid w-full cursor-pointer items-center gap-2 border-b px-3',
                     entry.id === hoveredId && 'bg-accent',

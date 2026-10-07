@@ -92,26 +92,42 @@ describe('Map screen', () => {
     expect(await screen.findByRole('link', { name: 'Add a source' })).toHaveAttribute('href', '/sources')
   })
 
-  it('shows the remaining children as one area that does not open', async () => {
-    stubApi(mapRoutes({ other: { count: 700, bytes: 3 * GiB } }))
-    const { router } = renderApp('/map/1')
+  it('shows the remaining children as one area that leads to the table sorted by size', async () => {
+    const requests = stubApi(mapRoutes({ other: { count: 700, bytes: 3 * GiB } }))
+    const { router } = renderApp('/map/1?sort=name&order=asc')
     await table()
 
     await waitFor(() => expect(FakeChart.latest().data()).toHaveLength(4))
     const tiles = FakeChart.latest().data()
-    expect(tiles.map((tile) => tile.name)).toEqual(['Fotos', 'Downloads', 'NATAL.JPG', '700 more items'])
+    expect(tiles.map((tile) => tile.name)).toEqual(['Fotos', 'Downloads', 'NATAL.JPG', '700 smaller items: see the table'])
     expect(tiles[3]).toMatchObject({ id: 'other', value: 3 * GiB })
 
     const areas = within(screen.getByRole('list', { name: 'Areas of the treemap' }))
-    expect(areas.getByText('700 more items, 3 GiB').closest('button')).toBeNull()
+    expect(areas.getByRole('button', { name: /^700 smaller items: see the table \(3\sGiB\)$/ })).toBeInTheDocument()
     expect(areas.getByRole('button', { name: /^Open Fotos \(40\sGiB\)$/ })).toBeInTheDocument()
     expect(within(screen.getByRole('list', { name: 'Legend' })).getByText('Other items')).toBeInTheDocument()
 
-    act(() => FakeChart.latest().emit('click', 'other'))
+    // Hovering the rest marks no row; clicking it sorts the table by size and
+    // focuses it, without opening anything.
     act(() => FakeChart.latest().emit('mouseover', 'other'))
-    expect(router.state.location.pathname).toBe('/map/1')
-    expect(router.state.location.search).toBe('')
     expect(document.querySelector('[data-hovered]')).toBeNull()
+    act(() => FakeChart.latest().emit('click', 'other'))
+    await waitFor(() => expect(router.state.location.search).toBe('?sort=bytes&order=desc'))
+    expect(router.state.location.pathname).toBe('/map/1')
+    await waitFor(() => expect(screen.getByRole('table', { name: 'Contents of Fotos' })).toHaveFocus())
+    expect(screen.getByRole('columnheader', { name: /Size/ })).toHaveAttribute('aria-sort', 'descending')
+    expect(requestsTo(requests, '/api/entries/1/children').map((p) => `${p.get('sort')} ${p.get('order')}`)).toEqual([
+      'name asc',
+      'bytes desc',
+    ])
+
+    // Already sorted by size, the table only takes the focus.
+    act(() => screen.getByRole('link', { name: 'Fotos' }).focus())
+    await userEvent.click(
+      within(screen.getByRole('list', { name: 'Areas of the treemap' })).getByRole('button', { name: /^700 smaller/ }),
+    )
+    expect(screen.getByRole('table', { name: 'Contents of Fotos' })).toHaveFocus()
+    expect(router.state.location.search).toBe('?sort=bytes&order=desc')
   })
 
   it('keeps the treemap and the table in step', async () => {
