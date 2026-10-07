@@ -136,14 +136,19 @@ func TestCompareSameNameDifferentContent(t *testing.T) {
 	if got := itemPaths(diff); !slices.Equal(got, []string{"contato.php"}) || diff[0].Left == nil || diff[0].Right == nil {
 		t.Errorf("different %q", got)
 	}
+	// Without a bucket, the first holding files is listed: nothing is only
+	// on either side, so the pair opens on its different file.
 	res, err := Compare(context.Background(), c.st.Reader(), left, right, "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	total := count(t, c.st, `SELECT total_files FROM entries WHERE id = ?`, int64(c.seeded.ID("Projetos/site_antigo")))
 	if s := res.Summary; s[BucketIdentical].Files != total-1 || s[BucketOnlyLeft] != (Count{}) ||
-		s[BucketOnlyRight] != (Count{}) || s[BucketUnchecked] != (Count{}) || res.Items != nil {
+		s[BucketOnlyRight] != (Count{}) || s[BucketUnchecked] != (Count{}) {
 		t.Errorf("summary %+v, want %d identical and nothing else", s, total-1)
+	}
+	if got := itemPaths(res.Items); res.Bucket != BucketDifferent || !slices.Equal(got, []string{"contato.php"}) {
+		t.Errorf("opening bucket %s with %q, want different with contato.php", res.Bucket, got)
 	}
 	// The tar.gz against the folder lines up its wrapper-free members.
 	res, err = Compare(context.Background(), c.st.Reader(), c.ref("Projetos/site_antigo_2006.tar.gz"), left, BucketIdentical, "", 1000)
@@ -287,5 +292,107 @@ func TestCompareRefusesContainmentAndFiles(t *testing.T) {
 		if !errors.As(e, &de) || de.Code != domain.CodeInvalidRequest {
 			t.Errorf("bad bucket or cursor: %v", e)
 		}
+	}
+}
+
+// r2b task 6.1, spec "Compare shows where each copy is": an identical item
+// carries each side's path inside its side, and an extra copy on one side
+// names the file on the other side holding its content.
+func TestCompareShowsWhereEachCopyIs(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	w.file("fotos-b/2002/12/img_0001.jpg", 100, "p1")
+	w.file("fotos-b/2002/12/img_0002.jpg", 200, "p2")
+	w.file("fotos/2014/celular/IMG_0001.jpg", 100, "p1")
+	w.file("fotos/2014/celular/IMG_0002.jpg", 200, "p2")
+	w.file("fotos/2015/IMG_0002 (1).jpg", 200, "p2")
+	w.seed()
+	res, err := Compare(context.Background(), w.st.Reader(), w.ref("fotos-b"), w.ref("fotos"), BucketIdentical, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type line struct{ path, left, right, twin string }
+	var got []line
+	for _, it := range res.Items {
+		l := line{path: string(it.Path), left: string(it.LeftPath), right: string(it.RightPath), twin: string(it.TwinPath)}
+		if (it.Left == nil) != (it.LeftPath == nil) || (it.Right == nil) != (it.RightPath == nil) ||
+			(it.Twin == nil) != (it.TwinPath == nil) {
+			t.Errorf("item %q: refs and paths disagree: %+v", it.Path, it)
+		}
+		if it.Twin != nil && *it.Twin != w.ref("fotos-b/2002/12/img_0002.jpg") {
+			t.Errorf("twin of %q is %v", it.Path, *it.Twin)
+		}
+		got = append(got, l)
+	}
+	want := []line{
+		{"2002/12/img_0001.jpg", "2002/12/img_0001.jpg", "2014/celular/IMG_0001.jpg", ""},
+		{"2002/12/img_0002.jpg", "2002/12/img_0002.jpg", "2014/celular/IMG_0002.jpg", ""},
+		{"2015/IMG_0002 (1).jpg", "", "2015/IMG_0002 (1).jpg", "2002/12/img_0002.jpg"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("identical items\n got %q\nwant %q", got, want)
+	}
+	// Counts and bytes are those of R2: three items, each its left file's
+	// size, else its right file's.
+	if s := res.Summary[BucketIdentical]; s != (Count{Files: 3, Bytes: 100 + 200 + 200}) {
+		t.Errorf("identical %+v", s)
+	}
+	// The extra copy on the left side names the right side's file.
+	res, err = Compare(context.Background(), w.st.Reader(), w.ref("fotos"), w.ref("fotos-b"), BucketIdentical, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extra *CompareItem
+	for i := range res.Items {
+		if res.Items[i].Right == nil {
+			extra = &res.Items[i]
+		}
+	}
+	if extra == nil || string(extra.LeftPath) != "2015/IMG_0002 (1).jpg" || extra.Twin == nil ||
+		*extra.Twin != w.ref("fotos-b/2002/12/img_0002.jpg") || string(extra.TwinPath) != "2002/12/img_0002.jpg" {
+		t.Errorf("left extra copy %+v", extra)
+	}
+}
+
+// r2b task 6.1 (R2 B22): without a bucket, Compare lists the first bucket
+// holding files, in the order only left, only right, different,
+// unchecked, identical, and names it.
+func TestCompareOpensOnTheFirstBucketHoldingFiles(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	w.file("a/same.txt", 10, "s")
+	w.file("b/same.txt", 10, "s")
+	w.file("c/same.txt", 10, "s")
+	w.file("c/new.txt", 20, "n")
+	w.file("d/same.txt", 10, "s")
+	w.file("d/new.txt", 21, "m")
+	w.add(wf{path: "e/same.txt", size: 10, state: domain.ContentPending})
+	w.seed()
+	for _, tc := range []struct {
+		l, r string
+		want Bucket
+	}{
+		{"a", "b", BucketIdentical},
+		{"a", "c", BucketOnlyRight},
+		{"c", "a", BucketOnlyLeft},
+		{"c", "d", BucketDifferent},
+		{"a", "e", BucketUnchecked},
+	} {
+		res, err := Compare(context.Background(), w.st.Reader(), w.ref(tc.l), w.ref(tc.r), "", "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Bucket != tc.want || int64(len(res.Items)) != res.Summary[tc.want].Files {
+			t.Errorf("%s against %s opens on %s with %d items, want %s with %d", tc.l, tc.r, res.Bucket, len(res.Items),
+				tc.want, res.Summary[tc.want].Files)
+		}
+	}
+	// A bucket asked for is listed even when empty.
+	res, err := Compare(context.Background(), w.st.Reader(), w.ref("a"), w.ref("b"), BucketOnlyLeft, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Bucket != BucketOnlyLeft || len(res.Items) != 0 {
+		t.Errorf("asked only_left: %s with %d items", res.Bucket, len(res.Items))
 	}
 }

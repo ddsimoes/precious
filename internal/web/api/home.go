@@ -198,16 +198,20 @@ func activeJobs(ctx context.Context, tx *sql.Tx, src domain.SourceID, named bool
 	return out, nil
 }
 
-// cardJSON is CardJSON.
+// cardJSON is CardJSON: its open rows, and its rows no longer open (r2b
+// D13).
 type cardJSON struct {
-	List  review.List `json:"list"`
-	Bytes int64       `json:"bytes"`
-	Rows  int64       `json:"rows"`
-	Basis string      `json:"basis"`
+	List         review.List `json:"list"`
+	Bytes        int64       `json:"bytes"`
+	Rows         int64       `json:"rows"`
+	DecidedBytes int64       `json:"decided_bytes"`
+	DecidedRows  int64       `json:"decided_rows"`
+	Basis        string      `json:"basis"`
 }
 
 func toCardJSON(c review.Card) cardJSON {
-	return cardJSON{List: c.List, Bytes: c.Bytes, Rows: c.Rows, Basis: c.Basis}
+	return cardJSON{List: c.List, Bytes: c.Bytes, Rows: c.Rows, DecidedBytes: c.DecidedBytes, DecidedRows: c.DecidedRows,
+		Basis: c.Basis}
 }
 
 // readCards reads the seven cards of src ("" = every source), largest

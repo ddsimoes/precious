@@ -614,7 +614,14 @@ test('R2.4: discarding one copy of curriculo.doc in the duplicates list leaves t
 
 test('R2.5: every card’s bytes equal the sum of its review list over all pages', async () => {
   const opportunities: {
-    cards: { list: ListName; bytes: number; rows: number; basis: keyof typeof en.opportunities.basis }[]
+    cards: {
+      list: ListName
+      bytes: number
+      rows: number
+      decided_bytes: number
+      decided_rows: number
+      basis: keyof typeof en.opportunities.basis
+    }[]
   } = await (
     await page.request.get('/api/opportunities')
   ).json()
@@ -624,31 +631,44 @@ test('R2.5: every card’s bytes equal the sum of its review list over all pages
     expect(new Set(rows.items.map((r) => r.id)).size, card.list).toBe(rows.items.length)
     expect(rows.items.length, card.list).toBe(card.rows)
     expect(rows.items.reduce((sum, r) => sum + r.bytes, 0), card.list).toBe(card.bytes)
+    // Its decided figures equal its decided list (r2b D13).
+    const decided = await allPages<{ bytes: number }>(`/api/opportunities/${card.list}`, { limit: '2', decided: '1' })
+    expect(decided.items.length, card.list).toBe(card.decided_rows)
+    expect(decided.items.reduce((sum, r) => sum + r.bytes, 0), card.list).toBe(card.decided_bytes)
   }
   expect(opportunities.cards.find((c) => c.list === 'duplicates')?.bytes).toBeGreaterThan(0)
 
   for (const card of opportunities.cards) {
     const label = en.opportunities.list[card.list]
-    // A card whose rows hold no bytes heads with its item count instead.
+    // A card whose rows hold no bytes heads with its item count instead,
+    // and one with no open row left says so.
     const countFirst = card.bytes === 0 && card.rows > 0
     const items = `${count(card.rows)} ${card.rows === 1 ? 'item' : 'items'}`
-    const headline = countFirst ? items : bytes(card.bytes)
-    const rowsText = countFirst ? null : `${items} to review`
+    const headline = card.rows === 0 ? 'Nothing left to review' : countFirst ? items : bytes(card.bytes)
+    const rowsText = countFirst || card.rows === 0 ? null : `${items} to review`
+    const decidedText =
+      card.decided_rows === 0
+        ? null
+        : `${count(card.decided_rows)} decided${card.decided_bytes === 0 ? '' : ` (${bytes(card.decided_bytes)})`}`
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Opportunities' }).click()
     const tile = page
       .getByRole('list', { name: 'Opportunity cards' })
       .getByRole('listitem')
       .filter({ has: page.getByRole('link', { name: label, exact: true }) })
     await expect(tile, label).toContainText(headline)
-    if (rowsText !== null) {
-      await expect(tile, label).toContainText(rowsText)
+    for (const text of [rowsText, decidedText]) {
+      if (text !== null) {
+        await expect(tile, label).toContainText(text)
+      }
     }
     await tile.getByRole('link', { name: label, exact: true }).click()
     await expect(page.getByRole('heading', { name: label, level: 1 })).toBeVisible()
     const header = page.getByRole('main').getByText(en.opportunities.basis[card.basis]).locator('..')
     await expect(header, label).toContainText(headline)
-    if (rowsText !== null) {
-      await expect(header, label).toContainText(rowsText)
+    for (const text of [rowsText, decidedText]) {
+      if (text !== null) {
+        await expect(header, label).toContainText(text)
+      }
     }
     const list = page.getByRole('list', { name: `Rows of ${label}` })
     if (card.rows === 0) {

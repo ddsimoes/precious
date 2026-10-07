@@ -551,17 +551,32 @@ func (h *handler) gems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// compareItemJSON is one item of a Compare bucket. left_path and
+// right_path are each file's path inside its side (null without one);
+// twin, on an identical item with one file, is the other side's file
+// holding the same content (r2b design D11).
 type compareItemJSON struct {
-	Path    string    `json:"path"`
-	PathB64 []byte    `json:"path_b64"`
-	Left    *entryRow `json:"left"`
-	Right   *entryRow `json:"right"`
+	Path      string           `json:"path"`
+	PathB64   []byte           `json:"path_b64"`
+	LeftPath  *string          `json:"left_path"`
+	RightPath *string          `json:"right_path"`
+	Left      *entryRow        `json:"left"`
+	Right     *entryRow        `json:"right"`
+	Twin      *compareTwinJSON `json:"twin"`
+}
+
+// compareTwinJSON is an extra copy's twin: its path inside its side, and
+// its row.
+type compareTwinJSON struct {
+	Path  string   `json:"path"`
+	Entry entryRow `json:"entry"`
 }
 
 type compareBody struct {
 	Left       entryRow                    `json:"left"`
 	Right      entryRow                    `json:"right"`
 	Summary    map[relations.Bucket]amount `json:"summary"`
+	Bucket     relations.Bucket            `json:"bucket"`
 	Items      []compareItemJSON           `json:"items"`
 	NextCursor *string                     `json:"next_cursor"`
 }
@@ -575,11 +590,12 @@ var buckets = []relations.Bucket{relations.BucketOnlyLeft, relations.BucketOnlyR
 	relations.BucketDifferent, relations.BucketUnchecked}
 
 // compare serves GET /api/compare?left=&right=&bucket=&cursor=&limit=
-// (relations.Compare, design D11): both sides' rows, the five buckets'
-// files and bytes, and a page of the bucket's items (none without a
-// bucket). A malformed ref, a side that is a file, sides of which one
-// contains the other, an unknown bucket, or a bad cursor is
-// invalid_request; an unknown side is not_found.
+// (relations.Compare, R2 design D11, r2b D11): both sides' rows, the five
+// buckets' files and bytes, and a page of the bucket's items, with the
+// bucket listed (without one, the first holding files). A malformed ref,
+// a side that is a file, sides of which one contains the other, an
+// unknown bucket, or a bad cursor is invalid_request; an unknown side is
+// not_found.
 func (h *handler) compare(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var (
@@ -615,7 +631,7 @@ func (h *handler) compare(w http.ResponseWriter, r *http.Request) {
 		}
 		refs := []domain.Ref{left, right}
 		for _, it := range res.Items {
-			for _, s := range []*domain.Ref{it.Left, it.Right} {
+			for _, s := range []*domain.Ref{it.Left, it.Right, it.Twin} {
 				if s != nil {
 					refs = append(refs, *s)
 				}
@@ -631,7 +647,7 @@ func (h *handler) compare(w http.ResponseWriter, r *http.Request) {
 			return nil, domain.Errorf(domain.CodeNotFound, "a side of the comparison is gone")
 		}
 		body := compareBody{Left: rowJSON(l), Right: rowJSON(rr), Summary: make(map[relations.Bucket]amount, len(buckets)),
-			Items: make([]compareItemJSON, 0, len(res.Items))}
+			Bucket: res.Bucket, Items: make([]compareItemJSON, 0, len(res.Items))}
 		for _, b := range buckets {
 			c := res.Summary[b]
 			body.Summary[b] = amount{Files: c.Files, Bytes: c.Bytes}
@@ -647,14 +663,97 @@ func (h *handler) compare(w http.ResponseWriter, r *http.Request) {
 			j := rowJSON(row)
 			return &j, row.Member != 0 && row.Zip
 		}
+		sidePath := func(p []byte, zip bool) *string {
+			if p == nil {
+				return nil
+			}
+			s := domain.MemberDisplayName(p, zip)
+			return &s
+		}
 		for _, it := range res.Items {
 			lj, lz := side(it.Left)
 			rj, rz := side(it.Right)
-			body.Items = append(body.Items, compareItemJSON{Path: domain.MemberDisplayName(it.Path, lz || rz), PathB64: it.Path,
-				Left: lj, Right: rj})
+			j := compareItemJSON{Path: domain.MemberDisplayName(it.Path, lz || rz), PathB64: it.Path,
+				LeftPath: sidePath(it.LeftPath, lz), RightPath: sidePath(it.RightPath, rz), Left: lj, Right: rj}
+			if tj, tz := side(it.Twin); tj != nil {
+				j.Twin = &compareTwinJSON{Path: domain.MemberDisplayName(it.TwinPath, tz), Entry: *tj}
+			}
+			body.Items = append(body.Items, j)
 		}
 		if res.NextCursor != "" {
 			body.NextCursor = &res.NextCursor
+		}
+		return body, nil
+	})
+}
+
+// overlapJSON is a similar folders item: the relation seen from side a
+// (RelationJSON with self "a"), and side a's row, so both sides are named.
+type overlapJSON struct {
+	relationJSON
+	A entryRow `json:"a"`
+}
+
+type relationsBody struct {
+	Items      []overlapJSON `json:"items"`
+	NextCursor *string       `json:"next_cursor"`
+}
+
+// relations serves GET /api/relations?kind=overlap&source=&cursor=&limit=
+// (r2b design D12): a page of the visible generation's overlap relations
+// with a side on the source, by matched bytes, then ID, descending. A
+// missing or other kind, or a bad cursor or limit, is invalid_request; an
+// unknown source is not_found.
+func (h *handler) relations(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	err := checkParams(q, "kind", "source", "cursor", "limit")
+	if err == nil && q.Get("kind") != "overlap" {
+		err = domain.Errorf(domain.CodeInvalidRequest, "kind must be overlap, not %q", q.Get("kind"))
+	}
+	var limit int
+	if err == nil {
+		limit, err = parseLimit(q.Get("limit"))
+	}
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	src := domain.SourceID(q.Get("source"))
+	h.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		if err := sourceExists(ctx, tx, src); err != nil {
+			return nil, err
+		}
+		page, err := relations.Overlaps(ctx, tx, src, q.Get("cursor"), limit)
+		if err != nil {
+			return nil, err
+		}
+		refs := make([]domain.Ref, len(page.Items))
+		for i, rel := range page.Items {
+			refs[i] = rel.A
+		}
+		rows, err := h.loadRows(ctx, tx, refs)
+		if err != nil {
+			return nil, err
+		}
+		rjs, err := h.relationsJSON(ctx, tx, page.Items, func(relations.Relation) string { return "a" })
+		if err != nil {
+			return nil, err
+		}
+		byID := make(map[string]relationJSON, len(rjs))
+		for _, rj := range rjs {
+			byID[rj.ID] = rj
+		}
+		body := relationsBody{Items: make([]overlapJSON, 0, len(page.Items))}
+		for _, rel := range page.Items {
+			rj, ok := byID[strconv.FormatInt(rel.ID, 10)]
+			a, okA := rows.get(rel.A)
+			if !ok || !okA {
+				continue // a side deleted since the relations were computed
+			}
+			body.Items = append(body.Items, overlapJSON{relationJSON: rj, A: rowJSON(a)})
+		}
+		if page.NextCursor != "" {
+			body.NextCursor = &page.NextCursor
 		}
 		return body, nil
 	})

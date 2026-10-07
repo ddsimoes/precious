@@ -50,6 +50,7 @@ import (
 //   - GET /api/opportunities/{list}?source=&decided=&cursor=&limit=
 //   - GET /api/gems?section=&source=&cursor=&limit=
 //   - GET /api/compare?left=&right=&bucket=&cursor=&limit=
+//   - GET /api/relations?kind=overlap&source=&cursor=&limit=
 func Register(mux *http.ServeMux, st *store.Store, pol *rules.Policy, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
@@ -66,6 +67,7 @@ func Register(mux *http.ServeMux, st *store.Store, pol *rules.Policy, log *slog.
 	mux.HandleFunc("GET /api/opportunities/{list}", h.reviewList)
 	mux.HandleFunc("GET /api/gems", h.gems)
 	mux.HandleFunc("GET /api/compare", h.compare)
+	mux.HandleFunc("GET /api/relations", h.relations)
 }
 
 type handler struct {

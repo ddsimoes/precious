@@ -128,7 +128,15 @@ export function coverage(overrides: Partial<Coverage> = {}): Coverage {
 }
 
 export function card(list: Card['list'], bytes: number, rows: number, overrides: Partial<Card> = {}): Card {
-  return { list, bytes, rows, basis: list === 'duplicates' || list === 'unpacked_archives' ? 'content' : 'rules', ...overrides }
+  return {
+    list,
+    bytes,
+    rows,
+    decided_rows: 0,
+    decided_bytes: 0,
+    basis: list === 'duplicates' || list === 'unpacked_archives' ? 'content' : 'rules',
+    ...overrides,
+  }
 }
 
 // copyOf is a CopyJSON of row, which follows its folder.

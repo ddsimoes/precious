@@ -1,17 +1,9 @@
 import { useInfiniteQuery, useMutation } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
-import {
-  buckets,
-  compareQueryKey,
-  fetchCompare,
-  firstBucket,
-  isBucket,
-  type Bucket,
-  type CompareItem,
-} from '@/api/compare'
+import { buckets, compareQueryKey, fetchCompare, isBucket, type Bucket, type CompareItem } from '@/api/compare'
 import { checkNow } from '@/api/content'
 import { isMember, type EntryRow } from '@/api/entries'
 import { ErrorBanner } from '@/app/ErrorBanner'
@@ -29,7 +21,8 @@ import { cn } from '@/lib/utils'
 // two folders or archives side by side, named in the address
 // (/compare?left=&right=&bucket=) so a comparison can be bookmarked, their
 // files in five groups, each decided with the usual controls. Without a
-// group in the address, it opens on the first group that holds files.
+// group in the address, the server opens on the first group that holds
+// files and names it, and the address takes that group (r2b D11).
 export function ComparePage() {
   const { t } = useTranslation()
   const [params] = useSearchParams()
@@ -56,12 +49,17 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const [checkStarted, setCheckStarted] = useState(false)
+  // opened is the group the server chose for an address without one: the
+  // address then names it, and its page stays the one already fetched.
+  const [opened, setOpened] = useState<Bucket | null>(null)
+  const requested = bucket !== null && bucket === opened ? null : bucket
 
   const pages = useInfiniteQuery({
-    queryKey: compareQueryKey(left, right, bucket),
-    queryFn: ({ pageParam, signal }) => fetchCompare(left, right, bucket, pageParam, signal),
-    initialPageParam: null as string | null,
-    getNextPageParam: (page) => page.next_cursor,
+    queryKey: compareQueryKey(left, right, requested),
+    queryFn: ({ pageParam, signal }) =>
+      fetchCompare(left, right, pageParam?.bucket ?? requested, pageParam?.cursor ?? null, signal),
+    initialPageParam: null as { bucket: Bucket; cursor: string } | null,
+    getNextPageParam: (page) => (page.next_cursor === null ? null : { bucket: page.bucket, cursor: page.next_cursor }),
   })
   const check = useMutation({
     mutationFn: () => checkNow([left, right], csrfToken),
@@ -77,12 +75,16 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
     return `?${next}`
   }
 
-  // The summary alone came: the address names the group to open.
-  const opening = bucket === null ? first?.summary : undefined
+  // The server chose the group: the address takes it, replacing itself, and
+  // the page already fetched stays the group's.
+  const opening = requested === null && first !== undefined && first.bucket !== bucket ? first.bucket : null
+  if (opening !== null && opening !== opened) {
+    setOpened(opening)
+  }
   useEffect(() => {
-    if (opening !== undefined) {
+    if (opening !== null) {
       const next = new URLSearchParams(params)
-      next.set('bucket', firstBucket(opening))
+      next.set('bucket', opening)
       void navigate({ search: `?${next}` }, { replace: true })
     }
   }, [opening, params, navigate])
@@ -98,12 +100,12 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
             onRetry={() => void pages.refetch()}
           />
         )}
-        {(pages.isPending || opening !== undefined) && (
+        {(pages.isPending || opening !== null) && (
           <p role="status" className="text-sm text-muted-foreground">
             {t('app.loading')}
           </p>
         )}
-        {first !== undefined && bucket !== null && (
+        {first !== undefined && opening === null && (
           <>
             <section aria-label={t('compare.sides')} className="grid gap-3 md:grid-cols-2">
               <Side label={t('compare.left')} row={first.left} />
@@ -129,10 +131,10 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
                     <li key={b}>
                       <Link
                         to={{ search: bucketSearch(b) }}
-                        aria-current={b === bucket ? 'page' : undefined}
+                        aria-current={b === first.bucket ? 'page' : undefined}
                         className={cn(
                           'grid h-full gap-0.5 rounded-lg border bg-card p-2 text-sm hover:bg-accent',
-                          b === bucket && 'border-primary bg-primary/5',
+                          b === first.bucket && 'border-primary bg-primary/5',
                         )}
                       >
                         <span className="font-medium">{t(`compare.bucket.${b}`)}</span>
@@ -152,9 +154,9 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
             {items.length === 0 ? (
               <p className="text-sm text-muted-foreground">{t('compare.empty')}</p>
             ) : (
-              <ul aria-label={t('compare.files', { group: t(`compare.bucket.${bucket}`) })} className="grid gap-2">
+              <ul aria-label={t('compare.files', { group: t(`compare.bucket.${first.bucket}`) })} className="grid gap-2">
                 {items.map((item) => (
-                  <ItemRow key={item.path_b64} item={item} />
+                  <ItemRow key={`${item.left?.id ?? ''} ${item.right?.id ?? ''}`} item={item} />
                 ))}
               </ul>
             )}
@@ -198,11 +200,14 @@ function Side({ label, row }: { label: string; row: EntryRow }) {
   )
 }
 
-// ItemRow is one file of a group, with its copy on each side that holds it.
+// ItemRow is one file of a group, with its copy on each side that holds it:
+// each side's path inside its side when the two differ, and for an extra
+// copy, the file on the other side holding the same content (r2b D11).
 function ItemRow({ item }: { item: CompareItem }) {
   const { t } = useTranslation()
   const entryLink = useEntryLink()
   const shown = item.left ?? item.right
+  const apart = item.left_path !== null && item.right_path !== null && item.left_path !== item.right_path
   return (
     <li className="grid gap-2 rounded-lg border bg-card p-3 text-sm">
       {shown === null ? (
@@ -212,15 +217,30 @@ function ItemRow({ item }: { item: CompareItem }) {
           {item.path}
         </Link>
       )}
+      {item.twin !== null && (
+        <p className="break-all text-muted-foreground">
+          <Trans
+            i18nKey={item.left === null ? 'compare.extraCopyOfLeft' : 'compare.extraCopyOfRight'}
+            values={{ path: item.twin.path }}
+            components={{
+              twinLink: <Link to={{ search: entryLink(item.twin.entry.id) }} className="text-primary hover:underline" />,
+            }}
+          />
+        </p>
+      )}
       <div className="grid gap-2 lg:grid-cols-2">
-        {item.left !== null && <ItemSide label={t('compare.left')} row={item.left} />}
-        {item.right !== null && <ItemSide label={t('compare.right')} row={item.right} />}
+        {item.left !== null && (
+          <ItemSide label={t('compare.left')} row={item.left} path={apart ? item.left_path : null} />
+        )}
+        {item.right !== null && (
+          <ItemSide label={t('compare.right')} row={item.right} path={apart ? item.right_path : null} />
+        )}
       </div>
     </li>
   )
 }
 
-function ItemSide({ label, row }: { label: string; row: EntryRow }) {
+function ItemSide({ label, row, path }: { label: string; row: EntryRow; path: string | null }) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const entryLink = useEntryLink()
@@ -234,6 +254,7 @@ function ItemSide({ label, row }: { label: string; row: EntryRow }) {
           {fmt.bytes(row.size)} · {t('review.decision', { decision: t(`home.decision.${row.eff_decision}`) })}
         </span>
       </span>
+      {path !== null && <span className="break-all">{path}</span>}
       {isMember(row) ? (
         <span className="text-muted-foreground">{t('review.memberDecision')}</span>
       ) : (

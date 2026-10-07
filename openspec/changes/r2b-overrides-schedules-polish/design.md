@@ -206,3 +206,12 @@ The panel words each reason, and says that what is inside is not checked for cop
 1. Take a backup with `precious backup`, then install. `0003` applies at start: it creates tables and columns, and rebuilds the name index (seconds per 100,000 names).
 2. Overrides and schedules start empty. No rescan is needed.
 3. **Rollback.** The R2 binary refuses schema version 3, so restore the backup.
+
+## Addendum: decisions made during implementation
+
+- **C1.** `twin` is `{path, entry}`: the twin's path inside its side and its EntryRow (task 6.1). A bare ref could not name the file, and the extra copy has no path on the twin's side otherwise. The twin is the other side's first file of the content in path order, the one the first pair holds.
+- **C2.** `GET /api/compare` always returns `bucket`, also when the request names one (task 6.1). Two empty sides open on `only_left`, as the UI's former `firstBucket` did.
+- **C3.** The Compare page keeps B22's replace navigation without a second request (task 6.1): it remembers the group the server opened on, keeps reading the page fetched without a group while the address names that group, and pages it with the group and cursor of the page itself, so a later page never depends on the server choosing the same group again.
+- **C4.** `review.Cards` reads `openSQL` once per row through a `MATERIALIZED` CTE (task 6.3); without it SQLite's flattener copies the expression into each of the four sums. A row whose `openSQL` is NULL (its entry gone) counts as neither open nor decided, as in `Rows`.
+- **C5.** Every card with no open row reads "Nothing left to review", decided rows or not (task 6.3), and the decided figure leaves out its bytes when they are 0 ("3 decided"), as B25 does for open rows.
+- **C6.** The similar folders endpoint pages by `(matched_bytes, id)` with an opaque cursor, and leaves out an item whose side was deleted since the relate pass (task 6.2). A member folder side counts on its archive's source.

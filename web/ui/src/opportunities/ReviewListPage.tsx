@@ -420,7 +420,7 @@ function CardFigures({ card, list }: { card: Card | undefined; list: ReviewListN
     <div className="grid gap-1 text-sm">
       <p>
         <span className="text-xl font-semibold">{figures.headline}</span>{' '}
-        {[...(figures.rows === null ? [] : [figures.rows]), t(`opportunities.basis.${card.basis}`)].join(' · ')}
+        {[figures.rows, figures.decided, t(`opportunities.basis.${card.basis}`)].filter((s) => s !== null).join(' · ')}
       </p>
       <p className="text-muted-foreground">{t(`opportunities.help.${list}`)}</p>
     </div>

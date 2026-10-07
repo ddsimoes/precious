@@ -33,11 +33,14 @@ export function isReviewList(value: string | undefined): value is ReviewListName
 // content found by hashing.
 export type Basis = 'rules' | 'content'
 
-// Card is CardJSON: a card's open rows, with their bytes.
+// Card is CardJSON: a card's open rows, with their bytes, and its rows no
+// longer open (decided), with theirs (r2b design D13).
 export interface Card {
   list: ReviewListName
   bytes: number
   rows: number
+  decided_rows: number
+  decided_bytes: number
   basis: Basis
 }
 
@@ -104,6 +107,33 @@ export function fetchReviewPage(
     params.set('cursor', cursor)
   }
   return apiGet<ReviewPage>(`/api/opportunities/${list}?${params}`, signal)
+}
+
+// Overlap is a similar folders item (r2b design D12; GET
+// /api/relations?kind=overlap): an overlap relation seen from its side a,
+// with side a's row, so it names both sides.
+export interface Overlap extends Relation {
+  a: EntryRow
+}
+
+export interface OverlapPage {
+  items: Overlap[]
+  next_cursor: string | null
+}
+
+export function similarQueryKey(source: string | null) {
+  return [...opportunitiesQueryRoot, 'similar', source] as const
+}
+
+export function fetchSimilar(source: string | null, cursor: string | null, signal?: AbortSignal): Promise<OverlapPage> {
+  const params = new URLSearchParams({ kind: 'overlap' })
+  if (source !== null) {
+    params.set('source', source)
+  }
+  if (cursor !== null) {
+    params.set('cursor', cursor)
+  }
+  return apiGet<OverlapPage>(`/api/relations?${params}`, signal)
 }
 
 // SelectableList is a list whose open rows select-list resolves: every
