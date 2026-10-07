@@ -130,7 +130,7 @@
   - `walkbench` with no regression.
 
   Verify that every step passes.
-- [ ] 7.3 Smoke-check the built binary on a copy of an R2 database with a throwaway script:
+- [x] 7.3 Smoke-check the built binary on a copy of an R2 database with a throwaway script:
   - the `0003` upgrade;
   - an override and a group mark followed by the scan;
   - a schedule due within the minute starting a scan;
