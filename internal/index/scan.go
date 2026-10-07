@@ -171,6 +171,9 @@ type walk struct {
 	token   uint64
 	held    map[uint64]int32
 	release []uint64
+	// owner holds the owner's overrides of the source's entries, read when
+	// the scan started (r2b design D3).
+	owner map[domain.EntryID]domain.Override
 
 	progress                        map[string]int64
 	dirs, files, bytes, unreadableN int64
@@ -523,6 +526,9 @@ func (s *walk) file(f *frame, c *child, kind domain.FileKind) error {
 	r := row{kind: string(domain.EntryFile), state: "present"}
 	same := s.facts(&r, c)
 	res := s.pol.ClassifyFile(rules.FileFacts{Name: c.name, Kind: kind, Size: r.size, SiblingStems: f.stems})
+	if c.old != nil {
+		res = s.applyOwner(res, c.old.id)
+	}
 	r.classify(&res, s.codec)
 	r.fileKind = text(kind)
 	r.ext = s.codec.ext(c.name)
@@ -636,6 +642,9 @@ func (s *walk) finish(f *frame) error {
 		Name: f.name, ChildSignals: f.childSignals, SubtreeSignals: f.subtreeSignals,
 		Files: f.files, Bytes: f.bytes, ByKind: f.byKind, Indicators: f.indicators,
 	})
+	if f.id != 0 {
+		res = s.applyOwner(res, f.id)
+	}
 	r := row{kind: string(domain.EntryDirectory), state: "present", partial: f.partial}
 	if f.unreadable {
 		r.state = "unreadable"
@@ -730,6 +739,17 @@ func (s *walk) finish(f *frame) error {
 		o.path = b.add(f.path)
 	}
 	return s.emit(&o)
+}
+
+// applyOwner gives the owner's override of the stored entry id, if any,
+// precedence over the rules' result, before anything reads it: the row,
+// the file family, the contribution to the parent's composition, and the
+// inside lists, so all come out as for a rule result (r2b design D3).
+func (s *walk) applyOwner(res rules.Result, id domain.EntryID) rules.Result {
+	if o, ok := s.owner[id]; ok {
+		return rules.ApplyOwner(res, o)
+	}
+	return res
 }
 
 // mainKind is the file kind with the most bytes, then the most files, then

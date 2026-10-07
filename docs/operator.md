@@ -238,7 +238,7 @@ After a failed sign-in, the next attempt is refused for 1 s, and each further co
 
 ### Audit trail
 
-Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, and `tag_deleted`. To read the latest ones, run this as the user that owns the state directory:
+Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, `tag_deleted`, `category_set`, and `group_set`. To read the latest ones, run this as the user that owns the state directory:
 
 ```sh
 sqlite3 <state_dir>/precious.db \
@@ -795,7 +795,7 @@ Two exceptions always ask for review: what a disk check recovered (`found.000` a
 
 ### Groups
 
-A group is a folder that is best reviewed as one item: an installed program, a copy of Windows, a project, a program's saved games or profile, a cache, build output, or a drive backup. Folders in the categories `application_installation`, `os_installation`, `source_project`, `application_user_data`, `cache`, `generated_artifacts`, and `backup` are groups. Groups can sit inside other groups; the outermost one is the item to review. Being in a group never hides anything: the Map and Search still reach every file and folder inside, with their own sizes.
+A group is a folder that is best reviewed as one item: an installed program, a copy of Windows, a project, a program's saved games or profile, a cache, build output, or a drive backup. Folders in the categories `application_installation`, `os_installation`, `source_project`, `application_user_data`, `cache`, `generated_artifacts`, and `backup` are groups, unless you unmark them; you can also mark any other folder as a group (see [Your own category and groups](#your-own-category-and-groups)). Groups can sit inside other groups; the outermost one is the item to review. Being in a group never hides anything: the Map and Search still reach every file and folder inside, with their own sizes.
 
 ### What a folder is made of
 
@@ -828,6 +828,18 @@ The detail panel shows each rule behind an entry's classification with a one-sen
 - **Veto:** the triage is review, and the files or folders that hold the folder back are listed with it.
 
 The rules are versioned, and each scan records the version it used (`rules-v2+markers-v3` in this release).
+
+### Your own category and groups
+
+When the rules get an entry wrong, you can correct them. Your choice always wins over the rules, and no rescan, rules change, or later release ever changes it; an item that goes missing and comes back keeps it.
+
+- **Category:** any file or folder can get one of the 16 categories. Its family and suggestion follow from it as for a rule category, and so does the veto: a folder you put in a disposable category that holds your own material is still suggested for review. **Back to the rules** removes your category.
+- **Review as one item:** any folder can be marked as a group, and a group the rules made can be unmarked; **As the rules say** gives the choice back to the rules. Without a mark, a folder is a group when its category (yours or the rules') is a group category, so a project you put in `documents` is no longer a group, and the folders above it count its files one by one under their own families.
+- **Archive members** cannot be changed: they are classified with their archive.
+
+The item itself reads its new category or group at once. The figures of the folders above it (their size by category and what stands out inside them), the review lists, and Gems follow when the scan of its disk that the change starts ends; if that disk is already being scanned, the scan runs once more. A disk that is not connected keeps the change, and its next scan applies it. The detail panel marks each value you set with **set by you** and says what the rules would set.
+
+Through the command API (see [Commands](#commands)): `set-category` with `{"entry_id":"12","category":"documents"}`, `{"entry_ids":[…]}` (1 to 1,000), or `{"selection_id":"…"}`, and `"category":"rules"` to remove yours; `set-group` with the same targets and `"group":true`, `false`, or `"rules"`. Both answer `{"applied":n,"scan":{"job_id","coalesced"}}`, or `"scan":null` when the disk is not connected. An archive member, a `set-group` on anything but a folder, and a category on a symbolic link or special file are refused with `invalid_request`, and a refused request changes nothing. Each accepted request writes one audit event, `category_set` or `group_set`, with the entries or selection, the old values (`rules` when the rules decided), and the new value.
 
 ## Duplicates and Compare
 
@@ -1220,7 +1232,7 @@ Clicking an item on the Map or in Search opens its details beside the screen, or
 - **A preview of a file,** without choosing Open: a photo scaled to the panel (click it to see it full size), a video or audio player, a PDF, or the first 40 lines of a text, source, or Markdown file. Other types offer the download. A file changed on disk since the last scan, or on a disk that is not connected, says so instead.
 - **For a folder, its size by category** (its composition) and **Inside this folder**, the notable entries below it with their category and size, each opening its own details. See [What a folder is made of](#what-a-folder-is-made-of).
 - **Size by file type and by year** for a folder.
-- **Classification:** the category, family, and suggestion, the traits, and one sentence per rule explaining why. A file no rule recognized reads "Not classified" and says which family its type counts under. When discard was held back because the folder holds your own material, the panel says so and lists the files that caused it, each a link to its details. See [Reading the explanations](#reading-the-explanations).
+- **Classification:** the category, family, and suggestion, the traits, and one sentence per rule explaining why. A file no rule recognized reads "Not classified" and says which family its type counts under. When discard was held back because the folder holds your own material, the panel says so and lists the files that caused it, each a link to its details. See [Reading the explanations](#reading-the-explanations). **Change category** sets your own category or goes back to the rules, and, for a folder, **Review as one item** offers As the rules say, Yes, and No. A value you set reads **set by you**, with what the rules would set beside it, and after a change the panel notes that the figures of the folders above update when the scan ends. See [Your own category and groups](#your-own-category-and-groups).
 - **Decision:** the item's own decision ("None: follows its folder" when it has none) and the one in force, with where it comes from: set on this item, inherited from a named folder (a link), or undecided because no folder above has a decision. The buttons Follow folder, Undecided, Keep, Discard, and Later set this item's own decision, even when it is kept; Follow folder removes it. See [Decisions](#decisions).
 - **Tags:** the item's own tags, each with a button to remove it, and the tags it inherits, each naming the folder it comes from. An inherited tag can be removed only at that folder. Add an existing tag from the list, or type a new name and choose **Create and add**; a name that already exists, in any letter case, is refused with a message.
 - **Technical details,** collapsed until opened: the entry ID, the source, the raw bytes of the name, and the raw path.

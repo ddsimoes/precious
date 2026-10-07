@@ -213,15 +213,22 @@ func TestScanUnknownTimes(t *testing.T) {
 }
 
 // compareWithSeed seeds the scanned tree of src with indextest into a new
-// source and compares every column both write.
+// source and compares every column both write. The owner's overrides of src
+// go with it (the scanned values are then effective ones, which the
+// overrides leave as they are); the tree must have none that a veto turns.
 func compareWithSeed(t *testing.T, e *env, src domain.SourceID) {
 	t.Helper()
 	scanned := e.entries(src)
+	owner, err := readOverrides(context.Background(), e.st.Reader(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var nodes []indextest.Node
 	for path, r := range scanned {
 		n := indextest.Node{Path: path, Kind: domain.EntryKind(r.Kind), Size: r.Size,
 			MTime: time.Unix(0, r.MTime.Int64).UTC(), LinkText: r.Link.String,
-			Unreadable: r.State == "unreadable", MountBoundary: r.Boundary, Group: r.Group}
+			Unreadable: r.State == "unreadable", MountBoundary: r.Boundary, Group: r.Group,
+			Owner: owner[domain.EntryID(r.ID)]}
 		if r.Kind == "special" {
 			n.Kind = domain.EntryKind(r.Special.String)
 		}
@@ -240,6 +247,9 @@ func compareWithSeed(t *testing.T, e *env, src domain.SourceID) {
 	seeded := e.entries("seed")
 	if len(seeded) != len(scanned) {
 		t.Fatalf("seeded %d rows, scanned %d", len(seeded), len(scanned))
+	}
+	if got, err := readOverrides(context.Background(), e.st.Reader(), "seed"); err != nil || len(got) != len(owner) {
+		t.Fatalf("seeded %d overrides, scanned %d (%v)", len(got), len(owner), err)
 	}
 	scannedIDs, seededIDs := pathsByID(scanned), pathsByID(seeded)
 	for path, s := range scanned {

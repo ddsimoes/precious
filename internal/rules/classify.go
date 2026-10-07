@@ -61,6 +61,10 @@ type Result struct {
 	Group, Veto bool
 	Rules       []string
 	Reason      string
+	// Folder and Indicated are facts ApplyOwner needs, not classification:
+	// only a folder is a group or vetoed, and the veto needs user material
+	// below the folder (FolderFacts.Indicators > 0).
+	Folder, Indicated bool
 }
 
 // groupCategories are the categories whose folders are groups (design D9).
@@ -120,11 +124,19 @@ func (p *Policy) ClassifyFolder(f FolderFacts) Result {
 			r.subtreeSignalsHold(f.SubtreeSignals) &&
 			(r.share == nil || r.share.holds(f.Bytes, func(k domain.FileKind) KindTotals { return f.ByKind[k] }))
 	})
+	res.Folder, res.Indicated = true, f.Indicators > 0
+	res.folderFlags()
+	return res
+}
+
+// folderFlags sets a folder's group flag from its category, and the veto
+// when its triage would be discard while user material is below it.
+func (res *Result) folderFlags() {
 	res.Group = groupCategories[res.Category]
-	if res.Triage == domain.TriageDiscard && f.Indicators > 0 {
+	res.Veto = false
+	if res.Triage == domain.TriageDiscard && res.Indicated {
 		res.Triage, res.Veto = domain.TriageReview, true
 	}
-	return res
 }
 
 // classify applies rules, sorted by priority, to one entry: the highest
@@ -132,37 +144,48 @@ func (p *Policy) ClassifyFolder(f FolderFacts) Result {
 // categories at that priority conflict, and traits are the union over every
 // matching rule.
 func (p *Policy) classify(rules []rule, match func(*rule) bool) Result {
-	var (
-		res    Result
-		top    = -1
-		review bool
-		traits uint8 // bit i: domain.Traits[i]
-	)
+	var t tally
 	for i := range rules {
-		r := &rules[i]
-		if !match(r) {
-			continue
-		}
-		decides := r.category != "" && (top < 0 || r.priority == top)
-		if decides {
-			switch {
-			case top < 0:
-				top, res.Category = r.priority, r.category
-			case r.category != res.Category:
-				res.Reason = ReasonConflictingRules
-			}
-			review = review || r.review
-		}
-		if !decides && len(r.traits) == 0 {
-			continue
-		}
-		res.Rules = append(res.Rules, r.id)
-		for _, t := range r.traits {
-			traits |= 1 << slices.Index(domain.Traits, t)
+		if r := &rules[i]; match(r) {
+			t.add(r)
 		}
 	}
+	return t.result()
+}
+
+// tally resolves the matching rules of one entry, offered highest priority
+// first, into a Result.
+type tally struct {
+	res    Result
+	top    int // the deciding priority; meaningful once decided
+	review bool
+	traits uint8 // bit i: domain.Traits[i]
+}
+
+func (t *tally) add(r *rule) {
+	decides := r.category != "" && (t.res.Category == "" || r.priority == t.top)
+	if decides {
+		switch {
+		case t.res.Category == "":
+			t.top, t.res.Category = r.priority, r.category
+		case r.category != t.res.Category:
+			t.res.Reason = ReasonConflictingRules
+		}
+		t.review = t.review || r.review
+	}
+	if !decides && len(r.traits) == 0 {
+		return
+	}
+	t.res.Rules = append(t.res.Rules, r.id)
+	for _, tr := range r.traits {
+		t.traits |= 1 << slices.Index(domain.Traits, tr)
+	}
+}
+
+func (t *tally) result() Result {
+	res := t.res
 	switch {
-	case top < 0:
+	case res.Category == "":
 		res.Category, res.Reason = domain.CategoryUnknown, ReasonNoRuleMatched
 	case res.Reason == ReasonConflictingRules:
 		res.Category = domain.CategoryUnknown
@@ -171,13 +194,65 @@ func (p *Policy) classify(rules []rule, match func(*rule) bool) Result {
 	}
 	res.Family = domain.FamilyOf(res.Category)
 	res.Triage = triageOf(res.Category)
-	if review {
+	if t.review {
 		res.Triage = domain.TriageReview
 	}
-	for i, t := range domain.Traits {
-		if traits&(1<<i) != 0 {
-			res.Traits = append(res.Traits, t)
+	for i, tr := range domain.Traits {
+		if t.traits&(1<<i) != 0 {
+			res.Traits = append(res.Traits, tr)
 		}
+	}
+	return res
+}
+
+// Recall rebuilds the rule result of an entry from what its scan stored
+// (r2b design D2): its rule IDs, highest priority first as Result.Rules
+// lists them, whether it is a folder, and whether user material is below
+// it. The rules that gave the category are the listed ones with a category
+// at the highest listed priority, so for IDs a scan under this policy
+// stored, Recall gives that scan's result. An ID this policy does not
+// define (a rule of earlier rules) is ignored.
+func (p *Policy) Recall(ruleIDs []string, folder, indicated bool) Result {
+	var t tally
+	for _, id := range ruleIDs {
+		if r := p.byID[id]; r != nil {
+			t.add(r)
+		}
+	}
+	res := t.result()
+	res.Folder, res.Indicated = folder, indicated
+	if folder {
+		res.folderFlags()
+	}
+	return res
+}
+
+// CategoryOf is the category the rules give an entry whose scan stored
+// ruleIDs: the deciding rules' category, or unknown when they conflict or
+// none decides.
+func (p *Policy) CategoryOf(ruleIDs []string) domain.Category {
+	return p.Recall(ruleIDs, false, false).Category
+}
+
+// ApplyOwner gives the owner's classification precedence over the rules'
+// (§6.6; r2b design D2), and is the only place that does. An owner category
+// replaces the category, and the family and triage follow from it as for a
+// rule category, the veto included: a folder whose triage would be discard
+// with user material below it gets review and the veto whoever set the
+// category. A folder's group flag is the owner's mark when set, otherwise
+// its effective category's. Traits, rule IDs, and the reason stay as the
+// rules observed them.
+func ApplyOwner(res Result, o domain.Override) Result {
+	if o.Category != "" {
+		res.Category = o.Category
+		res.Family = domain.FamilyOf(o.Category)
+		res.Triage = triageOf(o.Category)
+		if res.Folder {
+			res.folderFlags()
+		}
+	}
+	if res.Folder && o.Group != nil {
+		res.Group = *o.Group
 	}
 	return res
 }

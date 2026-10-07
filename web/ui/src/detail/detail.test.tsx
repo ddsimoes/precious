@@ -27,6 +27,9 @@ function setupExe(overrides: Partial<EntryDetail> = {}): EntryDetail {
       veto: false,
       rules: [{ id: 'installer-name', explain: 'Its name says it installs a program.' }],
       indicators: [],
+      owner: { category: null, group: null },
+      rules_category: 'installer_download',
+      rules_group: false,
     },
     intent: {
       decision: null,
@@ -85,7 +88,7 @@ describe('Detail panel', () => {
     expect(panel.getByText('Dec 24, 2004, 10:00 AM')).toBeInTheDocument()
 
     const classification = within(panel.getByRole('region', { name: 'Classification' }))
-    expect(classification.getByText('Installers and disk images')).toBeInTheDocument()
+    expect(classification.getByText('Installers and disk images', { selector: 'dd' })).toBeInTheDocument()
     expect(classification.getByText('Programs and system')).toBeInTheDocument()
     expect(classification.getByText('Its name says it installs a program.')).toBeInTheDocument()
 
@@ -139,6 +142,9 @@ describe('Detail panel', () => {
                   signal: 'editable_document_present',
                 },
               ],
+              owner: { category: null, group: null },
+              rules_category: 'application_installation',
+              rules_group: true,
             },
             stats: {
               dirs: 30,
@@ -176,7 +182,7 @@ describe('Detail panel', () => {
     ).toEqual(['20038 GiB · 850 files', '20061 GiB · 100 files', 'Unknown date1 GiB · 50 files'])
 
     const classification = within(panel.getByRole('region', { name: 'Classification' }))
-    expect(classification.getByText('Installed application')).toBeInTheDocument()
+    expect(classification.getByText('Installed application', { selector: 'dd' })).toBeInTheDocument()
     expect(classification.getByText('Review')).toBeInTheDocument()
     expect(classification.getByText('Contains personal material')).toBeInTheDocument()
     expect(classification.getByText('It holds a program and its support files.')).toBeInTheDocument()

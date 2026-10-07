@@ -16,6 +16,7 @@ import { ErrorBanner } from '@/app/ErrorBanner'
 import { CompareWith } from '@/compare/CompareWith'
 import { Button } from '@/components/ui/button'
 import { ArchiveNoteSection, ArchiveSection, CopiesSection, RelationsSection } from '@/detail/ContentSections'
+import { ClassificationControls } from '@/detail/ClassificationControls'
 import { DecisionControls } from '@/detail/DecisionControls'
 import { InsideList } from '@/detail/InsideList'
 import { Preview } from '@/detail/Preview'
@@ -297,6 +298,7 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
           <Fact label={t('detail.category')}>
             {withShare(t(`entry.category.${classification.category ?? 'unknown'}`), entry.composition, t, fmt)}
+            {classification.owner.category !== null && <SetByYou />}
           </Fact>
           {typeFamily !== null && (
             <Fact label={t('detail.family')}>
@@ -308,7 +310,24 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
             <Fact label={t('detail.suggestion')}>{t(`entry.triage.${classification.triage}`)}</Fact>
           )}
         </dl>
-        {classification.group && <p className="text-sm">{t('detail.group')}</p>}
+        {classification.owner.category !== null && classification.rules_category !== null && (
+          <p className="text-sm text-muted-foreground">
+            {t('detail.override.rulesSay', { value: t(`entry.category.${classification.rules_category}`) })}
+          </p>
+        )}
+        {(classification.group || classification.owner.group === false) && (
+          <p className="text-sm">
+            {classification.group ? t('detail.group') : t('detail.override.notGroup')}
+            {classification.owner.group !== null && <SetByYou />}
+          </p>
+        )}
+        {classification.owner.group !== null && (
+          <p className="text-sm text-muted-foreground">
+            {t('detail.override.rulesSay', {
+              value: classification.rules_group ? t('detail.override.rulesGroup') : t('detail.override.rulesNoGroup'),
+            })}
+          </p>
+        )}
         {classification.traits.length > 0 && (
           <ul aria-label={t('detail.traits')} className="flex flex-wrap gap-1 text-xs">
             {classification.traits.map((trait) => (
@@ -352,6 +371,9 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
               </ul>
             )}
           </div>
+        )}
+        {!member && (entry.kind === 'file' || folder) && (
+          <ClassificationControls key={entry.id} entry={entry} classification={classification} />
         )}
       </Section>
 
@@ -439,5 +461,16 @@ function Notice({ children }: { children: ReactNode }) {
     <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm">
       {children}
     </p>
+  )
+}
+
+// SetByYou marks a classification value the owner set.
+function SetByYou() {
+  const { t } = useTranslation()
+  return (
+    <>
+      {' '}
+      <span className="ml-1 rounded-full bg-secondary px-2 py-0.5 text-xs font-medium">{t('detail.override.setByYou')}</span>
+    </>
   )
 }

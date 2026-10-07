@@ -17,6 +17,7 @@ import (
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/jobs"
+	"precious/internal/rules"
 )
 
 // api serves the command handler with select-list and the decisions
@@ -34,7 +35,7 @@ func newAPI(t *testing.T, w *world) *api {
 		t.Fatal(err)
 	}
 	h := commands.New(commands.Options{Store: w.st, Jobs: r, Logger: logger})
-	svc := decisions.New(clock.Real{})
+	svc := decisions.New(clock.Real{}, rules.Default(), nil)
 	decisions.RegisterCommands(h, svc)
 	RegisterCommands(h, svc)
 	mux := http.NewServeMux()

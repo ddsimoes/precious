@@ -19,10 +19,12 @@ import (
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/fsaccess/synthfs"
+	"precious/internal/index"
 	"precious/internal/index/indextest"
 	"precious/internal/jobs"
 	"precious/internal/relations"
 	"precious/internal/review"
+	"precious/internal/rules"
 )
 
 // contentWorld is the regression corpus scanned as source "corpus", with
@@ -105,7 +107,7 @@ func (w *contentWorld) commands(t *testing.T) *http.ServeMux {
 		t.Fatal(err)
 	}
 	h := commands.New(commands.Options{Store: w.st, Jobs: r, Logger: logger})
-	decisions.RegisterCommands(h, decisions.New(clock.Real{}))
+	decisions.RegisterCommands(h, decisions.New(clock.Real{}, rules.Default(), index.StartScan))
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/commands/{name}", h)
 	return mux

@@ -145,7 +145,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		runner:    runner,
 		sources:   srcs,
 		policy:    pol,
-		decisions: decisions.New(d.Clock),
+		decisions: decisions.New(d.Clock, pol, index.StartScan),
 		hashing:   hashing,
 		spa:       shell,
 	})

@@ -20,6 +20,8 @@ const (
 	CommandRenameTag       = "rename-tag"
 	CommandDeleteTag       = "delete-tag"
 	CommandCreateSelection = "create-selection"
+	CommandSetCategory     = "set-category"
+	CommandSetGroup        = "set-group"
 )
 
 // RegisterCommands installs this package's commands on h, applied by s.
@@ -30,6 +32,8 @@ func RegisterCommands(h *commands.Handler, s *Service) {
 	h.Register(CommandRenameTag, func(body []byte) (commands.Operation, error) { return decodeRenameTag(s, body) })
 	h.Register(CommandDeleteTag, func(body []byte) (commands.Operation, error) { return decodeDeleteTag(s, body) })
 	h.Register(CommandCreateSelection, func(body []byte) (commands.Operation, error) { return decodeCreateSelection(s, body) })
+	h.Register(CommandSetCategory, func(body []byte) (commands.Operation, error) { return decodeSetCategory(s, body) })
+	h.Register(CommandSetGroup, func(body []byte) (commands.Operation, error) { return decodeSetGroup(s, body) })
 }
 
 // op is a decoded command: its canonical body and its effect.
@@ -75,7 +79,7 @@ func (p *entryIDs) one(s string) domain.EntryID {
 	if err != nil {
 		if ref, rerr := domain.ParseRef(s); rerr == nil && ref.IsMember() {
 			err = domain.Errorf(domain.CodeInvalidRequest,
-				"%s is a member of an archive, which is decided and tagged with its archive", s)
+				"%s is a member of an archive, which is decided, tagged, and classified with its archive", s)
 		}
 		if p.err == nil {
 			p.err = err
@@ -183,6 +187,98 @@ func decodeSetTags(s *Service, body []byte) (commands.Operation, error) {
 			return 0, nil, err
 		}
 		return http.StatusOK, appliedResponse{Applied: n}, nil
+	})
+}
+
+// set-category: {"entry_id"|"entry_ids"|"selection_id", "category": one of
+// the sixteen or "rules"}; set-group: the same targets with "group": true,
+// false, or "rules". Each answers {"applied":n,"scan":{"job_id","coalesced"}}
+// with the scan of the targets' source that brings folder figures up to
+// date, or "scan":null when the source is offline (r2b design D5).
+
+type setCategoryRequest struct {
+	EntryID     string   `json:"entry_id,omitempty"`
+	EntryIDs    []string `json:"entry_ids,omitempty"`
+	SelectionID string   `json:"selection_id,omitempty"`
+	Category    string   `json:"category"`
+}
+
+type setGroupRequest struct {
+	EntryID     string          `json:"entry_id,omitempty"`
+	EntryIDs    []string        `json:"entry_ids,omitempty"`
+	SelectionID string          `json:"selection_id,omitempty"`
+	Group       json.RawMessage `json:"group"`
+}
+
+type scanJSON struct {
+	JobID     string `json:"job_id"`
+	Coalesced bool   `json:"coalesced"`
+}
+
+type ownerResponse struct {
+	Applied int       `json:"applied"`
+	Scan    *scanJSON `json:"scan"`
+}
+
+func ownerResult(res OwnerResult, err error) (int, any, error) {
+	if err != nil {
+		return 0, nil, err
+	}
+	out := ownerResponse{Applied: res.Applied}
+	if res.Scan != nil {
+		out.Scan = &scanJSON{JobID: res.Scan.JobID, Coalesced: res.Scan.Coalesced}
+	}
+	return http.StatusOK, out, nil
+}
+
+func decodeSetCategory(s *Service, body []byte) (commands.Operation, error) {
+	var (
+		w   setCategoryRequest
+		req SetCategory
+	)
+	check := func() error {
+		var ids entryIDs
+		req = SetCategory{EntryID: ids.one(w.EntryID), EntryIDs: ids.all(w.EntryIDs), SelectionID: w.SelectionID}
+		switch w.Category {
+		case "":
+			return domain.Errorf(domain.CodeInvalidRequest, `category is required: one of the sixteen categories, or "rules"`)
+		case "rules":
+		default:
+			req.Category = domain.Category(w.Category)
+		}
+		if err := req.Validate(); err != nil {
+			return err
+		}
+		return ids.err
+	}
+	return newOp(body, &w, check, func(ctx context.Context, tx *jobs.Tx) (int, any, error) {
+		return ownerResult(s.SetCategory(ctx, tx, req))
+	})
+}
+
+func decodeSetGroup(s *Service, body []byte) (commands.Operation, error) {
+	var (
+		w   setGroupRequest
+		req SetGroup
+	)
+	check := func() error {
+		var ids entryIDs
+		req = SetGroup{EntryID: ids.one(w.EntryID), EntryIDs: ids.all(w.EntryIDs), SelectionID: w.SelectionID}
+		switch string(w.Group) {
+		case "true", "false":
+			mark := string(w.Group) == "true"
+			req.Group = &mark
+		case `"rules"`:
+		default:
+			return domain.Errorf(domain.CodeInvalidRequest, `group must be true, false, or "rules"`)
+		}
+		if err := req.Validate(); err != nil {
+			return err
+		}
+		return ids.err
+	}
+	return newOp(body, &w, check, func(ctx context.Context, tx *jobs.Tx) (int, any, error) {
+		return ownerResult(s.SetGroup(ctx, tx, req))
 	})
 }
 
