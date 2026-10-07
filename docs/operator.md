@@ -939,6 +939,8 @@ Every entry row carries its name and path twice: `name` and `path` are the escap
 
 Every entry row also carries `composition`, its bytes and files by family as a list such as `[{"family":"personal","bytes":400000000000,"files":7},{"family":"programs","bytes":6000000000,"files":5}]`: a folder's composition, or for a file one element under its family. Families with nothing in them are left out. See [What a folder is made of](#what-a-folder-is-made-of).
 
+The detail of `GET /api/entries/{id}` also helps the Map shorten paths and explain archives. Each folder in `ancestors` has `only_child`, true when it holds nothing but the next one (the entry itself for its parent). `only_folder` is the ID of a folder's only item when that item is a folder, and `null` otherwise. `archive_note` says why an archive file has no `archive`: `unsupported` for a format Precious recognizes but does not open (7z, rar, xz, cab, jar, and the like), `nested` for an archive inside an archive, `not_listed` for a format it opens that was not listed yet, and `null` for anything else. Items in every state count, as in the children list.
+
 Children are sorted with `sort=bytes`, `files`, `newest` (the newest change inside a folder), or `name`, and with `order=desc` or `asc`. By default the sort is by bytes, largest first. A sort by name defaults to ascending and compares the raw bytes of the names, so `Zeta` comes before `alfa`. A page holds 200 rows unless `limit` asks for another number, and never more than 1,000. A page with more after it carries `next_cursor`, and the same request with `cursor=` set to it gives the next page. A cursor belongs to the folder's order: changing `sort` or `order` needs a new first page. A cursor holds the position of the last row, not a row count. So a row added or removed while you page does not shift the other rows: a new row is listed only when it sorts after the current page. A row whose size or date a scan changes may move to a page already read.
 
 Errors use the usual envelope, `{"error":{"code","message"}}`:
@@ -1136,14 +1138,15 @@ The Sources screen lists each source with its state (online, offline, or unavail
 
 ### Map
 
-The Map answers "where is my space?" for one folder at a time. The Map link opens the top folder of the first source; with no source yet, it points to the Sources screen. The folder's path is shown above, each part a link back up.
+The Map answers "where is my space?" for one folder at a time. The Map link opens the source in the address, or else the source you last chose on Home, Opportunities, Gems, or Search, in this browser, or else the first source; with no source yet, it points to the Sources screen. When a source's top folder holds only one folder, which holds only one folder, and so on, the Map opens on the first folder that holds more, and Back leaves the Map. The folder's path is shown above, each part a link back up; a chain of folders that each hold only the next is one part, such as `old-disk/home`, which opens the deepest of them.
 
-- **The treemap** draws each item of the folder as an area sized by its bytes, folders counting everything inside them. It draws the 300 largest items; the rest of a large folder is one gray area labeled with how many items it holds and their size, such as "700 more items, 3 GiB". That area does not open: the table lists every item.
+- **The treemap** draws each item of the folder as an area sized by its bytes, folders counting everything inside them. It draws the 300 largest items; the rest of a large folder is one gray area labeled with how many items it holds, such as "700 smaller items: see the table". Clicking it sorts the table by size and moves the keyboard focus to it, where every item is listed.
 - **The table** lists every item of the folder with its name, size, file count (for folders, everything inside), type or category, the range of modification dates, the suggestion of the rules, and the decision. Under each folder's size, a thin bar shows its composition in the family colors; when at least 1% of a folder's bytes belongs to another family, the category also gives the main family's share, such as "Personal media · 98% personal" (see [What a folder is made of](#what-a-folder-is-made-of)). A decision followed from a folder above reads like "Keep (inherited)". Click a column title (Name, Size, Files, Changed) to sort by it, and click it again to reverse the order. Scrolling down loads more rows; a Load more button does the same. In a narrow window the table hides the Changed column first, then Suggestion, Decision, and Files, and scrolls sideways inside its frame if it still does not fit.
 - **The two follow each other:** pointing at a row outlines its area, and pointing at an area highlights its row.
 - **Clicking a folder's area or its name** opens that folder in both. Clicking a file's area or any row opens the [detail panel](#the-detail-panel) for it.
 - **Color by** paints the areas by category family, file type, age (time since the last change), decision, or tag (choose the tag next to it). By family, each area takes the family holding most of its bytes, so a photo no rule recognized is still Personal and valuable. The legend names each color.
 - **Search in this folder** opens Search limited to the folder.
+- **The keyboard** works in the table, as in the review lists: the up and down arrows move the selected row and open its details, scrolling the table; Enter opens the selected folder, or shows the selected file in the viewer; Escape closes the details. With no row selected, the down arrow selects the first row and the up arrow the last. The keys do nothing while you type in a field, inside a dialog, or in the detail panel, which handles its own keys.
 
 The address keeps the folder, the order, the coloring, and the open details, so it can be bookmarked or reloaded.
 
@@ -1183,7 +1186,11 @@ Clicking an item on the Map or in Search opens its details beside the screen, or
 - **Tags:** the item's own tags, each with a button to remove it, and the tags it inherits, each naming the folder it comes from. An inherited tag can be removed only at that folder. Add an existing tag from the list, or type a new name and choose **Create and add**; a name that already exists, in any letter case, is refused with a message.
 - **Technical details,** collapsed until opened: the entry ID, the source, the raw bytes of the name, and the raw path.
 
-**Show in Map** opens the item's folder on the Map, **Search in this folder** limits Search to a folder, and **Open** shows a file in the viewer.
+**Show in Map** opens the item's folder on the Map, **Search in this folder** limits Search to a folder, and **Open** shows a file in the viewer. For an archive Precious read completely, the main button is **Open as a folder**, which browses its items on the Map; Open comes second, and Show in Map shows the folder that holds the archive.
+
+**Archives that were not opened** say why in their **Archive** section: their format is one Precious does not open, such as 7z or rar; they are inside another archive; they were not read yet; or reading stopped (encrypted, damaged, over the limits). Either way, what is inside is not checked for copies.
+
+Closing the viewer or a confirmation, with Escape or a button, puts the keyboard focus back on the control that opened it. So Escape closes the viewer, and a second Escape closes the details.
 
 ### The viewer
 
