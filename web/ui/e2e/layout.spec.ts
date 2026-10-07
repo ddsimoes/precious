@@ -8,7 +8,7 @@ import { adminPassword, corpusPath, origin } from './env'
 
 // Screens fit the window (design D23): at 1366×768 and 1920×1080, on the Map
 // (with and without the detail panel), on Search, on the panel itself, and
-// on Opportunities, a review list, Compare, and Gems, nothing extends past
+// on Opportunities, a review list, and Compare, nothing extends past
 // its card or the window and no two controls overlap. Each screen is also
 // saved under test-results/layout/ for review.
 //
@@ -163,7 +163,7 @@ for (const viewport of viewports) {
     await checkLayout(`search-panel-file-${size}`)
   })
 
-  test(`Opportunities, a review list, Compare, and Gems fit at ${size}`, async () => {
+  test(`Opportunities, a review list, and Compare fit at ${size}`, async () => {
     await page.setViewportSize(viewport)
     await page.goto('/opportunities')
     await expect(page.getByRole('list', { name: 'Opportunity cards' }).getByRole('listitem')).toHaveCount(7)
@@ -186,12 +186,6 @@ for (const viewport of viewports) {
     await page.goto(`/compare?left=${fotos.id}&right=${copy.id}&bucket=identical`)
     await expect(page.getByRole('list', { name: 'Files: Identical' }).locator(':scope > li').first()).toBeVisible()
     await checkLayout(`compare-${size}`)
-
-    await page.goto('/gems')
-    for (const name of ['Personal files with no other copy', 'Files in only one of two similar folders']) {
-      await expect(page.getByRole('list', { name }).locator(':scope > li').first()).toBeVisible()
-    }
-    await checkLayout(`gems-${size}`)
   })
 }
 

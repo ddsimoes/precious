@@ -17,11 +17,10 @@ import { BulkReport, SelectAllDialog, type Report } from '@/components/BulkSelec
 import { Button } from '@/components/ui/button'
 import { useFormat } from '@/lib/format'
 
-// ListSelectAll selects every open row of a review list or Gems section
-// through select-list (R2 design D13), and then works as Search's "select
-// all results": the owner confirms the count, bytes, and kept entries, sets
-// a decision on the selection, which skips kept entries, and reads the
-// report.
+// ListSelectAll selects every open row of a review list through select-list
+// (R2 design D13), and then works as Search's "select all results": the
+// owner confirms the count, bytes, and kept entries, sets a decision on the
+// selection, which skips kept entries, and reads the report.
 export function ListSelectAll({ list, source }: { list: SelectableList; source: string | null }) {
   const { t } = useTranslation()
   const fmt = useFormat()

@@ -7,7 +7,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { useFormat } from '@/lib/format'
 
 // The confirmation and report of a bulk change, shared by Search and the
-// lists of Opportunities and Gems (design D10, R2 D13).
+// lists of Opportunities (design D10, R2 D13).
 
 export type Report = { kind: 'decision'; result: SetDecisionResult } | { kind: 'tags'; result: SetTagsResult }
 

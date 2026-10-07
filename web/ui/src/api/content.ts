@@ -127,7 +127,6 @@ export function checkNow(refs: string[], csrfToken: string): Promise<{ jobs: Sta
 // The query roots of the responses built from duplicates. Each module keys
 // its responses under its root.
 export const opportunitiesQueryRoot = ['opportunities'] as const
-export const gemsQueryRoot = ['gems'] as const
 export const compareQueryRoot = ['compare'] as const
 
 // duplicatesQueryRoots are every response that shows duplicates or content
@@ -135,7 +134,6 @@ export const compareQueryRoot = ['compare'] as const
 // relations ends.
 export const duplicatesQueryRoots = [
   opportunitiesQueryRoot,
-  gemsQueryRoot,
   compareQueryRoot,
   entriesQueryRoot,
   searchQueryRoot,
@@ -144,7 +142,7 @@ export const duplicatesQueryRoots = [
 
 // applyJobEventToDuplicates refetches every response that shows duplicates
 // when a hashing job or a recomputation of relations ends: content states,
-// copies, relations, cards, and Gems may have changed.
+// copies, relations, and cards may have changed.
 export function applyJobEventToDuplicates(queryClient: QueryClient, event: JobEvent) {
   if ((!isHashKind(event.kind) && event.kind !== relateKind) || !isTerminal(event.state)) {
     return

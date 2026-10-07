@@ -160,6 +160,55 @@ describe('Opportunities', () => {
     expect(cards[2]).not.toHaveTextContent(/decided|0\sB/)
   })
 
+  it('puts the rescue card first while it has open rows, headed by its item count', async () => {
+    stubApi({
+      ...base,
+      'GET /api/opportunities': (request) =>
+        jsonResponse(200, {
+          cards:
+            new URL(request.url).searchParams.get('source') === 'fotos'
+              ? [
+                  card('rescue', 0, 0, { decided_rows: 1, decided_bytes: 20 * 1024 }),
+                  card('installers', 1 * GiB, 3),
+                  card('caches', 2 * GiB, 4),
+                ]
+              : [card('caches', 2 * GiB, 4), card('installers', 1 * GiB, 3), card('rescue', 20 * 1024, 1)],
+          coverage: coverage(),
+          computed_at: '2026-10-06T10:00:00Z',
+        }),
+    })
+    renderApp('/opportunities')
+    const user = userEvent.setup()
+    const titles = () =>
+      within(screen.getByRole('list', { name: 'Opportunity cards' }))
+        .getAllByRole('link')
+        .map((link) => link.textContent)
+
+    const cards = within(await screen.findByRole('list', { name: 'Opportunity cards' })).getAllByRole('listitem')
+    expect(titles()).toEqual([
+      'Your files inside programs',
+      'Caches, temporary files, and build output',
+      'Old installers, disk images, and downloads',
+    ])
+    expect(cards[0]).toHaveTextContent(/^Your files inside programs1 itemYour own documents, photos, and saves/)
+    expect(cards[0]).not.toHaveTextContent('20 KiB')
+    expect(cards[0]).toHaveTextContent('Based on the rules')
+    expect(within(cards[0]!).getByRole('link')).toHaveAttribute('href', '/opportunities/rescue')
+
+    // With nothing open, it ranks by its bytes like the other cards.
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Source' }), 'Fotos')
+    await waitFor(() =>
+      expect(titles()).toEqual([
+        'Caches, temporary files, and build output',
+        'Old installers, disk images, and downloads',
+        'Your files inside programs',
+      ]),
+    )
+    expect(within(screen.getByRole('list', { name: 'Opportunity cards' })).getAllByRole('listitem')[2]).toHaveTextContent(
+      /^Your files inside programsNothing left to review1 decided \(20 KiB\)/,
+    )
+  })
+
   it('links to the similar folders of the chosen source', async () => {
     stubApi({
       ...base,
@@ -268,6 +317,64 @@ describe('Review list', () => {
       '400 MiB 1 item to review · Based on the rules',
     )
     expect(screen.getByRole('button', { name: 'Select all rows' })).toBeInTheDocument()
+  })
+
+  it('names the group a rescue row sits inside, links it on the Map, and selects all', async () => {
+    const office = folderRow('40', 'Microsoft Office', {
+      path: 'Backup_PC_2004/C/Arquivos de programas/Microsoft Office',
+      category: 'application_installation',
+      family: 'programs',
+      triage: 'review',
+      decision: 'discard',
+      eff_decision: 'discard',
+    })
+    const budget = entryRow({
+      id: '41',
+      name: 'Meu orcamento casamento.xls',
+      path: `${office.path}/OFFICE11/Meu orcamento casamento.xls`,
+      file_kind: 'document',
+      category: 'documents',
+      family: 'personal',
+      triage: 'keep',
+      size: 20 * 1024,
+      total_bytes: 20 * 1024,
+      eff_decision: 'discard',
+    })
+    const requests = stubApi({
+      ...base,
+      'GET /api/opportunities/rescue': () =>
+        jsonResponse(200, {
+          card: card('rescue', 60 * 1024, 3),
+          items: [reviewRow('r41', budget, { group: office })],
+          next_cursor: null,
+        }),
+      'POST /api/commands/select-list': () =>
+        jsonResponse(201, {
+          selection_id: 's1',
+          count: 3,
+          bytes: 60 * 1024,
+          kept: { count: 0, bytes: 0 },
+          expires_at: '2026-10-06T11:00:00Z',
+        }),
+    })
+    renderApp('/opportunities/rescue')
+    const user = userEvent.setup()
+
+    const rows = within(await screen.findByRole('list', { name: 'Rows of Your files inside programs' }))
+    const row = rows.getAllByRole('listitem')[0]!
+    expect(within(row).getByRole('link', { name: budget.path })).toHaveAttribute('href', '/opportunities/rescue?entry=41')
+    expect(within(row).getByText(/^Inside/)).toHaveTextContent(`Inside ${office.path}`)
+    expect(within(row).getByRole('link', { name: office.path })).toHaveAttribute('href', '/map/40?entry=40')
+    // An inherited discard keeps the row open, and reads as inherited.
+    expect(row).toHaveTextContent('Decision: Discard')
+    const decision = within(within(row).getByRole('group', { name: 'Decision for Meu orcamento casamento.xls' }))
+    expect(decision.getByRole('button', { name: 'Follow folder' })).toHaveAttribute('aria-pressed', 'true')
+    // The card's item count heads the list.
+    expect(screen.getByText(/Based on the rules/)).toHaveTextContent('3 items Based on the rules')
+
+    await user.click(screen.getByRole('button', { name: 'Select all rows' }))
+    expect(await screen.findByRole('alertdialog', { name: 'Select every row of this list?' })).toBeInTheDocument()
+    expect(await commandBodies(requests, 'select-list')).toEqual([{ list: 'rescue' }])
   })
 
   it('decides and moves from the keyboard, but not while typing or in a dialog', async () => {

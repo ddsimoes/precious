@@ -105,3 +105,10 @@ Stays:
   - that `PRAGMA foreign_key_check` is empty;
   - that the indexes exist.
 - [Owner bookmarks of `/gems`] → They land on not-found; there is one owner, who chose the removal.
+
+## Addendum: decisions made during implementation
+
+- **U1.** `CardList` (Home and Opportunities) keeps ranking the cards itself, as D3 does: the rescue card first while it has open rows, then by open bytes. The server's order and the UI's agree, and the UI test still feeds the cards unordered.
+- **U2.** The rescue card heads with "1 item" / "N items" through the zero-bytes path, since a row can be a saves folder. Like those cards, it shows no rows line and no open bytes. Its decided line keeps its bytes.
+- **U3.** "Inside <group path>" links to `/map/<group>?entry=<group>`, the folder's place on the Map with its details, as the panel's "Show in Map" does for a folder. The row's own path still opens the detail panel in place.
+- **U4.** The e2e R2.7 test read a file with no other copy from the Gems truth. It now picks a file of `Documentos` that no duplicate group of the ground truth holds.

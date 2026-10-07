@@ -478,7 +478,8 @@ const targetClass = 'rounded-lg border bg-card p-3 text-sm focus:outline-none fo
 // EntryReviewRow is a row of every list but duplicates: an outermost entry
 // that matches the card, with its size, dates, suggestion, summary, and
 // decision controls. An unpacked archive also names the folder it was
-// unpacked in, with a Compare of the two.
+// unpacked in, with a Compare of the two; a rescue row names the group it
+// sits inside, linked to that group on the Map.
 function EntryReviewRow({ row, section, cursorKey, onSelect }: RowProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -530,6 +531,22 @@ function EntryReviewRow({ row, section, cursorKey, onSelect }: RowProps) {
           </p>
           <CompareLink left={entry.id} right={row.relation.other.id} />
         </div>
+      )}
+      {row.group !== null && (
+        <p className="min-w-0 break-all">
+          <Trans
+            i18nKey="review.inside"
+            values={{ path: row.group.path }}
+            components={{
+              groupLink: (
+                <Link
+                  to={{ pathname: `/map/${row.group.id}`, search: `?entry=${row.group.id}` }}
+                  className="text-primary hover:underline"
+                />
+              ),
+            }}
+          />
+        </p>
       )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span>{t('review.decision', { decision: t(`home.decision.${entry.eff_decision}`) })}</span>

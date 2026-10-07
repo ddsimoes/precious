@@ -568,11 +568,16 @@ test('R2.8: a photo inside the pendrive zip opens in the viewer', async () => {
 })
 
 test('R2.7: a file with no other copy says so, with the checked share', async () => {
-  const gem = corpus.gems.unique.find((g) => parent(g.path) === 'Documentos' && g.copies === 1)
-  if (gem === undefined) {
-    throw new Error('the ground truth has no unique file in Documentos')
+  // A file of Documentos whose content is in no duplicate group of the
+  // ground truth has no other copy.
+  const copied = new Set(corpus.duplicates.flatMap((d) => d.copies.map((c) => c.path)))
+  const single = truth.find(
+    (e) => parent(e.path) === 'Documentos' && e.sha256 !== undefined && (e.size ?? 0) > 0 && !copied.has(e.path),
+  )
+  if (single === undefined) {
+    throw new Error('the ground truth has no file with no other copy in Documentos')
   }
-  const name = gem.path.slice('Documentos/'.length)
+  const name = single.path.slice('Documentos/'.length)
   const home: { coverage: Coverage } = await (await page.request.get('/api/home')).json()
   const share = formatPercent(home.coverage.checked.bytes / home.coverage.candidate.bytes, 'en')
   await openFolder('Documentos')
@@ -706,43 +711,6 @@ test('R2.5: every card’s bytes equal the sum of its review list over all pages
     }
     await expect(list.locator(':scope > li'), label).toHaveCount(card.rows)
   }
-})
-
-test('R2.6: Gems lists the ground truth’s unique personal files, the rescued spreadsheet, and the edited photo', async () => {
-  const unique = await allPages<{ entry: { path: string } }>('/api/gems', { section: 'unique', limit: '5' })
-  expect(unique.items.map((g) => g.entry.path)).toEqual(corpus.gems.unique.map((g) => g.path))
-  const rescue = await allPages<{ entry: { path: string } }>('/api/gems', { section: 'rescue', limit: '5' })
-  expect(rescue.items.map((g) => g.entry.path)).toEqual(corpus.gems.rescue.map((g) => g.path))
-  const onlyInCopy = await allPages<{ entry: { path: string } }>('/api/gems', { section: 'only_in_copy', limit: '5' })
-  expect(onlyInCopy.items.map((g) => g.entry.path)).toEqual(
-    expect.arrayContaining(corpus.gems.only_in_copy.map((g) => g.path)),
-  )
-  const spreadsheet = corpus.gems.rescue.find((g) => g.path.endsWith('/Meu orcamento casamento.xls'))
-  const edited = corpus.gems.only_in_copy.find((g) => g.path.endsWith('/DSC_editada.JPG'))
-  if (spreadsheet?.group === undefined || edited === undefined) {
-    throw new Error('the ground truth lacks the rescued spreadsheet or the edited photo')
-  }
-  const home: { coverage: Coverage } = await (await page.request.get('/api/home')).json()
-  const claim = `On all disks, ${formatPercent(home.coverage.checked.bytes / home.coverage.candidate.bytes, 'en')} of what could have a copy is checked.`
-
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Gems' }).click()
-  const sections = Object.values(en.gems.section).map((title) => page.getByRole('region', { name: title }))
-  for (const section of sections) {
-    await expect(section.getByText(claim)).toBeVisible()
-  }
-  const [first, second, third] = sections
-  const firstList = first?.getByRole('list', { name: en.gems.section.unique }) ?? page.locator('none')
-  const more = first?.getByRole('button', { name: 'Load more' }) ?? page.locator('none')
-  await expect(firstList.locator(':scope > li').first()).toBeVisible()
-  while (await more.isVisible()) {
-    await more.click()
-  }
-  await expect(firstList.locator(':scope > li > div:first-child > a')).toHaveText(
-    corpus.gems.unique.map((g) => g.path),
-  )
-  const rescued = second?.getByRole('listitem').filter({ has: page.getByRole('link', { name: spreadsheet.path, exact: true }) })
-  await expect(rescued ?? page.locator('none')).toContainText(`Inside ${spreadsheet.group.path}`)
-  await expect(third?.getByRole('link', { name: edited.path, exact: true }) ?? page.locator('none')).toBeVisible()
 })
 
 test('review keys decide and move through the system junk list', async () => {

@@ -10,7 +10,7 @@ import { sessionQueryKey } from '@/app/session'
 
 // liveQueryRoots are the cached responses that job events keep current:
 // sources, and everything built from the index and its duplicates (Home,
-// entries, Search, Opportunities, Gems, and Compare). They are fetched again
+// entries, Search, Opportunities, and Compare). They are fetched again
 // whenever events may have been missed.
 const liveQueryRoots: QueryKey[] = [sourcesQueryKey, ...duplicatesQueryRoots]
 

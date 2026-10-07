@@ -14,7 +14,6 @@ export const en = {
     search: 'Search',
     sources: 'Sources',
     opportunities: 'Opportunities',
-    gems: 'Gems',
     signOut: 'Sign out',
     signOutFailed: 'Signing out did not complete. Try again.',
   },
@@ -35,7 +34,6 @@ export const en = {
     search: 'Search',
     sources: 'Sources',
     opportunities: 'Opportunities',
-    gems: 'Gems',
     compare: 'Compare',
     notFound: 'Page not found',
   },
@@ -706,6 +704,7 @@ export const en = {
       content: 'Based on the same content',
     },
     list: {
+      rescue: 'Your files inside programs',
       duplicates: 'Duplicate folders and files',
       unpacked_archives: 'Archives already unpacked',
       system_junk: 'System junk',
@@ -715,6 +714,8 @@ export const en = {
       leftovers: 'Partial downloads, empty folders, and empty files',
     },
     help: {
+      rescue:
+        'Your own documents, photos, and saves found inside program or disposable folders. Rescue them before cleaning those folders.',
       duplicates: 'Folders with the same content, and files with more than one copy.',
       unpacked_archives: 'Archives whose content is also in a folder.',
       system_junk: 'Files the system makes and remakes, such as thumbnails and recycle bins.',
@@ -787,6 +788,7 @@ export const en = {
     copiesList: 'Copies',
     compare: 'Compare',
     unpackedIn: 'Unpacked in <folderLink>{{path}}</folderLink>',
+    inside: 'Inside <groupLink>{{path}}</groupLink>',
     memberDecision: 'Decided with its archive',
     selectAll: 'Select all rows',
     selectingAll: 'Counting…',
@@ -823,23 +825,5 @@ export const en = {
     showInMap: 'Show in Map',
     extraCopyOfLeft: 'Extra copy, same as <twinLink>{{path}}</twinLink> on the left',
     extraCopyOfRight: 'Extra copy, same as <twinLink>{{path}}</twinLink> on the right',
-  },
-  gems: {
-    sections: 'Gems',
-    section: {
-      unique: 'Personal files with no other copy',
-      rescue: 'Personal material inside programs and disposable folders',
-      only_in_copy: 'Files in only one of two similar folders',
-    },
-    help: {
-      unique: 'Photos, videos, music, and documents with no other copy anywhere, oldest first.',
-      rescue: 'Your own files found where the rest is programs or disposable data.',
-      only_in_copy: 'Files with no other copy, in a folder that is otherwise much like another.',
-    },
-    unchecked_one: '{{formatted}} file not checked yet is not listed.',
-    unchecked_other: '{{formatted}} files not checked yet are not listed.',
-    inside: 'Inside <groupLink>{{path}}</groupLink>',
-    notIn: 'Not in <otherLink>{{path}}</otherLink>',
-    empty: 'Nothing found.',
   },
 } as const

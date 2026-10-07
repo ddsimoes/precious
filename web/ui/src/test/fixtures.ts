@@ -186,6 +186,7 @@ export function reviewRow(id: string, entry: EntryRow | null, overrides: Partial
     entry,
     relation: null,
     copies: null,
+    group: null,
     summary: {
       category: entry?.category ?? null,
       years: [2003, 2004],
