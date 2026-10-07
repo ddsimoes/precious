@@ -90,3 +90,31 @@ func readChildren(ctx context.Context, stmt *sql.Stmt, id domain.EntryID, into m
 	}
 	return rows.Err()
 }
+
+// readOverrides returns the owner's overrides of source's entries by entry
+// ID (r2b design D1); there are usually few.
+func readOverrides(ctx context.Context, q *sql.DB, source domain.SourceID) (map[domain.EntryID]domain.Override, error) {
+	rows, err := q.QueryContext(ctx, `SELECT o.entry_id, o.category, o.group_mark FROM entry_overrides o
+		JOIN entries e ON e.id = o.entry_id WHERE e.source_id = ?`, string(source))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[domain.EntryID]domain.Override{}
+	for rows.Next() {
+		var (
+			id       domain.EntryID
+			category text
+			mark     sql.NullBool
+		)
+		if err := rows.Scan(&id, &category, &mark); err != nil {
+			return nil, err
+		}
+		o := domain.Override{Category: domain.Category(category)}
+		if mark.Valid {
+			o.Group = &mark.Bool
+		}
+		out[id] = o
+	}
+	return out, rows.Err()
+}

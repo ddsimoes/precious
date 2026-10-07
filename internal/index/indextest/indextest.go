@@ -23,6 +23,11 @@
 //     no files.
 //   - category, family (FamilyOf(category)), and triage are written only when
 //     the node names a category or triage; is_group is the node's Group.
+//   - A node's Owner is the owner's override (r2b design D1): it is written
+//     as its entry_overrides row, and wins over the node's Category, Triage,
+//     and Group through rules.ApplyOwner, as a scan applies it, before
+//     anything above reads them (no folder has indicators here, so no
+//     veto).
 //   - Every folder has a dir_stats row: dirs, files, symlinks, specials,
 //     unreadable folders, and mount boundaries below it (itself excluded);
 //     by_kind and by_year ({"<kind or UTC year>":{"files":n,"bytes":n}}, the
@@ -83,6 +88,7 @@ import (
 
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
+	"precious/internal/rules"
 	"precious/internal/store"
 )
 
@@ -104,6 +110,10 @@ type Node struct {
 	Triage   domain.Triage
 	// Group marks a folder that is one item for review (is_group).
 	Group bool
+	// Owner is the owner's override of Category and Group (files and
+	// folders; a group mark on a folder only). Category, Triage, and Group
+	// are then what the rules give.
+	Owner domain.Override
 	// LinkText is a symlink's target.
 	LinkText string
 	// Unreadable marks a folder whose listing failed; it has no children.
@@ -348,6 +358,9 @@ func build(tree Tree) (*node, error) {
 		if n.MTime.IsZero() {
 			n.MTime = tree.Now
 		}
+		if err := applyOwner(&n); err != nil {
+			return nil, err
+		}
 		if n.Path == "" {
 			if n.Kind != domain.EntryDirectory {
 				return nil, fmt.Errorf("the root must be a directory, not %s", n.Kind)
@@ -407,6 +420,30 @@ func build(tree Tree) (*node, error) {
 		slices.SortFunc(n.children, func(a, b *node) int { return strings.Compare(a.name, b.name) })
 	}
 	return byPath[""], nil
+}
+
+// applyOwner checks n's override and makes its Category, Triage, and Group
+// the effective ones.
+func applyOwner(n *Node) error {
+	if n.Owner == (domain.Override{}) {
+		return nil
+	}
+	folder := n.Kind == domain.EntryDirectory
+	switch {
+	case !folder && n.Kind != domain.EntryFile:
+		return fmt.Errorf("%q is a %s, which has no classification to override", n.Path, n.Kind)
+	case n.Owner.Group != nil && !folder:
+		return fmt.Errorf("%q has a group mark but is a %s", n.Path, n.Kind)
+	}
+	if n.Owner.Category != "" {
+		if _, err := domain.ParseCategory(string(n.Owner.Category)); err != nil {
+			return fmt.Errorf("%q: %v", n.Path, err)
+		}
+	}
+	res := rules.ApplyOwner(rules.Result{Category: n.Category, Family: domain.FamilyOf(n.Category), Triage: n.Triage,
+		Group: n.Group, Folder: folder}, n.Owner)
+	n.Category, n.Triage, n.Group = res.Category, res.Triage, res.Group
+	return nil
 }
 
 // fileFamily is the D21 family of a file.
@@ -690,6 +727,19 @@ func (w writer) write(n *node, path string, parent any) error {
 	}
 	n.id = domain.EntryID(id)
 	w.ids[path] = n.id
+	if o := n.Owner; o != (domain.Override{}) {
+		var category, mark any
+		if o.Category != "" {
+			category = string(o.Category)
+		}
+		if o.Group != nil {
+			mark = boolInt(*o.Group)
+		}
+		if _, err := w.tx.Exec(`INSERT INTO entry_overrides (entry_id, category, group_mark, updated_at) VALUES (?, ?, ?, ?)`,
+			id, category, mark, w.seen); err != nil {
+			return err
+		}
+	}
 	if path != "" {
 		if _, err := w.tx.Exec(`INSERT INTO entry_names (rowid, name) VALUES (?, ?)`,
 			id, domain.DisplayName([]byte(n.name))); err != nil {

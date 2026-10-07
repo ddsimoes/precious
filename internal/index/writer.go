@@ -746,14 +746,22 @@ func subtree(p []byte) (lo, hi []byte) {
 }
 
 // finishScan records a complete scan on its source (design D7, transaction
-// boundaries "Scan finish"), if this attempt still owns its job.
-func (w *writer) finishScan(ctx context.Context, rulesVersion string) error {
-	return w.st.Write(ctx, func(tx *sql.Tx) error {
+// boundaries "Scan finish"), if this attempt still owns its job. It clears
+// the source's rescan_requested flag and reports whether it was set: an
+// owner override arrived while this scan ran, which may have read the
+// overrides before it (r2b design D3).
+func (w *writer) finishScan(ctx context.Context, rulesVersion string) (again bool, err error) {
+	err = w.st.Write(ctx, func(tx *sql.Tx) error {
 		if err := checkOwner(tx.QueryRowContext(ctx, writerQueries[stCheck], string(w.source), int64(w.job.ID)), w); err != nil {
 			return err
 		}
+		if err := tx.QueryRowContext(ctx, `SELECT rescan_requested FROM sources WHERE id = ?`,
+			string(w.source)).Scan(&again); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `UPDATE sources SET scan_gen = ?, last_scan_at = ?, last_scan_job = ?,
-			rules_version = ? WHERE id = ?`, w.gen, w.now, int64(w.job.ID), rulesVersion, string(w.source))
+			rules_version = ?, rescan_requested = 0 WHERE id = ?`, w.gen, w.now, int64(w.job.ID), rulesVersion, string(w.source))
 		return err
 	})
+	return again, err
 }
