@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+	"time"
 
 	"precious/internal/config"
 	"precious/internal/domain"
@@ -39,7 +40,7 @@ func wantKeys(t *testing.T, what string, v any, want ...string) map[string]any {
 
 var (
 	sourceKeys = []string{"id", "label", "state", "state_reason", "mount_point", "path", "rel_root", "volume", "capabilities",
-		"root_entry_id", "totals", "last_scan_at", "active_job"}
+		"root_entry_id", "totals", "last_scan_at", "active_job", "schedule", "next_scan_at", "schedule_skipped"}
 	volumeKeys = []string{"kind", "id", "label", "fs_type", "strong"}
 	capsKeys   = []string{"known", "read_only", "case_sensitive", "normalization_sensitive", "stable_identity",
 		"local_time", "hard_links", "time_resolution_ns"}
@@ -47,7 +48,8 @@ var (
 )
 
 // GET /api/sources returns SourceJSON for every source: a strong volume
-// online with its totals and its active scan, and a weak one offline.
+// online with its totals and its active scan and no schedule, and a weak one
+// offline whose last scheduled scan was skipped.
 func TestSourcesEndpoint(t *testing.T) {
 	e := newEnv(t)
 	e.serve()
@@ -69,6 +71,11 @@ func TestSourcesEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.insertSource("share", fsaccess.Volume{Kind: fsaccess.VolumePath, ID: "/mnt/gone", FSType: "cifs", DeviceKey: "mount:/mnt/gone"}, "docs")
+	if _, err := e.st.Writer().Exec(`UPDATE sources SET scan_schedule = '{"every":"day","at":"03:00","zone":"UTC"}',
+		next_scan_at = ?, schedule_skipped_at = ?, schedule_skip_reason = 'offline' WHERE id = 'share'`,
+		testNow.Add(15*time.Hour).UnixMilli(), testNow.Add(-9*time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
 
 	r := e.getJSON("/api/sources")
 	if r.status != http.StatusOK {
@@ -84,7 +91,8 @@ func TestSourcesEndpoint(t *testing.T) {
 	if s["id"] != "fotos" || s["label"] != "fotos" || s["state"] != "online" || s["state_reason"] != nil ||
 		s["mount_point"] != filepath.Join(e.base, "usb") || s["path"] != filepath.Join(e.base, "usb") || s["rel_root"] != "" ||
 		s["root_entry_id"] != seeded.Root.String() ||
-		s["last_scan_at"] != "2024-01-01T00:00:00Z" {
+		s["last_scan_at"] != "2024-01-01T00:00:00Z" || s["schedule"] != nil || s["next_scan_at"] != nil ||
+		s["schedule_skipped"] != nil {
 		t.Fatalf("fotos = %v", s)
 	}
 	v := wantKeys(t, "fotos volume", s["volume"], volumeKeys...)
@@ -108,8 +116,17 @@ func TestSourcesEndpoint(t *testing.T) {
 	s = wantKeys(t, "share", list[1], sourceKeys...)
 	if s["state"] != "offline" || s["state_reason"] != ReasonNotMounted || s["mount_point"] != nil ||
 		s["path"] != nil || s["rel_root"] != "docs" ||
-		s["active_job"] != nil || s["root_entry_id"] != nil || s["last_scan_at"] != nil {
+		s["active_job"] != nil || s["root_entry_id"] != nil || s["last_scan_at"] != nil ||
+		s["next_scan_at"] != "2026-10-02T03:00:00Z" {
 		t.Fatalf("share = %v", s)
+	}
+	if sch := wantKeys(t, "share schedule", s["schedule"], "every", "at", "zone"); sch["every"] != "day" ||
+		sch["at"] != "03:00" || sch["zone"] != "UTC" {
+		t.Fatalf("share schedule = %v", sch)
+	}
+	if skip := wantKeys(t, "share schedule_skipped", s["schedule_skipped"], "at", "reason"); skip["at"] != "2026-10-01T03:00:00Z" ||
+		skip["reason"] != "offline" {
+		t.Fatalf("share schedule_skipped = %v", skip)
 	}
 	v = wantKeys(t, "share volume", s["volume"], volumeKeys...)
 	if v["kind"] != "path" || v["id"] != "/mnt/gone" || v["label"] != nil || v["strong"] != false {

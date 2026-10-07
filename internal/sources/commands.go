@@ -12,18 +12,23 @@ import (
 
 // Command names, the {name} segment of POST /api/commands/{name}.
 const (
-	CommandAddSource    = "add-source"
-	CommandRenameSource = "rename-source"
-	CommandRemoveSource = "remove-source"
+	CommandAddSource         = "add-source"
+	CommandRenameSource      = "rename-source"
+	CommandRemoveSource      = "remove-source"
+	CommandSetSourceSchedule = "set-source-schedule"
 )
 
 // RegisterCommands registers add-source, rename-source, and remove-source
-// (design D5) with h. Each request is decoded strictly: a field other than
-// those listed, such as a path, is invalid_request.
+// (design D5), and set-source-schedule (r2b design D6), with h. Each request
+// is decoded strictly: a field other than those listed, such as a path, is
+// invalid_request.
 //
 //   - add-source {"handle", "label"?}: 201 {"source": SourceJSON}.
 //   - rename-source {"source_id", "label"}: 200 {"source": SourceJSON}.
 //   - remove-source {"source_id"}: 200 {}.
+//   - set-source-schedule {"source_id", "schedule": Schedule|null}: 200
+//     {"source": SourceJSON}; null turns the schedule off, and a malformed
+//     schedule (a bad time, weekday, or zone) is invalid_request.
 func RegisterCommands(h *commands.Handler, s *Service) {
 	h.Register(CommandAddSource, func(body []byte) (commands.Operation, error) {
 		var req addSourceRequest
@@ -59,6 +64,30 @@ func RegisterCommands(h *commands.Handler, s *Service) {
 			return nil, domain.Errorf(domain.CodeInvalidRequest, "source_id is required")
 		}
 		return &removeSourceOp{s: s, req: req}, nil
+	})
+	h.Register(CommandSetSourceSchedule, func(body []byte) (commands.Operation, error) {
+		var req setScheduleRequest
+		if err := commands.DecodeStrict(body, &req); err != nil {
+			return nil, err
+		}
+		if req.SourceID == "" {
+			return nil, domain.Errorf(domain.CodeInvalidRequest, "source_id is required")
+		}
+		if len(req.Schedule) == 0 {
+			return nil, domain.Errorf(domain.CodeInvalidRequest, "schedule is required; null turns it off")
+		}
+		op := &setScheduleOp{s: s, id: req.SourceID}
+		if string(req.Schedule) != "null" {
+			var sch domain.Schedule
+			if err := commands.DecodeStrict(req.Schedule, &sch); err != nil {
+				return nil, err
+			}
+			if err := sch.Validate(); err != nil {
+				return nil, err
+			}
+			op.sch = &sch
+		}
+		return op, nil
 	})
 }
 
@@ -150,4 +179,41 @@ func (o *removeSourceOp) Apply(ctx context.Context, tx *jobs.Tx) (int, any, erro
 		return 0, nil, err
 	}
 	return http.StatusOK, struct{}{}, nil
+}
+
+type setScheduleRequest struct {
+	SourceID domain.SourceID `json:"source_id"`
+	// Schedule is required, so that a request that forgets it does not turn
+	// a schedule off.
+	Schedule json.RawMessage `json:"schedule"`
+}
+
+type setScheduleOp struct {
+	s   *Service
+	id  domain.SourceID
+	sch *domain.Schedule
+}
+
+func (o *setScheduleOp) Canonical() []byte {
+	return canonical(struct {
+		SourceID domain.SourceID  `json:"source_id"`
+		Schedule *domain.Schedule `json:"schedule"`
+	}{o.id, o.sch})
+}
+
+func (o *setScheduleOp) Prepare(context.Context) error { return nil }
+
+func (o *setScheduleOp) Apply(ctx context.Context, tx *jobs.Tx) (int, any, error) {
+	if err := o.s.SetSchedule(ctx, tx.SQL(), o.id, o.sch); err != nil {
+		return 0, nil, err
+	}
+	src, err := getSource(ctx, tx.SQL(), o.id)
+	if err != nil {
+		return 0, nil, err
+	}
+	j, err := describe(ctx, tx.SQL(), src, o.s.displayMounts())
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, sourceBody{Source: j}, nil
 }
