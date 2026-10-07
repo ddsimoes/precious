@@ -462,12 +462,20 @@ func TestRefreshSkipsDeletedEntriesAndRedoesItsGeneration(t *testing.T) {
 
 // R2.5: on the seeded corpus, every card's bytes and row count equal the
 // sums over its review list read through all its pages, for all sources and
-// for each one, with some rows decided.
+// for each one, with some rows decided; and its decided bytes and rows
+// equal the sums over its decided list (r2b D13).
 func TestR2_5CardBytesEqualTheirLists(t *testing.T) {
 	w := newCorpusWorld(t)
 	w.decide(w.all(ListSystemJunk, "", false, 1)[0].Entry, domain.DecisionDiscard)
 	w.decide(w.corpus.ID("Downloads/Setup(1).exe"), domain.DecisionDiscard)
 	w.decide(w.corpus.ID("Projetos/app_react"), domain.DecisionKeep)
+	sum := func(rows []Row) (bytes, n int64) {
+		for _, r := range rows {
+			bytes += r.Bytes
+			n++
+		}
+		return bytes, n
+	}
 	for _, src := range []domain.SourceID{"", "corpus", "pen"} {
 		cards, err := Cards(context.Background(), w.st.Reader(), src)
 		if err != nil {
@@ -476,21 +484,25 @@ func TestR2_5CardBytesEqualTheirLists(t *testing.T) {
 		if len(cards) != 7 {
 			t.Fatalf("%d cards, want 7", len(cards))
 		}
+		decided := map[List]int64{}
 		for i, c := range cards {
 			if i > 0 && c.Bytes > cards[i-1].Bytes {
 				t.Errorf("source %q: card %s is larger than the one before", src, c.List)
 			}
-			var bytes, n int64
-			for _, r := range w.all(c.List, src, false, 2) {
-				bytes += r.Bytes
-				n++
-			}
-			if bytes != c.Bytes || n != c.Rows {
+			if bytes, n := sum(w.all(c.List, src, false, 2)); bytes != c.Bytes || n != c.Rows {
 				t.Errorf("source %q: card %s has %d bytes in %d rows, its list %d in %d", src, c.List, c.Bytes, c.Rows, bytes, n)
+			}
+			if bytes, n := sum(w.all(c.List, src, true, 2)); bytes != c.DecidedBytes || n != c.DecidedRows {
+				t.Errorf("source %q: card %s has %d decided bytes in %d rows, its decided list %d in %d", src, c.List,
+					c.DecidedBytes, c.DecidedRows, bytes, n)
 			}
 			if src == "" && c.Rows == 0 {
 				t.Errorf("card %s is empty on the corpus", c.List)
 			}
+			decided[c.List] = c.DecidedRows
+		}
+		if src != "pen" && decided[ListSystemJunk] == 0 {
+			t.Errorf("source %q: decided rows %v, want the discarded system junk row among them", src, decided)
 		}
 	}
 }

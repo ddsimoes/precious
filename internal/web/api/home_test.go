@@ -71,11 +71,13 @@ func TestHome(t *testing.T) {
 // empty cards in their fixed order, and no hashing job.
 const homeR2Empty = `"coverage":{"candidate":{"files":0,"bytes":0},"checked":{"files":0,"bytes":0},` +
 	`"unchecked":{"files":0,"bytes":0},"unreadable":{"files":0,"bytes":0}},` +
-	`"cards":[{"list":"duplicates","bytes":0,"rows":0,"basis":"content"},` +
-	`{"list":"unpacked_archives","bytes":0,"rows":0,"basis":"content"},` +
-	`{"list":"system_junk","bytes":0,"rows":0,"basis":"rules"},{"list":"installers","bytes":0,"rows":0,"basis":"rules"},` +
-	`{"list":"programs","bytes":0,"rows":0,"basis":"rules"},{"list":"caches","bytes":0,"rows":0,"basis":"rules"},` +
-	`{"list":"leftovers","bytes":0,"rows":0,"basis":"rules"}],"hashing":[]`
+	`"cards":[{"list":"duplicates","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"content"},` +
+	`{"list":"unpacked_archives","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"content"},` +
+	`{"list":"system_junk","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"rules"},` +
+	`{"list":"installers","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"rules"},` +
+	`{"list":"programs","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"rules"},` +
+	`{"list":"caches","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"rules"},` +
+	`{"list":"leftovers","bytes":0,"rows":0,"decided_bytes":0,"decided_rows":0,"basis":"rules"}],"hashing":[]`
 
 func TestTags(t *testing.T) {
 	e := newEnv(t)

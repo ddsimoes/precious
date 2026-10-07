@@ -100,12 +100,14 @@ func (l List) Basis() string {
 	return BasisRules
 }
 
-// Card is one opportunity card: the bytes and count of its open rows.
+// Card is one opportunity card: the bytes and count of its open rows, and
+// of its rows no longer open (decided).
 type Card struct {
-	List  List
-	Bytes int64
-	Rows  int64
-	Basis string
+	List                      List
+	Bytes                     int64
+	Rows                      int64
+	DecidedBytes, DecidedRows int64
+	Basis                     string
 }
 
 // Page sizes.
@@ -192,36 +194,45 @@ const sourceSQL = `(:src = '' OR rr.source_id = :src OR (rr.source_id IS NULL AN
 
 // Cards returns the seven cards for source src ("" = all sources), largest
 // first: each card's bytes and row count are the sums over its open rows,
-// with the filter Rows uses, so a card always equals its list (R2.5).
+// and its decided bytes and rows the sums over its rows no longer open,
+// with the filters Rows uses, so a card always equals its open and decided
+// lists (R2.5, r2b D13). One pass evaluates openSQL once per row: the
+// materialized CTE keeps SQLite from copying it into each sum, and a row
+// whose openSQL is NULL (its entry gone) counts in neither, as in Rows.
 func Cards(ctx context.Context, q store.Queryer, src domain.SourceID) ([]Card, error) {
-	rows, err := q.QueryContext(ctx, `SELECT rr.list, coalesce(sum(rr.bytes), 0), count(*)
-		FROM review_rows rr
-		WHERE rr.gen = `+genSQL+` AND rr.list IN ('duplicates', 'unpacked_archives', 'system_junk',
-			'installers', 'programs', 'caches', 'leftovers')
-			AND `+sourceSQL+` AND `+openSQL+`
-		GROUP BY rr.list`, sql.Named("src", string(src)))
+	rows, err := q.QueryContext(ctx, `WITH r AS MATERIALIZED (
+			SELECT rr.list, rr.bytes, `+openSQL+` AS open
+			FROM review_rows rr
+			WHERE rr.gen = `+genSQL+` AND rr.list IN ('duplicates', 'unpacked_archives', 'system_junk',
+				'installers', 'programs', 'caches', 'leftovers')
+				AND `+sourceSQL+`)
+		SELECT list,
+			coalesce(sum(CASE WHEN open THEN bytes ELSE 0 END), 0), coalesce(sum(CASE WHEN open THEN 1 ELSE 0 END), 0),
+			coalesce(sum(CASE WHEN NOT open THEN bytes ELSE 0 END), 0), coalesce(sum(CASE WHEN NOT open THEN 1 ELSE 0 END), 0)
+		FROM r GROUP BY list`, sql.Named("src", string(src)))
 	if err != nil {
 		return nil, fmt.Errorf("review: cards: %w", err)
 	}
 	defer rows.Close()
-	sums := make(map[List][2]int64, len(CardLists))
+	sums := make(map[List]Card, len(CardLists))
 	for rows.Next() {
 		var (
-			l            string
-			bytes, count int64
+			l string
+			c Card
 		)
-		if err := rows.Scan(&l, &bytes, &count); err != nil {
+		if err := rows.Scan(&l, &c.Bytes, &c.Rows, &c.DecidedBytes, &c.DecidedRows); err != nil {
 			return nil, fmt.Errorf("review: cards: %w", err)
 		}
-		sums[List(l)] = [2]int64{bytes, count}
+		sums[List(l)] = c
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("review: cards: %w", err)
 	}
 	cards := make([]Card, len(CardLists))
 	for i, l := range CardLists {
-		s := sums[l]
-		cards[i] = Card{List: l, Bytes: s[0], Rows: s[1], Basis: l.Basis()}
+		c := sums[l]
+		c.List, c.Basis = l, l.Basis()
+		cards[i] = c
 	}
 	// A stable sort keeps the fixed order among equal bytes.
 	for i := 1; i < len(cards); i++ {
