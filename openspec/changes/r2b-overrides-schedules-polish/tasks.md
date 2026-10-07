@@ -97,7 +97,7 @@
 
 ## 6. Compare and Opportunities
 
-- [ ] 6.1 Compare (D11):
+- [x] 6.1 Compare (D11):
   - add `left_path`, `right_path`, and `twin`;
   - make the server choose the first bucket when none is given;
   - show both paths and "extra copy, same as …" in the UI, without the summary-only request.
@@ -109,7 +109,7 @@
 
 ## 7. Integration
 
-- [ ] 7.1 Extend the Playwright suite:
+- [x] 7.1 Extend the Playwright suite:
   - an override and a group mark on the corpus, and their figures after the scan;
   - setting a schedule and seeing its next scan;
   - a Search without accents, and the unreadable link from Home;
