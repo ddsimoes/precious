@@ -520,6 +520,17 @@ export function EntryTable({
     }
   })
 
+  // walk is where the arrows are going while the address lags behind them:
+  // the row they chose last, and the rows they left on the way. Keys pressed
+  // faster than the address changes go on from that row instead of being
+  // lost (r2b E2). It ends when the address arrives.
+  const walk = useRef<{ left: (string | null)[]; to: string } | null>(null)
+  useEffect(() => {
+    if (walk.current?.to === selectedId) {
+      walk.current = null
+    }
+  }, [selectedId])
+
   const onKey = useEffectEvent((event: KeyboardEvent) => {
     if (keyboard === undefined || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
       return
@@ -529,13 +540,16 @@ export function EntryTable({
     if (origin?.closest(fields) != null || document.querySelector('dialog[open]') !== null) {
       return
     }
+    const pending = walk.current !== null && walk.current.left.includes(selectedId) ? walk.current : null
+    const current = pending?.to ?? selectedId
+    const currentIndex = current === null ? -1 : tableRows.findIndex((row) => row.id === current)
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       if (tableRows.length === 0) {
         return
       }
       event.preventDefault()
       const down = event.key === 'ArrowDown'
-      const index = selectedIndex < 0 ? (down ? 0 : tableRows.length - 1) : selectedIndex + (down ? 1 : -1)
+      const index = currentIndex < 0 ? (down ? 0 : tableRows.length - 1) : currentIndex + (down ? 1 : -1)
       if (index >= tableRows.length) {
         // Past the last loaded row, the next page comes first.
         if (hasMore && !loadingMore) {
@@ -544,21 +558,24 @@ export function EntryTable({
         return
       }
       const row = tableRows[Math.max(0, index)]
-      if (row === undefined || row.id === selectedId) {
+      if (row === undefined || row.id === current) {
         return
       }
       focusId.current = row.id
+      walk.current = { left: pending === null ? [selectedId] : [...pending.left, pending.to], to: row.id }
       // Walking the rows replaces the address instead of adding to history.
-      void navigate({ search: entryLink(row.id) }, { replace: selectedId !== null })
+      void navigate({ search: entryLink(row.id) }, { replace: current !== null })
     } else if (event.key === 'Enter') {
       // A focused link or button acts on Enter itself.
-      const row = tableRows[selectedIndex]
+      const row = tableRows[currentIndex]
       if (row !== undefined && origin?.closest('a, button, summary') == null) {
         event.preventDefault()
+        walk.current = null
         keyboard.onOpen(row.original)
       }
-    } else if (event.key === 'Escape' && selectedId !== null) {
+    } else if (event.key === 'Escape' && current !== null) {
       event.preventDefault()
+      walk.current = null
       keyboard.onClose()
     }
   })
