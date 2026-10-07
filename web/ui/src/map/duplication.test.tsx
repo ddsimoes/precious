@@ -120,19 +120,31 @@ function cellOf(name: string, column: string) {
 }
 
 describe('Map duplication', () => {
-  it('shows each row’s percent duplicated', async () => {
+  it('shows each row’s share that has copies', async () => {
     stubApi(routes())
     renderApp('/map/1')
     await screen.findByRole('table', { name: 'Contents of Fotos' })
 
-    expect(cellOf('Fotos - Copia', 'Duplicated')).toHaveTextContent('90%')
-    expect(cellOf('Documentos', 'Duplicated')).toHaveTextContent('10% so far')
-    expect(cellOf('Novos', 'Duplicated')).toHaveTextContent('Not checked')
-    expect(cellOf('curriculo.doc', 'Duplicated')).toHaveTextContent('3 copies')
-    expect(cellOf('unico.txt', 'Duplicated')).toHaveTextContent('No other copy')
-    expect(cellOf('pendente.bin', 'Duplicated')).toHaveTextContent('Not checked')
-    expect(cellOf('ilegivel.jpg', 'Duplicated')).toHaveTextContent('Could not be read')
-    expect(cellOf('vazio.txt', 'Duplicated')).toHaveTextContent('')
+    expect(cellOf('Fotos - Copia', 'Has copies')).toHaveTextContent('90%')
+    expect(cellOf('Documentos', 'Has copies')).toHaveTextContent('10% so far')
+    expect(cellOf('Novos', 'Has copies')).toHaveTextContent('Not checked')
+    expect(cellOf('curriculo.doc', 'Has copies')).toHaveTextContent('3 copies')
+    expect(cellOf('unico.txt', 'Has copies')).toHaveTextContent('No other copy')
+    expect(cellOf('pendente.bin', 'Has copies')).toHaveTextContent('Not checked')
+    expect(cellOf('ilegivel.jpg', 'Has copies')).toHaveTextContent('Could not be read')
+    expect(cellOf('vazio.txt', 'Has copies')).toHaveTextContent('')
+  })
+
+  it('hints on the Has copies header that it is not the space that can be freed', async () => {
+    stubApi(routes())
+    renderApp('/map/1')
+    await screen.findByRole('table', { name: 'Contents of Fotos' })
+
+    const hint = 'Files here that also exist elsewhere, counting every copy. Not the space you could free: see Opportunities.'
+    const header = screen.getByRole('columnheader', { name: 'Has copies' })
+    expect(header).toHaveAccessibleDescription(hint)
+    expect(header).toHaveAttribute('title', hint)
+    expect(header).toHaveTextContent(/^Has copies$/)
   })
 
   describe('in a narrow card', () => {
@@ -171,20 +183,20 @@ describe('Map duplication', () => {
       await screen.findByRole('table', { name: 'Contents of Fotos' })
       const headers = () => screen.getAllByRole('columnheader').map((header) => header.textContent)
       await waitFor(() =>
-        expect(headers()).toEqual(['Name', 'Size▼', 'Files', 'Type or category', 'Duplicated', 'Decision']),
+        expect(headers()).toEqual(['Name', 'Size▼', 'Files', 'Type or category', 'Has copies', 'Decision']),
       )
     })
 
-    it('hides Decision before Duplicated, keeping name, size, and category longest', async () => {
+    it('hides Decision before Has copies, keeping name, size, and category longest', async () => {
       stubApi(routes())
       width = 45 * 16
       renderApp('/map/1')
       await screen.findByRole('table', { name: 'Contents of Fotos' })
       const headers = () => screen.getAllByRole('columnheader').map((header) => header.textContent)
-      await waitFor(() => expect(headers()).toEqual(['Name', 'Size▼', 'Files', 'Type or category', 'Duplicated']))
+      await waitFor(() => expect(headers()).toEqual(['Name', 'Size▼', 'Files', 'Type or category', 'Has copies']))
     })
 
-    it('hides Duplicated after Decision', async () => {
+    it('hides Has copies after Decision', async () => {
       stubApi(routes())
       width = 40 * 16
       renderApp('/map/1')
@@ -194,13 +206,13 @@ describe('Map duplication', () => {
     })
   })
 
-  it('colors the treemap by duplication, with a legend of its bands', async () => {
+  it('colors the treemap by the share that has copies, with a legend of its bands', async () => {
     stubApi(routes())
     const { router } = renderApp('/map/1')
     const user = userEvent.setup()
     await screen.findByRole('table', { name: 'Contents of Fotos' })
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Color by' }), 'Duplication')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Color by' }), 'Has copies')
     expect(router.state.location.search).toBe('?color=duplication')
     const colors = () => Object.fromEntries(FakeChart.latest().data().map((tile) => [tile.name, tile.itemStyle.color]))
     await waitFor(() =>
@@ -220,10 +232,10 @@ describe('Map duplication', () => {
     const legend = within(screen.getByRole('list', { name: 'Legend' }))
     expect(legend.getAllByRole('listitem').map((item) => item.textContent)).toEqual([
       'No other copy',
-      'Less than 25% duplicated',
-      '25% to 50% duplicated',
-      '50% to 75% duplicated',
-      '75% or more duplicated',
+      'Less than 25% has copies',
+      '25% to 50% has copies',
+      '50% to 75% has copies',
+      '75% or more has copies',
       'Not checked yet',
       'Nothing to check',
     ])

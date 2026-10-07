@@ -73,7 +73,7 @@ describe('Detail panel duplicates', () => {
     expect(copies.getByText(/of what could have a copy is checked/)).toBeInTheDocument()
   })
 
-  it('shows a folder’s relations, each opening Compare, and its percent duplicated', async () => {
+  it('shows a folder’s relations, each opening Compare, and its share that has copies, with the hint', async () => {
     const emule = folderRow('60', 'emule-0.47c', {
       path: 'Downloads/emule-0.47c',
       total_bytes: 10 * GiB,
@@ -90,7 +90,33 @@ describe('Detail panel duplicates', () => {
     expect(item).toHaveTextContent('Same content as Downloads/eMule0.47c-Installer.zip')
     expect(within(item).getByRole('link', { name: zip.path })).toHaveAttribute('href', '/search?entry=61')
     expect(within(item).getByRole('link', { name: 'Compare' })).toHaveAttribute('href', '/compare?left=60&right=61')
-    expect(screen.getByText('100% (10 GiB)')).toBeInTheDocument()
+
+    // The figure reads "Has copies", with a muted hint that it is not the
+    // space that can be freed (ADR 0010).
+    const figure = screen.getByText('Has copies', { selector: 'dt' }).nextElementSibling as HTMLElement
+    expect(figure).toHaveTextContent(
+      /^100% \(10 GiB\)Files here that also exist elsewhere, counting every copy\. Not the space you could free: see Opportunities\.$/,
+    )
+    expect(within(figure).getByRole('link', { name: 'Opportunities' })).toHaveAttribute('href', '/opportunities')
+  })
+
+  it('shows a relation’s bytes in common and Compare, and no count of what is only on each side', async () => {
+    const copia = folderRow('70', 'Fotos - Copia')
+    const fotos = folderRow('71', 'Fotos')
+    const relation = relationTo(fotos, {
+      kind: 'overlap',
+      matched_bytes: 9 * GiB,
+      only_here: { files: 2, bytes: 1 * GiB },
+      only_there: { files: 3, bytes: 2 * GiB },
+    })
+    stubApi(routes(entryDetail(copia, { relations: [relation] })))
+    renderApp('/search?entry=70')
+
+    const relations = within(await screen.findByRole('region', { name: 'Related folders' }))
+    const item = relations.getAllByRole('listitem')[0]!
+    // Compare alone counts what is only on each side (ADR 0010).
+    expect(item).toHaveTextContent(/^Most of it is also in Fotos9 GiB in commonCompare$/)
+    expect(within(item).getByRole('link', { name: 'Compare' })).toHaveAttribute('href', '/compare?left=70&right=71')
   })
 
   it.each([

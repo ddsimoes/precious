@@ -17,9 +17,9 @@ import { cn } from '@/lib/utils'
 // SimilarFoldersPage lists the folders and archives related as overlap
 // (spec "Similar folders are listed", r2b design D12) for every source or
 // the one chosen (?source=), largest bytes in common first: both sides,
-// what they share, what is only on each, and a Compare of the two. It is
-// read-only: a similar folder is not a copy (§6.4), so it carries no
-// decision controls and no bytes to free.
+// what they share, and a Compare of the two, which counts what is only on
+// each (ADR 0010). It is read-only: a similar folder is not a copy (§6.4),
+// so it carries no decision controls and no bytes to free.
 export function SimilarFoldersPage() {
   const { t } = useTranslation()
   const [params] = useSearchParams()
@@ -80,20 +80,14 @@ export function SimilarFoldersPage() {
   )
 }
 
-// OverlapRow is one pair: each side with what is only there, the bytes in
-// common, and a Compare of the two.
+// OverlapRow is one pair: both sides, the bytes in common, and a Compare of
+// the two, which alone counts what is only on each side (ADR 0010).
 function OverlapRow({ overlap }: { overlap: Overlap }) {
   const { t } = useTranslation()
   const fmt = useFormat()
   const sourceLabel = useSourceLabel()
   const entryLink = useEntryLink()
   const name = (row: EntryRow) => (row.path === '' ? sourceLabel(row.source_id) : row.path)
-  const only = (row: EntryRow, amount: Overlap['only_here']) =>
-    t('similar.onlyIn', {
-      path: name(row),
-      files: t('units.files', { count: amount.files, formatted: fmt.count(amount.files) }),
-      bytes: fmt.bytes(amount.bytes),
-    })
   return (
     <li className="grid gap-2 rounded-lg border bg-card p-3 text-sm">
       <div className="grid gap-1">
@@ -107,13 +101,7 @@ function OverlapRow({ overlap }: { overlap: Overlap }) {
           </Link>
         ))}
       </div>
-      <p className="text-muted-foreground">
-        {[
-          t('similar.inCommon', { bytes: fmt.bytes(overlap.matched_bytes) }),
-          only(overlap.a, overlap.only_here),
-          only(overlap.other, overlap.only_there),
-        ].join(' · ')}
-      </p>
+      <p className="text-muted-foreground">{t('similar.inCommon', { bytes: fmt.bytes(overlap.matched_bytes) })}</p>
       <div>
         <Button asChild size="sm" variant="outline">
           <Link
