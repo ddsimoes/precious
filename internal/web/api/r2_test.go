@@ -304,6 +304,7 @@ func TestR2ReadAPI(t *testing.T) {
 			Items []struct {
 				ID       string       `json:"id"`
 				Bytes    int64        `json:"bytes"`
+				Files    int64        `json:"files"`
 				Entry    *contentRow  `json:"entry"`
 				Relation *relationRes `json:"relation"`
 				Copies   []copyRes    `json:"copies"`
@@ -326,7 +327,10 @@ func TestR2ReadAPI(t *testing.T) {
 			switch {
 			case it.Relation != nil:
 				relRows++
-				if it.Entry == nil || it.Relation.Self != "a" || it.Copies != nil || it.Relation.Other.ID == it.Entry.ID {
+				// Side a's files count as the Map counts them: its own,
+				// without the members of archives below it.
+				if it.Entry == nil || it.Relation.Self != "a" || it.Copies != nil || it.Relation.Other.ID == it.Entry.ID ||
+					it.Files != it.Entry.TotalFiles || it.Summary.Files != it.Entry.TotalFiles {
 					t.Errorf("relation row %+v", it)
 				}
 			default:
@@ -453,9 +457,11 @@ func contentIDs(rows []contentRow) []string {
 
 // R2.4 Duplicates are information: discarding Documentos/curriculo (1).doc
 // through set-decision, after reading its group, changes that copy alone;
-// every other copy keeps its decision, triage, and tags. A member has no
-// decision or tags of its own: set-decision and set-tags naming one are
-// invalid_request.
+// every other copy keeps its decision, triage, and tags. Every copy list
+// names each copy's own decision (A12): the kept and the discarded copies',
+// null for the copies that follow their folders and for members. A member
+// has no decision or tags of its own: set-decision and set-tags naming one
+// are invalid_request.
 func TestR2_4DiscardingACopyChangesNoOther(t *testing.T) {
 	w := newContentWorld(t)
 	const target = "Documentos/curriculo (1).doc"
@@ -509,6 +515,46 @@ func TestR2_4DiscardingACopyChangesNoOther(t *testing.T) {
 	}
 	if b := before[w.id("Documentos/curriculo.doc")]; b.decision != "keep" || !slices.Contains(b.tags, tag) {
 		t.Errorf("curriculo.doc before: %+v", b)
+	}
+
+	own := map[string]string{w.id(target): "discard", w.id("Documentos/curriculo.doc"): "keep"} // others: null
+	members := 0
+	checkCopies := func(where string, cs []copyRes) {
+		t.Helper()
+		for _, c := range cs {
+			if c.ArchiveID != nil {
+				members++
+			}
+			want, ok := own[c.Ref]
+			if !ok {
+				want = "<null>"
+			}
+			if got := str(c.Decision); got != want {
+				t.Errorf("%s: copy %s has decision %s, want %s", where, c.Ref, got, want)
+			}
+		}
+	}
+	checkCopies("detail of curriculo.doc", w.detail(t, w.id("Documentos/curriculo.doc")).Content.Copies)
+	var page struct {
+		Items []copyRes `json:"items"`
+	}
+	w.get(t, fmt.Sprintf("/api/entries/%s/copies?limit=100", w.id(target)), 200, &page)
+	checkCopies("copies of "+target, page.Items)
+	var dups struct {
+		Items []struct {
+			Copies []copyRes `json:"copies"`
+		} `json:"items"`
+	}
+	w.get(t, "/api/opportunities/duplicates?limit=500&decided=1", 200, &dups)
+	for _, it := range dups.Items {
+		checkCopies("decided duplicates", it.Copies)
+	}
+	w.get(t, "/api/opportunities/duplicates?limit=500", 200, &dups)
+	for _, it := range dups.Items {
+		checkCopies("duplicates", it.Copies)
+	}
+	if members == 0 {
+		t.Error("no member copy listed")
 	}
 
 	member := w.member(t, "Downloads/eMule0.47c-Installer.zip", "emule-0.47c/emule.exe")

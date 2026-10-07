@@ -13,7 +13,9 @@
 //
 //   - The six rule and archive cards (system_junk, installers, programs,
 //     caches, leftovers, unpacked_archives): entry_id is the row's entry,
-//     source_id its source, bytes its total_bytes, sort_key = bytes.
+//     source_id its source, bytes its total_bytes, sort_key = bytes. An
+//     unpacked_archives row's group_id is the folder the archive was
+//     unpacked into, the b side of its same or inside relation.
 //   - duplicates: a same or inside relation (relation_id, bytes = its
 //     redundant bytes), or a duplicate group (content_id) with a copy
 //     outside every listed relation. source_id is NULL; review_row_sources
@@ -130,7 +132,8 @@ type Row struct {
 	// the group from; zero when no copy is left.
 	Copy domain.Ref
 	// Group is the outermost programs or disposable group of a gems_rescue
-	// row, and the overlap side holding a gems_only_in_copy row's file.
+	// row, the overlap side holding a gems_only_in_copy row's file, and the
+	// folder an unpacked_archives row's archive was unpacked into.
 	Group   domain.EntryID
 	Bytes   int64
 	Files   int64

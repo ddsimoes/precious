@@ -159,6 +159,7 @@ type copyRes struct {
 	ArchiveID   *string `json:"archive_id"`
 	HardLink    bool    `json:"hard_link"`
 	Offline     bool    `json:"offline"`
+	Decision    *string `json:"decision"`
 	EffDecision string  `json:"eff_decision"`
 }
 

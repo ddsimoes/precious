@@ -170,17 +170,37 @@ func (h *handler) reviewList(w http.ResponseWriter, r *http.Request) {
 // its first copy.
 const groupCopies = 100
 
-// reviewRows renders review rows as RowJSON.
+// reviewRows renders review rows as RowJSON. An unpacked_archives row
+// carries its archive's relation with the folder it was unpacked into,
+// seen from the archive (side a).
 func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row) ([]reviewRowJSON, error) {
 	var relIDs []int64
+	unpacked := map[int64]int64{} // review row ID → relation ID
 	for _, it := range items {
-		if it.Relation != 0 {
+		switch {
+		case it.Relation != 0:
 			relIDs = append(relIDs, it.Relation)
+		case it.List == review.ListUnpackedArchives && it.Group != 0:
+			id, err := unpackedRelation(ctx, tx, it.Entry, it.Group)
+			if err != nil {
+				return nil, err
+			}
+			if id != 0 {
+				unpacked[it.ID] = id
+				relIDs = append(relIDs, id)
+			}
 		}
 	}
 	rels, err := relationsByID(ctx, tx, relIDs)
 	if err != nil {
 		return nil, err
+	}
+	relJSON := func(rel relations.Relation) (*relationJSON, error) {
+		rj, err := h.relationsJSON(ctx, tx, []relations.Relation{rel}, func(relations.Relation) string { return "a" })
+		if err != nil || len(rj) == 0 {
+			return nil, err
+		}
+		return &rj[0], nil
 	}
 	var refs []domain.Ref
 	for _, it := range items {
@@ -212,6 +232,11 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 			if self == nil {
 				continue // deleted since the rows were computed
 			}
+			if rel, ok := rels[unpacked[it.ID]]; ok {
+				if j.Relation, err = relJSON(rel); err != nil {
+					return nil, err
+				}
+			}
 		case it.Relation != 0:
 			rel, ok := rels[it.Relation]
 			if !ok {
@@ -220,14 +245,16 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 			if self, _ = rows.get(rel.A); self == nil {
 				continue
 			}
-			rj, err := h.relationsJSON(ctx, tx, []relations.Relation{rel}, func(relations.Relation) string { return "a" })
-			if err != nil {
+			// Side a's files as the Map counts them: its own, members of
+			// the archives below it not included (the stored a_files counts
+			// them).
+			j.Files, j.Summary.Files = self.TotalFiles, self.TotalFiles
+			if j.Relation, err = relJSON(rel); err != nil {
 				return nil, err
 			}
-			if len(rj) == 0 {
+			if j.Relation == nil {
 				continue
 			}
-			j.Relation = &rj[0]
 		default:
 			if it.Copy == (domain.Ref{}) {
 				continue
@@ -251,6 +278,24 @@ func (h *handler) reviewRows(ctx context.Context, tx *sql.Tx, items []review.Row
 	return out, nil
 }
 
+// unpackedRelation is the ID of the visible generation's same or inside
+// relation of the archive file archive (side a) with the folder it was
+// unpacked into (side b), 0 for none.
+func unpackedRelation(ctx context.Context, tx *sql.Tx, archive, folder domain.EntryID) (int64, error) {
+	var id int64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM relations
+		WHERE a_entry = ? AND a_member IS NULL AND b_entry = ? AND b_member IS NULL AND kind IN ('same', 'inside')
+			AND gen = (SELECT gen FROM review_state WHERE id = 1)
+		ORDER BY id LIMIT 1`, int64(archive), int64(folder)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("api: relation of unpacked archive %s: %w", archive, err)
+	}
+	return id, nil
+}
+
 // refOf is the ref of a row.
 func refOf(r *search.Row) domain.Ref {
 	if r.Member != 0 {
@@ -266,15 +311,15 @@ func years(r *search.Row) *[2]*int {
 	if r.Kind != domain.EntryDirectory {
 		from, to = r.MTime, r.MTime
 	}
-	if from.IsZero() && to.IsZero() {
+	if !search.KnownTime(from) && !search.KnownTime(to) {
 		return nil
 	}
 	var y [2]*int
-	if !from.IsZero() {
+	if search.KnownTime(from) {
 		v := from.Year()
 		y[0] = &v
 	}
-	if !to.IsZero() {
+	if search.KnownTime(to) {
 		v := to.Year()
 		y[1] = &v
 	}
@@ -366,21 +411,25 @@ func selfCopy(ctx context.Context, tx *sql.Tx, ref domain.Ref) (content.Copy, er
 		var (
 			archive int64
 			mpath   []byte
+			zip     bool
 		)
-		err = tx.QueryRowContext(ctx, `SELECT m.archive_id, e.source_id, e.path, m.path, s.state <> 'online', e.eff_decision
-			FROM archive_members m JOIN entries e ON e.id = m.archive_id JOIN sources s ON s.id = e.source_id
-			WHERE m.id = ?`, int64(ref.Member)).Scan(&archive, &src, &path, &mpath, &c.Offline, &eff)
+		err = tx.QueryRowContext(ctx, `SELECT m.archive_id, e.source_id, e.path, m.path, a.format = 'zip', s.state <> 'online',
+				e.eff_decision
+			FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id JOIN entries e ON e.id = m.archive_id
+			JOIN sources s ON s.id = e.source_id
+			WHERE m.id = ?`, int64(ref.Member)).Scan(&archive, &src, &path, &mpath, &zip, &c.Offline, &eff)
 		if err == nil {
 			a := domain.EntryID(archive)
 			c.Ref, c.ArchiveID = domain.Ref{Entry: a, Member: ref.Member}, &a
-			c.Path = domain.DisplayName(path) + "!" + domain.DisplayName(mpath)
+			c.Path = domain.DisplayName(path) + "!" + domain.MemberDisplayName(mpath, zip)
 			c.PathB64 = append(append(path, '!'), mpath...)
 		}
 	} else {
-		err = tx.QueryRowContext(ctx, `SELECT e.source_id, e.path, s.state <> 'online', e.eff_decision
+		var decision sql.NullString
+		err = tx.QueryRowContext(ctx, `SELECT e.source_id, e.path, s.state <> 'online', e.decision, e.eff_decision
 			FROM entries e JOIN sources s ON s.id = e.source_id WHERE e.id = ?`, int64(ref.Entry)).
-			Scan(&src, &path, &c.Offline, &eff)
-		c.Ref, c.Path, c.PathB64 = ref, domain.DisplayName(path), path
+			Scan(&src, &path, &c.Offline, &decision, &eff)
+		c.Ref, c.Path, c.PathB64, c.Decision = ref, domain.DisplayName(path), path, domain.Decision(decision.String)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return content.Copy{}, domain.Errorf(domain.CodeNotFound, "%s not found", ref)
@@ -587,20 +636,22 @@ func (h *handler) compare(w http.ResponseWriter, r *http.Request) {
 			c := res.Summary[b]
 			body.Summary[b] = amount{Files: c.Files, Bytes: c.Bytes}
 		}
-		side := func(ref *domain.Ref) *entryRow {
+		side := func(ref *domain.Ref) (*entryRow, bool) {
 			if ref == nil {
-				return nil
+				return nil, false
 			}
 			row, ok := rows.get(*ref)
 			if !ok {
-				return nil
+				return nil, false
 			}
 			j := rowJSON(row)
-			return &j
+			return &j, row.Member != 0 && row.Zip
 		}
 		for _, it := range res.Items {
-			body.Items = append(body.Items, compareItemJSON{Path: domain.DisplayName(it.Path), PathB64: it.Path,
-				Left: side(it.Left), Right: side(it.Right)})
+			lj, lz := side(it.Left)
+			rj, rz := side(it.Right)
+			body.Items = append(body.Items, compareItemJSON{Path: domain.MemberDisplayName(it.Path, lz || rz), PathB64: it.Path,
+				Left: lj, Right: rj})
 		}
 		if res.NextCursor != "" {
 			body.NextCursor = &res.NextCursor

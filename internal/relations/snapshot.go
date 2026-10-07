@@ -690,7 +690,7 @@ func (b *builder) addFile(d int32, id int64, kind string, size int64, dev, ino, 
 	regular := kind == string(domain.EntryFile)
 	if regular && size > 0 && s.dups != nil && state != "" {
 		own := &s.dups.own[d]
-		if state != domain.ContentUniqueSize {
+		if state != domain.ContentUniqueSize && state != domain.ContentUnreadable {
 			own.candidate += size
 		}
 		if state == domain.ContentHashed || state == domain.ContentSampled {

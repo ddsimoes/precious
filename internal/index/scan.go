@@ -66,10 +66,11 @@ type frame struct {
 
 	listed, unreadable, boundary bool
 
-	// The subtree's facts.
+	// The subtree's facts. newest and oldest span the files with a known
+	// time (dated, knownTime).
 	files, bytes                               int64
 	newest, oldest                             int64
-	hasFiles                                   bool
+	dated                                      bool
 	dirs, symlinks, specials, unreadableN, mts int64
 	partial                                    bool
 	byKind                                     map[domain.FileKind]rules.KindTotals
@@ -111,22 +112,41 @@ func (f *frame) reset() {
 }
 
 func (f *frame) addRange(oldest, newest int64) {
-	if !f.hasFiles {
-		f.oldest, f.newest, f.hasFiles = oldest, newest, true
+	if !f.dated {
+		f.oldest, f.newest, f.dated = oldest, newest, true
 		return
 	}
 	f.oldest = min(f.oldest, oldest)
 	f.newest = max(f.newest, newest)
 }
 
+// knownTime reports whether a modification time is known: one at or before
+// the epoch is a placeholder (a lost or zeroed time), not a date.
+func knownTime(ns int64) bool { return ns > 0 }
+
+// unknownYear is the by_year key of the files without a known time.
+const unknownYear = 0
+
+// ownRange is a file's or leaf's own newest and oldest time: its
+// modification time when known, else none.
+func ownRange(mtime opt) (newest, oldest opt) {
+	if !mtime.ok || !knownTime(mtime.v) {
+		return opt{}, opt{}
+	}
+	return mtime, mtime
+}
+
 // addFile counts one regular file of the subtree under its file family.
 func (f *frame) addFile(kind domain.FileKind, size, mtime int64, family domain.Family) {
 	f.files++
 	f.bytes += size
-	f.addRange(mtime, mtime)
+	y := unknownYear
+	if knownTime(mtime) {
+		f.addRange(mtime, mtime)
+		y = time.Unix(0, mtime).UTC().Year()
+	}
 	kt := f.byKind[kind]
 	f.byKind[kind] = rules.KindTotals{Files: kt.Files + 1, Bytes: kt.Bytes + size}
-	y := time.Unix(0, mtime).UTC().Year()
 	c := f.byYear[y]
 	c.add(counts{files: 1, bytes: size})
 	f.byYear[y] = c
@@ -511,7 +531,7 @@ func (s *walk) file(f *frame, c *child, kind domain.FileKind) error {
 	r.fileKind = text(kind)
 	r.ext = s.codec.ext(c.name)
 	r.totalBytes, r.totalFiles = r.size, 1
-	r.newest, r.oldest = r.mtime, r.mtime
+	r.newest, r.oldest = ownRange(r.mtime)
 	family := domain.FileFamily(res.Category, kind)
 	f.addFile(kind, r.size, r.mtime.v, family)
 	s.notableFile(f, c, &r, family)
@@ -553,7 +573,7 @@ func (s *walk) leaf(f *frame, c *child) error {
 	r.kind, r.special = kindColumn(c.info.Kind)
 	r.state = "present"
 	same := s.facts(&r, c)
-	r.newest, r.oldest = r.mtime, r.mtime
+	r.newest, r.oldest = ownRange(r.mtime)
 	var link []byte
 	hasLink := false
 	if c.info.Kind == domain.EntrySymlink {
@@ -628,8 +648,10 @@ func (s *walk) finish(f *frame) error {
 	s.facts(&r, &c)
 	r.classify(&res, s.codec)
 	r.totalBytes, r.totalFiles = f.bytes, f.files
-	if f.hasFiles {
+	if f.dated {
 		r.newest, r.oldest = some(f.newest), some(f.oldest)
+	}
+	if f.files > 0 {
 		r.mainKind = mainKind(f.byKind)
 	}
 	// Its composition is its content's (design D21); what it adds to its
@@ -663,7 +685,7 @@ func (s *walk) finish(f *frame) error {
 		p.partial = p.partial || f.partial || f.unreadable
 		p.files += f.files
 		p.bytes += f.bytes
-		if f.hasFiles {
+		if f.dated {
 			p.addRange(f.oldest, f.newest)
 		}
 		for k, t := range f.byKind {

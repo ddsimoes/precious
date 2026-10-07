@@ -21,22 +21,27 @@ import (
 // The R2 JSON shapes (design Interfaces): CopyJSON, RelationJSON,
 // CoverageJSON, and the detail's content and archive.
 
+// copyJSON is CopyJSON. Decision is the copy's own decision, null when it
+// follows its folder and for a member.
 type copyJSON struct {
-	Ref         string          `json:"ref"`
-	SourceID    domain.SourceID `json:"source_id"`
-	Path        string          `json:"path"`
-	PathB64     []byte          `json:"path_b64"`
-	ArchiveID   *string         `json:"archive_id"`
-	HardLink    bool            `json:"hard_link"`
-	Offline     bool            `json:"offline"`
-	EffDecision domain.Decision `json:"eff_decision"`
+	Ref         string           `json:"ref"`
+	SourceID    domain.SourceID  `json:"source_id"`
+	Path        string           `json:"path"`
+	PathB64     []byte           `json:"path_b64"`
+	ArchiveID   *string          `json:"archive_id"`
+	HardLink    bool             `json:"hard_link"`
+	Offline     bool             `json:"offline"`
+	Decision    *domain.Decision `json:"decision"`
+	EffDecision domain.Decision  `json:"eff_decision"`
 }
 
+// copiesJSON returns the CopyJSON of cs, which must outlive them.
 func copiesJSON(cs []content.Copy) []copyJSON {
 	out := make([]copyJSON, len(cs))
-	for i, c := range cs {
+	for i := range cs {
+		c := &cs[i]
 		out[i] = copyJSON{Ref: c.Ref.String(), SourceID: c.SourceID, Path: c.Path, PathB64: c.PathB64,
-			HardLink: c.HardLink, Offline: c.Offline, EffDecision: c.EffDecision}
+			HardLink: c.HardLink, Offline: c.Offline, Decision: nonEmpty(&c.Decision), EffDecision: c.EffDecision}
 		if c.ArchiveID != nil {
 			s := c.ArchiveID.String()
 			out[i].ArchiveID = &s

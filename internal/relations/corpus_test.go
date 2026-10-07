@@ -146,7 +146,7 @@ func (c *corpusWorld) pathsByID(t testing.TB) map[domain.EntryID]string {
 
 // Task 4.2: dir_dups equals a direct computation on the seeded corpus:
 // per folder, over the present non-empty files of its subtree with a
-// file_content row, candidate bytes (all but unique_size), checked bytes
+// file_content row, candidate bytes (all but unique_size and unreadable), checked bytes
 // (hashed and sampled), and the files with another physical copy among
 // present files and members of complete archives (a hard-link set, or a
 // tar hard link with its target, is one copy).
@@ -214,7 +214,7 @@ func TestDirDupsEqualADirectComputation(t *testing.T) {
 					path = path[:i]
 				}
 				d := want[dirs[key{src, path}]]
-				if state != string(domain.ContentUniqueSize) {
+				if state != string(domain.ContentUniqueSize) && state != string(domain.ContentUnreadable) {
 					d.CandidateBytes += size
 				}
 				if state == string(domain.ContentHashed) || state == string(domain.ContentSampled) {

@@ -26,7 +26,7 @@ import (
 
 // memberSelect reads a member of a complete archive: the columns scanMember
 // takes. A file member's copies count it and every other physical copy.
-var memberSelect = `SELECT m.id, m.archive_id, ae.source_id, m.name, ae.path, m.path, m.kind, m.size,
+var memberSelect = `SELECT m.id, m.archive_id, ae.source_id, m.name, ae.path, m.path, a.format = 'zip', m.kind, m.size,
 	m.total_bytes, m.total_files, m.mtime_ns, ae.eff_decision, m.state,
 	CASE WHEN m.state = 'hashed' THEN ` + search.CopiesSQL("m.content_id") + `
 		WHEN m.state = 'unique_size' THEN 1 END
@@ -72,17 +72,17 @@ func memberRows(ctx context.Context, tx *sql.Tx, pol *rules.Policy, where string
 			state                    sql.NullString
 		)
 		r := &m.row
-		if err := rows.Scan(&id, &archive, &source, &name, &archivePath, &mpath, &kind, &r.Size,
+		if err := rows.Scan(&id, &archive, &source, &name, &archivePath, &mpath, &r.Zip, &kind, &r.Size,
 			&r.TotalBytes, &r.TotalFiles, &mtime, &eff, &state, &r.Copies); err != nil {
 			return nil, fmt.Errorf("api: members: %w", err)
 		}
 		m.archive, m.path = domain.EntryID(archive), mpath
 		r.Member, r.ArchiveID, r.Source = domain.MemberID(id), m.archive, domain.SourceID(source)
-		r.Name = name
+		r.Name, r.MemberPath = name, mpath
 		r.Path = append(append(archivePath[:len(archivePath):len(archivePath)], '!'), mpath...)
 		r.State, r.EffDecision = "present", domain.Decision(eff)
 		r.ContentState = domain.ContentState(state.String)
-		r.MTime = nsTime(mtime)
+		r.MTime = search.NsTime(mtime)
 		switch domain.MemberKind(kind) {
 		case domain.MemberDirectory:
 			r.Kind = domain.EntryDirectory
@@ -103,13 +103,6 @@ func memberRows(ctx context.Context, tx *sql.Tx, pol *rules.Policy, where string
 		return nil, fmt.Errorf("api: members: %w", err)
 	}
 	return out, nil
-}
-
-func nsTime(ns sql.NullInt64) time.Time {
-	if !ns.Valid {
-		return time.Time{}
-	}
-	return time.Unix(0, ns.Int64).UTC()
 }
 
 // memberAgg sums the members below a member folder or an archive.
@@ -144,11 +137,9 @@ func (a *memberAgg) add(pol *rules.Policy, kind string, name []byte, size int64,
 	f := a.b.families[fam]
 	f.add(one)
 	a.b.families[fam] = f
-	if mtime.Valid {
-		y := time.Unix(0, mtime.Int64).UTC().Year()
-		c := a.b.years[y]
-		c.add(one)
-		a.b.years[y] = c
+	y := unknownYear
+	if t := search.NsTime(mtime); search.KnownTime(t) {
+		y = t.Year()
 		if !a.dated || mtime.Int64 > a.newest {
 			a.newest = mtime.Int64
 		}
@@ -157,11 +148,16 @@ func (a *memberAgg) add(pol *rules.Policy, kind string, name []byte, size int64,
 		}
 		a.dated = true
 	}
-	if state.Valid && state.String != string(domain.ContentUniqueSize) {
+	c := a.b.years[y]
+	c.add(one)
+	a.b.years[y] = c
+	switch st := domain.ContentState(state.String); {
+	case !state.Valid, st == domain.ContentUniqueSize, st == domain.ContentUnreadable:
+	case st == domain.ContentHashed, st == domain.ContentSampled:
 		a.candidate += size
-	}
-	if state.String == string(domain.ContentHashed) {
 		a.checked += size
+	default:
+		a.candidate += size
 	}
 	if copied {
 		a.duplicated += size
@@ -328,7 +324,7 @@ func memberAncestors(ctx context.Context, tx *sql.Tx, m *member) ([]ancestor, er
 			return nil, err
 		}
 		out = append(out, ancestor{ID: domain.Ref{Member: domain.MemberID(id)}.String(),
-			Name: domain.DisplayName(name), NameB64: name})
+			Name: domain.MemberDisplayName(name, m.row.Zip), NameB64: name})
 	}
 	return out, rows.Err()
 }
