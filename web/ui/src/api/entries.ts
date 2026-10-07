@@ -193,6 +193,12 @@ export interface Classification {
   veto: boolean
   rules: RuleExplanation[]
   indicators: Indicator[]
+  // owner is what the owner set (r2b design D5), null where the rules
+  // decide; rules_category and rules_group are what the rules would set
+  // (rules_category null for an entry the scan does not classify).
+  owner: { category: Category | null; group: boolean | null }
+  rules_category: Category | null
+  rules_group: boolean
 }
 
 export interface EffectiveTag {
