@@ -489,7 +489,9 @@ function EntryReviewRow({ row, section, cursorKey, onSelect }: RowProps) {
   if (entry === null) {
     return null
   }
-  const dates = fmt.dateSpan(...changeDates(entry)) ?? t('entry.unknownDate')
+  // A folder with no file inside has no change dates to show.
+  const empty = entry.kind === 'directory' && entry.total_files === 0
+  const dates = fmt.dateSpan(...changeDates(entry)) ?? (empty ? null : t('entry.unknownDate'))
   return (
     <li
       data-review-key={key}
@@ -509,7 +511,7 @@ function EntryReviewRow({ row, section, cursorKey, onSelect }: RowProps) {
       <p className="text-xs text-muted-foreground">
         {[
           sourceLabel(entry.source_id),
-          dates,
+          ...(dates === null ? [] : [dates]),
           ...(entry.triage === null ? [] : [t('review.suggestion', { triage: t(`entry.triage.${entry.triage}`) })]),
         ].join(' · ')}
       </p>

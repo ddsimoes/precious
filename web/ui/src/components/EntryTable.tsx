@@ -187,10 +187,14 @@ function KindCell({ row }: CellProps) {
   return <span title={text}>{text}</span>
 }
 
+// DatesCell leaves a folder with no file inside blank: it has no change
+// dates, unlike a folder whose files' dates are unknown.
 function DatesCell({ row }: CellProps) {
   const { t } = useTranslation()
   const fmt = useFormat()
-  return fmt.dateSpan(...changeDates(row.original)) ?? t('entry.unknownDate')
+  const entry = row.original
+  const empty = entry.kind === 'directory' && entry.total_files === 0
+  return fmt.dateSpan(...changeDates(entry)) ?? (empty ? '' : t('entry.unknownDate'))
 }
 
 function TriageCell({ row }: CellProps) {
