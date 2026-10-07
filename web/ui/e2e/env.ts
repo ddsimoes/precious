@@ -34,6 +34,7 @@ export interface TruthEntry {
   path: string
   kind: string
   size?: number
+  sha256?: string
   unreadable?: boolean
 }
 
