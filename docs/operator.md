@@ -1,8 +1,8 @@
 # Precious operator guide
 
-Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks, except where you allow changes on one: there it moves, renames, and creates folders when you ask, and it never deletes, overwrites, or writes into a file (see [Changing disks](#changing-disks)). This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
+Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks, except where you allow changes on one: there it moves, renames, and creates folders when you ask, moves what you discarded into a quarantine folder on the same disk, and deletes for good only quarantined files that a check has read and you approved; it never overwrites or writes into a file of yours (see [Changing disks](#changing-disks) and [Cleanup](#cleanup)). This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
 
-This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, and opportunity cards with review lists, among them your own files found inside programs. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing (moving, renaming, and creating folders on the sources where you allow it) comes with R3 (see [Changing disks](#changing-disks)); cleanup (quarantine and deletion) comes in a later release. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
+This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, and opportunity cards with review lists, among them your own files found inside programs. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing (moving, renaming, and creating folders on the sources where you allow it) comes with R3 (see [Changing disks](#changing-disks)), and cleanup (quarantine, restore, and deletion for good) with R4 (see [Cleanup](#cleanup)). Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
 
 ## Installation
 
@@ -486,7 +486,7 @@ Some folders are refused:
 
 The browser never sends a typed path. Each folder the picker shows carries an opaque handle signed with a key that Precious makes when it starts, and adding a source names that handle. After a restart the old handles are refused, so reopen the picker.
 
-Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, history of changes by Precious, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed, and nothing changes, while its scan is queued, running, or paused, or while a change by Precious on it (a move, a rename, a new folder) is waiting its turn or running (`job_active`); cancel it first. Nor can it while a step of a change is still being recorded or waits for you to check it in History (`recovery_needed`): removing the source would delete the only record of a step that may be half done. Resolve the step first. A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
+Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, history of changes by Precious, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed, and nothing changes, while its scan is queued, running, or paused, or while a change by Precious on it (a move, a rename, a new folder) is waiting its turn or running (`job_active`); cancel it first. Nor can it while a step of a change is still being recorded or waits for you to check it in History (`recovery_needed`): removing the source would delete the only record of a step that may be half done. Resolve the step first. Nor can it while its quarantine holds items (`quarantine_not_empty`): restore them or delete them for good first (see [Removing a source with a quarantine](#removing-a-source-with-a-quarantine)). A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
 
 ### Allowed roots
 
@@ -533,7 +533,7 @@ Each source in `GET /api/sources` carries `schedule` (the object above, or `null
 
 ### Changes by Precious
 
-Each source has its own write permission: whether Precious may move, rename, and create folders on it when you ask. Every source starts with it off, so Precious only reads it. Turn it on with **Allow changes…** on the Sources screen, which asks first, and off with **Turn off**, which takes effect at once; the next step of a change in progress checks it and stops.
+Each source has its own write permission: whether Precious may change it when you ask, by moving, renaming, and creating folders, and by cleaning it up (see [Cleanup](#cleanup)). Every source starts with it off, so Precious only reads it. Turn it on with **Allow changes…** on the Sources screen, which asks first, and off with **Turn off**, which takes effect at once; the next step of a change in progress checks it and stops.
 
 | Command | Request | Response |
 |---|---|---|
@@ -705,7 +705,7 @@ Files in quarantine are not in these figures, nor are the members of an archive 
 
 ### Check now
 
-`check-now` with `{"entry_ids":["12","m45"]}` (one or two folders, archive files, or folders inside archives) hashes what is not checked yet inside them before any other hashing on their disks, for example to compare two folders while the first hashing run has not reached their small files. It answers 202 with `{"jobs":[{"job_id","state","coalesced"}]}`, one job per source; a second request for the same source adds its folders to the job already waiting or running. A file is 400 `invalid_request`, an unknown ID 404, and a folder on an unmounted source 409 `source_offline`. The rest of the source continues with its regular hashing job afterwards.
+`check-now` with `{"entry_ids":["12","m45"]}` (one or two folders, archive files, or folders inside archives) hashes what is not checked yet inside them before any other hashing on their disks, for example to compare two folders while the first hashing run has not reached their small files. It answers 202 with `{"jobs":[{"job_id","state","coalesced"}]}`, one job per source; a second request for the same source adds its folders to the job already waiting or running. A file is 400 `invalid_request`, an unknown ID 404, a folder on an unmounted source 409 `source_offline`, and an entry in a quarantine 409 `in_quarantine`: only the [pre-delete check](#the-pre-delete-check) reads what is there. The rest of the source continues with its regular hashing job afterwards.
 
 ### Progress and cancelling
 
@@ -884,7 +884,7 @@ When the rules get an entry wrong, you can correct them. Your choice always wins
 
 The item itself reads its new category or group at once. The figures of the folders above it (their size by category and what stands out inside them) and the review lists follow when the scan of its disk that the change starts ends; if that disk is already being scanned, the scan runs once more. A disk that is not connected keeps the change, and its next scan applies it. The detail panel marks each value you set with **set by you** and says what the rules would set.
 
-Through the command API (see [Commands](#commands)): `set-category` with `{"entry_id":"12","category":"documents"}`, `{"entry_ids":[…]}` (1 to 1,000), or `{"selection_id":"…"}`, and `"category":"rules"` to remove yours; `set-group` with the same targets and `"group":true`, `false`, or `"rules"`. Both answer `{"applied":n,"scan":{"job_id","coalesced"}}`, or `"scan":null` when the disk is not connected. An archive member, a `set-group` on anything but a folder, and a category on a symbolic link or special file are refused with `invalid_request`, and a refused request changes nothing. Each accepted request writes one audit event, `category_set` or `group_set`, with the entries or selection, the old values (`rules` when the rules decided), and the new value.
+Through the command API (see [Commands](#commands)): `set-category` with `{"entry_id":"12","category":"documents"}`, `{"entry_ids":[…]}` (1 to 1,000), or `{"selection_id":"…"}`, and `"category":"rules"` to remove yours; `set-group` with the same targets and `"group":true`, `false`, or `"rules"`. Both answer `{"applied":n,"scan":{"job_id","coalesced"}}`, or `"scan":null` when the disk is not connected. An archive member, a `set-group` on anything but a folder, and a category on a symbolic link or special file are refused with `invalid_request`, an entry in a quarantine with `in_quarantine` (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)), and a refused request changes nothing. Each accepted request writes one audit event, `category_set` or `group_set`, with the entries or selection, the old values (`rules` when the rules decided), and the new value.
 
 ## Duplicates and Compare
 
@@ -1031,7 +1031,7 @@ The interface reads the index through a small JSON API under `/api`. The same en
 | `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
 | `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text` | A file's content, and its text decoded. See [Viewer safety](#viewer-safety). |
-| `GET /api/history`, `GET /api/history/{id}`, `GET /api/history/{id}/items` | The changes Precious made or planned on the disks, and their items. See [Organizing](#organizing). |
+| `GET /api/history`, `GET /api/history/{id}`, `GET /api/history/{id}/items` | The changes Precious made or planned on the disks, and their items. See [Organizing](#organizing) and [Cleanup API](#cleanup-api). |
 
 Every entry row carries its name and path twice: `name` and `path` are the escaped display form, and `name_b64` and `path_b64` are the exact bytes on disk in base64. A name that is not valid UTF-8 is therefore never lost. For example, a Latin-1 `fé.txt` shows as `f\xE9.txt`, and its raw bytes are `ZukudHh0`. Times are in UTC, in RFC 3339 form, or `null` when unknown.
 
@@ -1174,7 +1174,7 @@ A keep protects an entry, and everything inside a kept folder, from changes made
 - **One entry at a time** (the detail panel, or a request naming one `entry_id`), you can set any decision, including changing a keep, explicit or inherited.
 - **In bulk** (several selected entries, or all the results of a search), any decision other than keep skips every entry whose effective decision is keep, explicit or inherited, and applies to the rest. Inherit in bulk skips them too, so it never clears a keep. The result says how many entries were changed and how many were skipped, and lists up to 100 of the skipped ones with their paths. Keep in bulk applies to every entry.
 
-Discarding a folder that holds a kept entry discards the folder and leaves the kept entry, and everything inside it, kept. Cleanup plans (a later release) never remove a kept entry.
+Discarding a folder that holds a kept entry discards the folder and leaves the kept entry, and everything inside it, kept. A cleanup plan never moves a kept entry: such a folder is blocked as a whole (see [Blocked items and kept entries](#blocked-items-and-kept-entries)).
 
 A bulk request is checked against the decisions in force when it is applied: a keep set a moment before it, on an entry or on a folder above it, is honored.
 
@@ -1203,17 +1203,17 @@ Decisions and tags change through the command API, `POST /api/commands/{name}` w
 | `create-tag`, `rename-tag`, `delete-tag` | `{"name":"familia"}`, `{"tag_id":3,"name":"família"}`, `{"tag_id":3}` | `{"tag":{"id","name"}}` |
 | `create-selection` | `{"query":{…}}`, with the parameters of a search | `{"selection_id","count","bytes","kept":{"count","bytes"},"expires_at"}` |
 
-A request naming both one entry and several, or neither, or more than 1,000 IDs, is refused with `invalid_request`. A request naming any unknown entry, tag, or selection is refused whole with `not_found`, and a duplicate tag name with `tag_exists`. A refused request changes nothing.
+A request naming both one entry and several, or neither, or more than 1,000 IDs, is refused with `invalid_request`. A request naming any unknown entry, tag, or selection is refused whole with `not_found`, a duplicate tag name with `tag_exists`, and an entry in a quarantine with `in_quarantine` (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). A refused request changes nothing.
 
 Each accepted request writes one audit event (`decision_set`, `tags_set`, `tag_created`, `tag_renamed`, or `tag_deleted`) with the time, the client address, the entries or selection it named with the counts of changed and skipped entries, and the old and new values.
 
 ## Changing disks
 
-Precious changes a disk only to organize it, when you ask: it moves and renames files and folders, creates folders, and removes an empty folder that one of its own changes created, when you undo that change. It never deletes a file, never writes into one, and never changes a file's times or permissions. Every change is listed in [History](#history). How the index follows a move, without a rescan, is described under [Scanning and the index](#scanning-and-the-index).
+Precious changes a disk only when you ask. To organize it, it moves and renames files and folders, creates folders, and removes an empty folder that one of its own changes created, when you undo that change. To clean it up, it moves discarded items into the source's quarantine with a small record beside each, moves them back, and deletes for good what a check covered (see [Cleanup](#cleanup)): it creates and deletes files only inside the quarantine. It never writes into an existing file, and never changes a file's times or permissions. Every change is listed in [History](#history). How the index follows a move, without a rescan, is described under [Scanning and the index](#scanning-and-the-index).
 
 ### Organizing
 
-Every change Precious makes on a disk is an **action** that you plan first and then run. Planning reads only the index, never the disk, and changes nothing anywhere: it lists every step the action would take, its **items**, each with the path before and after. Running it queues an `organize` job that does exactly the steps that were planned, in order (see [How Precious changes a disk](#how-precious-changes-a-disk)). A plan can be run for one hour; after that it reads `expired`, running it is refused with `action_expired`, and you plan again. Expired plans are deleted a day later.
+Every change Precious makes on a disk is an **action** that you plan first and then run. Planning reads only the index, never the disk, and changes nothing anywhere: it lists every step the action would take, its **items**, each with the path before and after. Running it queues an `organize` job that does exactly the steps that were planned, in order (see [How Precious changes a disk](#how-precious-changes-a-disk)). A plan can be run for one hour (a cleanup plan for 24 hours); after that it reads `expired`, running it is refused with `action_expired`, and you plan again. Expired plans are deleted a day later.
 
 **The actions:**
 
@@ -1250,9 +1250,9 @@ A name taken on the disk but not yet indexed is found when the step runs: the it
 
 **Decisions follow the place, not the move.** A move never changes a decision. An entry with a decision of its own keeps it; one without takes the decision of its new folder, which the plan shows for each item as `decision_after`. A move of one entry, a rename, and an undo may take away a keep the entry had through its folder; the plan counts those items in `kept_lost`, and the interface warns "N kept items would no longer be kept" before it runs. A move of many entries (ticked entries, a selection, a rescue, or a merge) never takes away a keep: such an item is refused with `would_lose_keep`, and if the destination's decision changes before the item runs, it ends `changed` with that reason.
 
-**Undo.** Every action that ran can be undone from History while some of its done items are not undone yet. `plan-undo` plans the reverse of those items, last first: each moved or renamed entry goes from wherever it is now back to its previous folder and name, and each folder the action created is removed, if it is still empty (an `rmdir` item, which ends `not_empty` otherwise). An item whose previous name is taken now is a conflict (`name_taken`), as is one whose previous folder is gone (`previous_folder_gone`); planned again with `destination_id`, those items go into that folder under their previous names, still in conflict if taken there too. An item counts as undone only once its undo step is done, so an undo that stopped early, was cancelled, or expired leaves the rest undoable, and an undo planned twice does each item once (the second ends `changed`, `already_undone`). An undo is itself an action, which can be undone in turn. A move of many entries is one action and is undone as a whole.
+**Undo.** Every move, rename, new folder, rescue, merge, or undo that ran can be undone from History while some of its done items are not undone yet. `plan-undo` plans the reverse of those items, last first: each moved or renamed entry goes from wherever it is now back to its previous folder and name, and each folder the action created is removed, if it is still empty (an `rmdir` item, which ends `not_empty` otherwise). An item whose previous name is taken now is a conflict (`name_taken`), as is one whose previous folder is gone or is in a quarantine (`previous_folder_gone`); planned again with `destination_id`, those items go into that folder under their previous names, still in conflict if taken there too. An item whose entry is now in a quarantine is refused (`in_quarantine`). An item counts as undone only once its undo step is done, so an undo that stopped early, was cancelled, or expired leaves the rest undoable, and an undo planned twice does each item once (the second ends `changed`, `already_undone`). An undo is itself an action, which can be undone in turn. A move of many entries is one action and is undone as a whole. A cleanup, a restore, and a purge are not undone: items moved to quarantine come back with a restore, and what was deleted for good cannot (see [Cleanup](#cleanup)).
 
-**Run and cancel.** `run-action` queues a planned action. It is refused with `action_expired` after the hour, with `action_not_runnable` when the action is not planned any more or has no item to run, and with the source's own refusals. `cancel-action` stops an action that is waiting or running: a waiting one stops at once and none of its items runs; a running one stops after the step in progress, which is confirmed and recorded. Its items not yet attempted end `not_attempted`, and a stopped action never runs later.
+**Run and cancel.** `run-action` queues a planned action. It is refused with `action_expired` after the hour, with `action_not_runnable` when the action is not planned any more or has no item to run, and with the source's own refusals; a purge also with `check_running`, `check_stale`, or `purge_not_allowed`, its check being checked again (see [Deleting for good](#deleting-for-good)). `cancel-action` stops an action that is waiting or running: a waiting one stops at once and none of its items runs; a running one stops after the step in progress, which is confirmed and recorded. Its items not yet attempted end `not_attempted`, and a stopped action never runs later.
 
 **What every plan and run checks.** The source must allow changes now: refused with `source_offline` while its disk is not connected, `writes_unavailable` while changes cannot be allowed (see [Changes by Precious](#changes-by-precious)), and `writes_disabled` while its **Changes by Precious** is off. While one of the source's items needs your check (see [Recovery after an interruption](#recovery-after-an-interruption)), nothing can be planned or run on it: `recovery_needed`. Resolve it with `resolve-recovery`, which marks the item resolved and starts a scan of the source, so the index shows what you left on the disk; the source must be online for that scan.
 
@@ -1270,7 +1270,7 @@ A name taken on the disk but not yet indexed is found when the step runs: the it
 | `cancel-action` | `{"action_id":"8"}` | 200 `{"action"}` |
 | `resolve-recovery` | `{"item_id":"77"}` | 200 `{"action","scan":{"job_id","coalesced"}}` |
 
-A plan answers with the action and the first 200 of its items; `next_cursor` continues them through `GET /api/history/{id}/items`. A plan of one entry is individual; one of `entry_ids` or of a selection is bulk (`"bulk": true`), as are rescues and merges. An unknown entry, folder, action, item, or selection is `not_found`; a destination or parent that is not a folder the last scan saw (a file, an archive, a missing folder, an archive member) is `invalid_request`. `run-action`, `cancel-action`, and `resolve-recovery` each write an audit event (`action_run`, `action_cancelled`, `recovery_resolved`) with the action, its kind and source, and the job; plans write none, since they change nothing.
+A plan answers with the action and the first 200 of its items; `next_cursor` continues them through `GET /api/history/{id}/items`. A plan of one entry is individual; one of `entry_ids` or of a selection is bulk (`"bulk": true`), as are rescues and merges. An unknown entry, folder, action, item, or selection is `not_found`; a destination or parent that is not a folder the last scan saw (a file, an archive, a missing folder, an archive member), or that is in a source's quarantine, is `invalid_request`. `run-action`, `cancel-action`, and `resolve-recovery` each write an audit event (`action_run`, `action_cancelled`, `recovery_resolved`) with the action, its kind and source, and the job; plans write none, since they change nothing.
 
 **Read endpoints** (each needs a session, like every endpoint):
 
@@ -1278,26 +1278,28 @@ A plan answers with the action and the first 200 of its items; `next_cursor` con
 |---|---|
 | `GET /api/history?source=&cursor=&limit=` | The actions that ran (waiting, running, done, or stopped), newest first, 50 per page by default and at most 200: `{"items":[Action],"next_cursor"}`. An unknown `source` is `not_found`. |
 | `GET /api/history/{id}` | One action in any state, planned and expired ones included. |
-| `GET /api/history/{id}/items?state=&cursor=&limit=` | The action's items in order, 200 per page by default and at most 1,000; `state` repeats, such as `state=manual_recovery` or `state=done&state=conflict`. |
+| `GET /api/history/{id}/items?state=&op=&cursor=&limit=` | The action's items in order, 200 per page by default and at most 1,000; `state` repeats, such as `state=manual_recovery` or `state=done&state=conflict`, and so does `op`, such as `op=rename` for one row per item of a cleanup or a restore (see [Cleanup API](#cleanup-api)). |
+| `GET /api/history/{id}/export.csv` | Every item of the action as a CSV file (see [Exporting an action](#exporting-an-action)). |
 
-An **action** has its `id`, `kind` (`move`, `rename`, `create_folder`, `rescue`, `merge`, or `undo`), `source_id`, `state` (`planned`, `queued`, `running`, `done`, `stopped`, or `expired`), `created_at`, `expires_at`, `started_at`, and `finished_at`, its `destination` as an entry row (`null` for a rename or an undo to the previous places), `job_id`, `undo_of` (the action an undo reverses), `bulk`, `counts` (its items in each state, every state listed), `bytes` and `files` (of the items planned, under way, or done), `kept_lost`, `reversed` (its items undone), and `undo`: `{"possible":true,"reason":null}`, or `possible` false with `not_done` (it did not run), `nothing_done` (no item was done), or `already_undone`.
+An **action** has its `id`, `kind` (`move`, `rename`, `create_folder`, `rescue`, `merge`, `undo`, `cleanup`, `restore`, or `purge`), `source_id`, `state` (`planned`, `queued`, `running`, `done`, `stopped`, or `expired`), `created_at`, `expires_at`, `started_at`, and `finished_at`, its `destination` as an entry row (`null` for a rename or an undo to the previous places), `job_id`, `undo_of` (the action an undo reverses), `bulk`, `counts` (its items in each state, every state listed), `bytes` and `files` (of the items planned, under way, or done), `kept_lost`, `reversed` (its items undone), `undo`: `{"possible":true,"reason":null}`, or `possible` false with `not_done` (it did not run), `nothing_done` (no item was done), `already_undone`, or `not_undoable_kind` (a cleanup, a restore, or a purge), and the fields of cleanup: `ground`, `list`, `check_id`, `deleted_files`, `deleted_bytes`, `freed_bytes`, and, for those three kinds only, `entries` (see [Cleanup API](#cleanup-api)).
 
-An **item** has its `id`, `seq`, `op` (`rename` for a move or rename, `mkdir`, or `rmdir`), `entry` (the entry's row as it is now, or `null`), `from` and `to` (`{"path","path_b64"}` or `null`), `state`, `reason` (from the tables above), `decision_after`, `detail` (the system's message of a `failed` item), `found` (for an item that needs your check, what was at each name: `{"from","to"}`, each `absent`, `same`, or `other`), `reversed`, `bytes`, and `files`. Item states are `planned`, `refused`, `conflict`, `intent` (started and not yet confirmed), `done`, `not_permitted`, `offline`, `changed`, `failed`, `no_safe_rename`, `not_empty`, `manual_recovery`, `not_attempted`, and `resolved`.
+An **item** has its `id`, `seq`, `op` (`rename` for a move or rename, `mkdir`, `rmdir`, or, in cleanup, `record`, `unlink`, `purge`, and `verify`), `entry` (the entry's row as it is now, or `null`), `from` and `to` (`{"path","path_b64"}` or `null`), `state`, `reason` (from the tables above), `decision_after`, `detail` (the system's message of a `failed` item), `found` (for an item that needs your check, what was at each name: `{"from","to"}`, each `absent`, `same`, or `other`), `reversed`, `bytes`, and `files`, and a `blocked` cleanup item its `kept_count`. Item states are `planned`, `refused`, `conflict`, `blocked`, `intent` (started and not yet confirmed), `done`, `not_permitted`, `offline`, `changed`, `failed`, `no_safe_rename`, `not_empty`, `manual_recovery`, `not_attempted`, and `resolved`.
 
 **Errors** of the commands above, besides `invalid_request` and `not_found`:
 
 | Status | Code | When |
 |---|---|---|
 | 409 | `name_taken` | A rename or new folder whose name is taken in its folder. |
-| 409 | `action_expired` | Running a plan made over an hour ago. |
+| 409 | `action_expired` | Running a plan made over an hour ago (a cleanup plan, over 24 hours ago). |
 | 409 | `action_not_runnable` | Running an action that is not planned, or has nothing to run; cancelling one that is not waiting or running. |
-| 409 | `action_not_undoable` | Undoing an action that did not run, or has nothing left to undo. |
+| 409 | `action_not_undoable` | Undoing an action that did not run, has nothing left to undo, or is a cleanup, a restore, or a purge. |
 | 409 | `recovery_needed` | Planning or running on a source with an item that needs your check. |
 | 409 | `writes_disabled` | The source's **Changes by Precious** is off. |
 | 409 | `writes_unavailable` | Changes cannot be allowed on the source (see [Changes by Precious](#changes-by-precious)). |
 | 409 | `source_offline` | The source's disk is not connected. |
 | 409 | `selection_expired` | A selection older than an hour. |
 | 409 | `invalid_entry_state` | A rescue of a kept folder or of one with nothing kept inside; resolving an item that does not need your check. |
+| 409 | `in_quarantine` | A rename, rescue, or merge of an entry in a quarantine (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). |
 
 ### How Precious changes a disk
 
@@ -1387,6 +1389,173 @@ The shipped deployments keep every disk read-only at the operating-system level:
 - **Host:** mount that filesystem read-write (without `ro`), and leave the block device writable.
 
 Then turn **Changes by Precious** on for that source in Sources. The service's `UMask=0077` does not make new folders private: a folder Precious creates gets its parent's permission bits.
+
+## Cleanup
+
+Cleanup takes what you discarded off a disk in two stages. A **cleanup plan** moves the discarded items into the source's quarantine, a folder on the same disk where they keep their names and can be restored. A **purge** deletes a set of quarantined items for good, and only after a [pre-delete check](#the-pre-delete-check) has read them and you have confirmed what it asks. Cleanups, restores, and purges are actions like those of [Organizing](#organizing): planning reads only the index and changes nothing, `run-action` queues the plan as an `organize` job, `cancel-action` stops it, and every plan and run checks the source as described there (online, **Changes by Precious** on, no item that needs your check). Each one that runs is listed in History. How each step is checked and recorded on the disk is under [How Precious changes a disk](#how-precious-changes-a-disk), and the interface to all of it is the [Cleanup screen](#the-cleanup-screen).
+
+### Drafting a cleanup plan
+
+`plan-cleanup` with `{"source_id":"fotos"}` drafts a plan of every entry of the source with a discard of its own, outside the quarantine. With `"list"`, it takes only the rows of that review list on the source (`rescue`, `duplicates`, `unpacked_archives`, `system_junk`, `installers`, `programs`, `caches`, or `leftovers`; see [Review lists](#review-lists)) whose entry has a discard of its own. An entry that reads discard only through its folder is never an item of its own, and only the topmost entries are items: a discarded entry inside another goes with it.
+
+Each item is planned, blocked, or refused:
+
+| State | Reason | Meaning |
+|---|---|---|
+| `planned` | | It moves to the quarantine. |
+| `blocked` | `holds_kept` | Something inside it is kept (see [Blocked items and kept entries](#blocked-items-and-kept-entries)). Nothing of it moves. |
+| `refused` | `missing` | The last scan did not find it. |
+| `refused` | `source_root` | It is the source's top folder. |
+| `refused` | `other_filesystem` | Another filesystem is mounted there. |
+| `refused` | `contains_mount` | Another filesystem is mounted inside the folder; moving it would leave that mount behind. |
+| `refused` | `in_quarantine` | It is already in the quarantine. |
+| `refused` | `both_sides`, `last_copy` | A plan from the duplicates list would leave no copy (see [Plans from the duplicates list](#plans-from-the-duplicates-list)). |
+
+**Draft-time identity.** Each planned item records the entry as the index showed it when the plan was drafted: its kind, size, modification and change times, device and inode, and for a folder its total files and bytes. When the plan runs, an item that no longer matches that record, in the index or on the disk (a file changed, or a rescan found something new inside the folder), or that is no longer discarded, ends `changed` and stays where it is; one with something kept inside it by then ends `blocked`. A plan never moves more than its preview showed.
+
+**Steps.** A plan's items are steps, in order: the creation of the quarantine folder (only while Precious has not made it) and of the plan folder, then, for each planned item in path order, the creation of its item folder, the move into it, and its origin record. A refused or blocked item is a single `rename` row with its reason and no other step, so `op=rename` lists one row per item (see [Cleanup API](#cleanup-api)).
+
+**Limits.** A cleanup plan can be run for 24 hours; after that it reads `expired`, and you draft it again. A plan holds at most 30,000 steps (three per planned item, one per refused or blocked item, and two for the plan's folders), so at most 9,999 planned items; a larger one is refused with `invalid_request`, and you draft from a review list or discard less at a time. A plan with nothing discarded in its scope, and an unknown list, are refused with `invalid_request` too. A plan with no planned item, only blocked or refused ones, has nothing to run.
+
+**The answer** is `201` with the action, its first 200 items, `next_cursor`, and a `summary` of the planned items. The summary comes from the index alone, so it is what the last scan and hashing knew:
+
+| Field | Counts |
+|---|---|
+| `with_copy_bytes` | Bytes of the files below the planned items that were hashed and have a present copy outside the plan and every quarantine: another file, or a file inside an opened archive. |
+| `no_copy_bytes` | Bytes of the files unique by size or by sample, or hashed with no such copy. |
+| `unchecked_bytes` | Bytes of the files not checked for copies yet: still to read, changed since they were read, or unreadable. |
+| `personal_items` | Planned items whose own family is personal, or that hold your own material (see [The veto](#the-veto-user-material-inside-disposable-folders)). |
+
+### Blocked items and kept entries
+
+A cleanup plan never moves a kept entry. A discarded folder that holds an entry you kept, explicitly or through a folder inside it, is `blocked` (`holds_kept`) as a whole: nothing of it moves, not even the parts that are not kept. Its item carries `kept_count`, the number of entries at or below it with a keep of their own, and `GET /api/history/{id}/items/{item}/kept` lists them by path, 100 at a time. To clean up the rest of such a folder, move its kept items out with [Rescue kept items](#organizing), or discard its other parts one by one, and draft again. A keep set after the plan was drafted is caught when the item runs: it ends `blocked` and nothing of it moves.
+
+### Plans from the duplicates list
+
+A plan drafted with `"list":"duplicates"` has the `ground` `duplicate` (any other plan has `discard`), and it never removes the last copy of anything:
+
+- **A relation row** (two related folders or archives) gives an item for each side that has a discard of its own. When both sides do, the one that sorts later by path is refused with `both_sides`.
+- **A group of identical files** (hard links to one file being one copy, as in the [duplicate groups](#duplicate-groups)) gives an item for each discarded copy, in path order, until one would leave no copy present outside the plan and every quarantine: that copy, and every one after it, is refused with `last_copy`. A file staying at any of its names, or a file inside an opened archive, is such a copy.
+
+The plan relies on the index, so the copy is checked again when each item runs: Precious first reads in full one staying copy of each of the item's files and compares it with the file's digest, then, just before the move, checks that the copy is unchanged, not in a quarantine, and not being moved to one by another plan at that moment, on any source. Otherwise the item ends `changed` (`no_verified_copy`) and nothing of it moves, so two plans can never quarantine the last copies of a file between them.
+
+**Hard links.** Moving a file changes the change time of every name it has, which the index learns only at the next scan. So in any plan, a later item that is another name (a hard link) of a file the plan moved ends `changed` (`identity_changed`), and in a plan from the duplicates list, an item whose only staying copy is such a name ends `changed` (`no_verified_copy`). Nothing is lost: scan the source and draft again.
+
+### The quarantine
+
+Each source has one quarantine, the folder `.precious-quarantine` at its top: on the same filesystem as everything the source indexes, so moving an item there is a rename, never a copy. The first cleanup plan that runs creates it, and Precious records the folder as its own. Inside it, each item lives at `.precious-quarantine/<plan>/<seq>/<name>`, where `<plan>` is the ID of the cleanup action, `<seq>` numbers its items from 1 in path order, and `<name>` is the item's own name, unchanged. Beside each item folder, `<plan>/<seq>.json` is its origin record: where the item came from, in a short JSON file described under [How Precious changes a disk](#how-precious-changes-a-disk).
+
+The quarantine is left out of every view, total, search, duplicate group, relation, and review list, but scans walk it like any other folder, so the index always matches what is in it (see [The quarantine folder](#the-quarantine-folder)). `GET /api/quarantine?source=fotos` lists its items, newest plan first, each with where it came from, when it was moved, its size, and its newest check. An item a scan found there with no move recorded, after an interruption or put there by hand, has its origin unknown and can be restored only to a folder you choose.
+
+### Restoring from quarantine
+
+`plan-restore` plans moving quarantined items back: the ones named in `entry_ids` (1 to 1,000 items of one source, each an entry at `<plan>/<seq>/<name>`), or every item still in one plan folder with `plan_id`. Each item goes back to the folder and name it had before the cleanup, then Precious removes its origin record and its item folder. When every item of a plan folder leaves in the same restore, the plan folder is swept too: any other empty item folder and any record whose item is gone are removed, and then the plan folder itself; anything else in it keeps it.
+
+An item that cannot go back is a conflict, and nothing of it moves:
+
+| Reason | Meaning |
+|---|---|
+| `name_taken` | An entry with its name is in its previous folder now. |
+| `name_taken_in_plan` | An earlier item of the same restore takes that name. |
+| `name_taken_by_missing` | A missing entry with that name carries your decision, tags, or category. |
+| `previous_folder_gone` | Its previous folder is gone, is not a folder any more, or is itself in the quarantine, or its origin is unknown. |
+
+Planned again with `"destination_id"`, those items go into that folder under their original names, and stay in conflict only if the name is taken there too. The destination must be a present folder of the same source outside the quarantine; anything else is refused with `invalid_request`. A restore never merges into or replaces anything. A restore plan can be run for one hour, like an organizing plan, and every restored entry keeps its ID, decision, tags, and category.
+
+### Deleting for good
+
+Deleting takes three commands, each on a set of quarantined items of one source:
+
+1. **`check-purge`** with the items' IDs (1 to 10,000) starts the [pre-delete check](#the-pre-delete-check) and answers `202` with its `check_id` and `job_id`. The source must be online, but changes need not be allowed: the check only reads. One check of a source runs at a time; another is refused with `check_running`.
+2. **`confirm-purge`** records your confirmations once the check is `ready`. What needs one:
+   - every `unique` file the rules rank **likely junk**: one confirmation for the whole group, `{"check_id":"5","group":"likely_junk"}`;
+   - every other `unique` file (possibly valuable or uncertain), every `copy_offline` file, every `unreadable` file, and every `opaque_archive` without a verified copy: one confirmation each, `{"check_id":"5","file_ids":["81","82"]}`, up to 1,000 at a time. A file that needs no confirmation of its own (with a verified copy, with nothing to copy, or likely junk) is refused with `invalid_request`.
+
+   Instead of confirming a file, you can take it out of the set: restore its item, or move it out of the quarantine on its own with `plan-move` (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). Either makes the check stale, and you check what is left again. Confirmations belong to their check: a new check starts with none. Each accepted request writes a `purge_confirmed` audit event with the check, the source, the files or the group, and their files and bytes.
+3. **`plan-purge`** with the `check_id` plans the deletion once the check is `ready` and nothing is left unconfirmed: one `verify` step, one `purge` step per item of the set, in path order, and the sweep of each plan folder the purge empties, as for a restore. An item the check could not read is never deleted: its `purge` row is `refused` (`unreadable`), and a set with nothing else is refused with `invalid_request`. While a file still needs a confirmation, the plan is refused with `purge_not_allowed`, whose message names up to ten of those files by path (`<member> inside <archive>` for a file inside an archive). The plan can be run for one hour; `run-action` checks the check and its confirmations again.
+
+**When it runs**, the `verify` step first compares every entry the check recorded, and every copy it relied on, with the disk, and deletes nothing if anything differs; then each `purge` step walks its whole item before deleting it, file by file, each compared once more just before (see [How Precious changes a disk](#how-precious-changes-a-disk)). A purge stops between items, never inside one.
+
+**Freed space.** The action reports `deleted_files` and `deleted_bytes`, the regular files it deleted and their size, and `freed_bytes`, the space allocated to the files whose last name it removed: a file that also has a hard link elsewhere frees nothing. On ZFS, a snapshot taken before the deletion keeps those blocks until it is destroyed, so the pool's free space can grow by less than `freed_bytes`; the Cleanup screen says so.
+
+### Exporting an action
+
+`GET /api/history/{id}/export.csv` downloads every item of any action, of any kind, as a CSV file (`text/csv; charset=utf-8`, named `precious-<kind>-<id>.csv`): the header `path,size,operation,state,reason`, then one row per item in order, each line ending in CRLF.
+
+- `path` is the item's path before, or for a created folder or a record the path it creates, in display form;
+- `size` is its bytes;
+- `operation` is `quarantine` (a cleanup's move), `restore`, `rename`, `move`, `create_folder`, `remove_folder`, `write_record`, `remove_record`, `purge`, or `verify`;
+- `state` and `reason` are the item's.
+
+Every cell is quoted, with its quotes doubled, and a cell that starts with `=`, `+`, `-`, `@`, a tab, or a carriage return gets a leading `'`, so no spreadsheet reads it as a formula: a file `=SOMA(A1).txt` at the top of a source exports as `"'=SOMA(A1).txt"`. A plan's export lists every step, the blocked and refused items included:
+
+```csv
+path,size,operation,state,reason
+".precious-quarantine","0","create_folder","planned",""
+".precious-quarantine/31","0","create_folder","planned",""
+".precious-quarantine/31/1","0","create_folder","planned",""
+"Downloads/Setup.exe","48211968","quarantine","planned",""
+".precious-quarantine/31/1.json","0","write_record","planned",""
+"Fotos/2006","1073741824","quarantine","blocked","holds_kept"
+```
+
+### The reserved name
+
+The name `.precious-quarantine` at a source's top belongs to Precious. When the top already holds an entry of that name that Precious did not make, a folder or file of your own, `plan-cleanup` is refused with `409 quarantine_name_taken`, and the source's `quarantine.name_taken` is `true` (see [Changes by Precious](#changes-by-precious)). Views hide it like the quarantine, and Precious cannot rename it for you: rename it on the disk, rescan the source, and draft again.
+
+Nothing else takes that name there: `plan-rename` and `plan-create-folder` to it at a source's top are refused with `invalid_request`, and a move or restore item that would take it is `refused` (`reserved_name`).
+
+### Quarantined entries are frozen
+
+An entry in a quarantine, and everything inside it, keeps the decision, tags, category, and group it had when it was moved there, so a restore brings it back as it was. Until it is restored, deleted, or moved out, Precious refuses to change it with `409 in_quarantine`:
+
+- `set-decision`, `set-tags`, `set-category`, and `set-group` naming it, one entry or many: the whole request is refused;
+- `check-now` on it;
+- `plan-rename` of it, `plan-rescue` of a folder in the quarantine, and `plan-merge` with a side there.
+
+In a `plan-move` of several entries, a quarantined one is a `refused` item (`in_quarantine`). `plan-undo` refuses the same way an item whose entry is now in a quarantine, and reads a previous folder there as gone (`previous_folder_gone`). A `plan-move` of one `entry_id` is the way out: it moves a quarantined entry, such as one file of a quarantined folder, to a folder outside the quarantine, and makes the checks that read it stale. Only a cleanup plan puts anything into the quarantine: a destination or parent at or below it (`plan-move`, `plan-rescue`, `plan-create-folder`, `plan-undo`, `plan-restore`) is refused with `invalid_request`. A cleanup, a restore, and a purge cannot be undone: `plan-undo` refuses them with `action_not_undoable`, and their `undo.reason` is `not_undoable_kind`.
+
+### Removing a source with a quarantine
+
+`remove-source` is refused with `409 quarantine_not_empty`, and nothing changes, while the quarantine Precious made on the source holds any entry that is not missing; the message names one. A `.precious-quarantine` of your own does not count. Removing the source deletes its index, which is the only thing that knows where those files came from and what a check found in them. Restore them or delete them for good first.
+
+### Cleanup API
+
+**Commands** (`POST /api/commands/{name}` with an `Idempotency-Key`; IDs are strings):
+
+| Command | Request | Success | Errors |
+|---|---|---|---|
+| `plan-cleanup` | `{"source_id":"fotos"}`, optionally with `"list":"duplicates"` | 201 `{"action","items","next_cursor","summary"}` | 400 `invalid_request` (an unknown list, nothing discarded, over 30,000 steps); 404 `unknown_source`; 409 `source_offline`, `writes_unavailable`, `writes_disabled`, `recovery_needed`, `quarantine_name_taken` |
+| `plan-restore` | exactly one of `{"entry_ids":["90","91"]}` (1 to 1,000 quarantined items of one source) or `{"plan_id":"31"}`, optionally with `"destination_id":"40"` | 201 `{"action","items","next_cursor"}` | 400 `invalid_request` (an entry that is not a quarantined item, items of two sources, a plan with no item left, a destination that is not a present folder, is in the quarantine, or is on another source); 404 `not_found` (an unknown entry, plan, or destination); 409 `source_offline`, `writes_unavailable`, `writes_disabled`, `recovery_needed` |
+| `check-purge` | `{"entry_ids":["90","91"]}` (1 to 10,000 quarantined items of one source) | 202 `{"check_id","job_id"}` | 400 `invalid_request`, 404 `not_found`, as for `plan-restore`; 409 `source_offline`, `check_running` |
+| `confirm-purge` | `{"check_id":"5"}` with exactly one of `"file_ids":["81"]` (1 to 1,000) or `"group":"likely_junk"` | 200 `{"check"}` | 400 `invalid_request` (a file not in the check, or one that needs no confirmation of its own); 404 `not_found`; 409 `check_running`, `check_stale` |
+| `plan-purge` | `{"check_id":"5"}` | 201 `{"action","items","next_cursor"}` | 400 `invalid_request` (nothing readable to delete); 404 `not_found`; 409 `check_running`, `check_stale`, `purge_not_allowed`, `source_offline`, `writes_unavailable`, `writes_disabled`, `recovery_needed` |
+| `run-action` | as for organizing | 202, as for organizing | for a purge, also 409 `check_running`, `check_stale`, `purge_not_allowed` |
+| `plan-undo` | as for organizing | | also 409 `action_not_undoable` for a cleanup, a restore, or a purge |
+
+A cleanup, restore, or purge action has the `kind` `cleanup`, `restore`, or `purge`, and adds to the [action](#organizing) `ground` (`discard` or `duplicate` for a cleanup), `list` (the review list it was drafted from), `check_id` (a purge's check), `deleted_files`, `deleted_bytes`, and `freed_bytes`, and `entries`: its items that stand for an entry (the `rename` rows of a cleanup or restore, the `purge` rows of a purge) by state, every state listed. Its item ops add `record`, `unlink`, `purge`, and `verify`, its item states `blocked`, and a blocked item carries `kept_count`.
+
+**Read endpoints:**
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/quarantine?source=&cursor=&limit=` | The source's quarantined items, newest plan first, 100 per page by default and at most 500: `{"items","next_cursor","total":{"files","bytes"}}`. Each item has `entry` (its row), `original` (`{"path","path_b64"}`, or `null` when its origin is unknown), `plan_id` and `quarantined_at` (`null` when unknown), `bytes`, `files`, and `check` (`{"id","state"}` of the newest check holding it, or `null`). `total` is what the quarantine folder holds, records included. `source` is required; an unknown one is `unknown_source`, and a source without a quarantine has no items. |
+| `GET /api/checks/{id}` | One check: `id`, `source_id`, `state` (`running`, `ready`, `failed`, or `stale`), `job_id`, `created_at`, `finished_at`, `stale_reason` (`index_changed` or `disk_changed`), `items` (its set's items), `counts` (`{"verdict":{finding:{"files","bytes"}},"class":{class:{"files","bytes"}}}`, every bucket listed, the classes over `unique` files only), `confirmed` and `unconfirmed` (`{"files","bytes"}` of the files that need a confirmation; likely junk counts as unconfirmed until its group is confirmed), `junk_confirmed`, and `allowed` (ready with nothing unconfirmed). |
+| `GET /api/checks/{id}/files?verdict=&class=&confirmed=&cursor=&limit=` | What the check recorded, in the order it recorded it, 200 per page by default and at most 1,000, filtered by finding, by class, and by `confirmed=1` or `confirmed=0`: `{"items","next_cursor"}`. Each file has `id`, `item` (the row of its set item), `entry_id` (`null` for a file inside an archive), `path` and `path_b64` (the archive's, for a file inside one), `member` (its path inside the archive, or `null`), `kind`, `size`, `verdict`, `class`, `copy` (`{"source_id","path","path_b64","hard_link"}` of the verified copy, or `null`), and `confirmed` (on its own, or through the likely junk group). |
+| `GET /api/history/{id}/items?op=&state=&cursor=&limit=` | The action's items, as for organizing; `op` repeats, from `rename`, `mkdir`, `rmdir`, `record`, `unlink`, `purge`, and `verify`. `op=rename` lists one row per item of a cleanup or restore, and `op=purge` of a purge. |
+| `GET /api/history/{id}/items/{item}/kept?cursor=` | The entries at or below the item's entry, by its path before, that have a keep of their own, by path, 100 per page: `{"count","items":[entry rows],"next_cursor"}`. |
+| `GET /api/history/{id}/export.csv` | Every item of the action as CSV (see [Exporting an action](#exporting-an-action)). |
+
+**Errors** of the cleanup commands, besides those of [Organizing](#organizing), `invalid_request`, and `not_found`:
+
+| Status | Code | When |
+|---|---|---|
+| 409 | `in_quarantine` | Changing a quarantined entry other than by a restore, a purge, or a move of it alone out of the quarantine (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). |
+| 409 | `purge_not_allowed` | Planning or running a purge while a file of its check still needs a confirmation; the message names up to ten of them. |
+| 409 | `check_stale` | Confirming, planning, or running a purge on a check that is stale or failed, or whose items are no longer all in the quarantine; check the items again. |
+| 409 | `check_running` | Starting a check while another of the source runs; confirming, planning, or running a purge on a check that is still running. |
+| 409 | `quarantine_not_empty` | Removing a source whose quarantine holds items. |
+| 409 | `quarantine_name_taken` | Drafting a cleanup plan on a source whose top holds a `.precious-quarantine` that Precious did not make. |
 
 ## Interface
 
