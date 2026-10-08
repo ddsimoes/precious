@@ -1,6 +1,9 @@
 package fsaccess
 
-import "bytes"
+import (
+	"bytes"
+	"time"
+)
 
 var _ Writer = (*portableDir)(nil)
 
@@ -48,4 +51,11 @@ func (d *portableDir) Unlink(name []byte) error {
 		return err
 	}
 	return &Error{Op: opUnlink, Name: bytes.Clone(name), Err: ErrNoReplaceUnsupported}
+}
+
+func (d *portableDir) SetModTime(name []byte, _ time.Time) error {
+	if err := checkName(opSetModTime, name); err != nil {
+		return err
+	}
+	return &Error{Op: opSetModTime, Name: bytes.Clone(name), Err: ErrNoReplaceUnsupported}
 }
