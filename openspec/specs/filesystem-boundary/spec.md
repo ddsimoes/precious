@@ -133,7 +133,7 @@ Scanning, rescanning, the folder picker, availability refresh, and the viewer SH
 - **THEN** it completes, the recorded calls contain no mutating operation, and the process writes no copy of the content to any disk
 
 ### Requirement: Filesystem capabilities are detected
-Precious SHALL detect and record each source's filesystem capabilities (§6.1) when the source is added and on each availability refresh: `known`, `read_only`, `case_sensitive`, `normalization_sensitive`, `stable_identity`, `local_time`, `hard_links`, and `time_resolution_ns`. On Linux they SHALL follow the filesystem type; an unrecognized type SHALL get the conservative unknown set with `known: false`.
+Precious SHALL detect and record each source's filesystem capabilities (§6.1) when the source is added and on each availability refresh: `known`, `read_only`, `case_sensitive`, `normalization_sensitive`, `stable_identity`, `local_time`, `hard_links`, `time_resolution_ns`, and `no_replace_rename`. On Linux they SHALL follow the filesystem type; an unrecognized type SHALL get the conservative unknown set with `known: false`. `no_replace_rename` SHALL be true only for a recognized local filesystem whose Linux driver honors `RENAME_NOREPLACE`, and false on macOS and Windows until their primitives exist (R8).
 
 #### Scenario: Case-sensitive filesystems with stable identity
 - **WHEN** a source is on ext2, ext3, ext4, xfs, btrfs, zfs, f2fs, or tmpfs
@@ -161,7 +161,11 @@ Precious SHALL detect and record each source's filesystem capabilities (§6.1) w
 
 #### Scenario: Unknown filesystem type
 - **WHEN** a source is on a filesystem type outside the recognized list
-- **THEN** its capabilities report `known: false`, `case_sensitive: false`, `stable_identity: false`, and `time_resolution_ns: 2000000000`
+- **THEN** its capabilities report `known: false`, `case_sensitive: false`, `stable_identity: false`, `time_resolution_ns: 2000000000`, and `no_replace_rename: false`
+
+#### Scenario: Which filesystems have a no-replace rename
+- **WHEN** a source is on ext2, ext3, ext4, xfs, btrfs, zfs, f2fs, tmpfs, vfat, exfat, or ntfs3
+- **THEN** its capabilities report `no_replace_rename: true`, and on ntfs or fuseblk, iso9660, udf, an unknown type, macOS, or Windows they report `no_replace_rename: false`
 
 ### Requirement: Comparisons follow capabilities
 Wherever Precious compares two names or two times of entries on one source, it SHALL apply that source's recorded capabilities. Times SHALL be equal when they differ by no more than the time resolution, or, on a local-time filesystem, by one hour plus or minus that resolution. On a case-insensitive filesystem, names that differ only in letter case SHALL compare as equal; stored names stay exactly as given.

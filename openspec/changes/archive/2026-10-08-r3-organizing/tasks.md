@@ -181,4 +181,4 @@
   - a rescan finds no new or missing entry.
 
   Then delete the script.
-- [ ] 4.4 Deploy on the reference server. The owner turns writes on for the corpus source only, tries a rename, a move with undo, and a merge, and signs off, recorded in the design addendum.
+- [x] 4.4 Deploy on the reference server. The owner turns writes on for the corpus source only, tries a rename, a move with undo, and a merge, and signs off, recorded in the design addendum.
