@@ -113,11 +113,12 @@ func TestV6DatabaseMigratesToCleanup(t *testing.T) {
 }
 
 // TestCleanupColumnsAndIndexes pins the 0007 columns, appended after
-// 0006's, and every index of the rebuilt and new tables.
+// 0006's, and every index of the rebuilt and new tables, as R4 shipped them;
+// 0008 rebuilds actions and action_items again (see media_schema_test.go).
 func TestCleanupColumnsAndIndexes(t *testing.T) {
-	s, _ := openTemp(t, Options{})
-	if v, err := SchemaVersion(context.Background(), s.Writer()); err != nil || v != latestVersion(t) || v < 7 {
-		t.Fatalf("schema version = %d, %v; want the latest, at least 7", v, err)
+	s, _ := openTemp(t, Options{Migrations: migrationsUpTo(t, 7)})
+	if v, err := SchemaVersion(context.Background(), s.Writer()); err != nil || v != 7 {
+		t.Fatalf("schema version = %d, %v; want 7", v, err)
 	}
 	want := map[string][]string{
 		"actions": {"id", "kind", "source_id", "state", "bulk", "destination_id", "undo_of", "kept_lost", "job_id",
