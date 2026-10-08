@@ -1517,7 +1517,7 @@ In a `plan-move` of several entries, a quarantined one is a `refused` item (`in_
 
 ### Removing a source with a quarantine
 
-`remove-source` is refused with `409 quarantine_not_empty`, and nothing changes, while the quarantine Precious made on the source holds any entry that is not missing; the message names one. A `.precious-quarantine` of your own does not count. Removing the source deletes its index, which is the only thing that knows where those files came from and what a check found in them. Restore them or delete them for good first.
+`remove-source` is refused with `409 quarantine_not_empty`, and nothing changes, while the quarantine Precious made on the source holds an item that is not missing (an entry at `.precious-quarantine/<plan>/<seq>/<name>`); the message names one. Plan folders, item folders, and records left without an item (by a cleanup whose items stayed where they were, or by moving an item out) do not count, and a `.precious-quarantine` of your own does not count. Removing the source deletes its index, which is the only thing that knows where those files came from and what a check found in them. Restore them or delete them for good first.
 
 ### Cleanup API
 
