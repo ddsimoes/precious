@@ -102,6 +102,10 @@ type Capabilities struct {
 	HardLinks bool `json:"hard_links"`
 	// TimeResolution is the granularity of stored modification times.
 	TimeResolution time.Duration `json:"time_resolution_ns"`
+	// NoReplaceRename reports a rename that fails instead of replacing an
+	// existing name (RENAME_NOREPLACE on Linux), which Writer needs (r3
+	// design D2). False wherever the platform or driver lacks it.
+	NoReplaceRename bool `json:"no_replace_rename"`
 }
 
 // unknownTimeResolution is the coarsest resolution of a common filesystem
@@ -110,8 +114,8 @@ const unknownTimeResolution = 2 * time.Second
 
 // UnknownCapabilities returns the conservative set for a filesystem whose type
 // is not recognised: case- and normalization-insensitive, no stable identity,
-// no hard links, UTC times, and 2-second resolution. readOnly comes from the
-// mount when it is known; pass false otherwise.
+// no hard links, UTC times, 2-second resolution, and no no-replace rename.
+// readOnly comes from the mount when it is known; pass false otherwise.
 func UnknownCapabilities(readOnly bool) Capabilities {
 	return Capabilities{ReadOnly: readOnly, TimeResolution: unknownTimeResolution}
 }

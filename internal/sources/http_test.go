@@ -43,7 +43,7 @@ var (
 		"root_entry_id", "totals", "last_scan_at", "active_job", "schedule", "next_scan_at", "schedule_skipped"}
 	volumeKeys = []string{"kind", "id", "label", "fs_type", "strong"}
 	capsKeys   = []string{"known", "read_only", "case_sensitive", "normalization_sensitive", "stable_identity",
-		"local_time", "hard_links", "time_resolution_ns"}
+		"local_time", "hard_links", "time_resolution_ns", "no_replace_rename"}
 	pickerItemKeys = []string{"handle", "name", "path", "volume_label", "fs_type", "is_source"}
 )
 
