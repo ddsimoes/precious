@@ -117,11 +117,14 @@ func newWorld(t *testing.T) *world {
 		return review.Refresh(ctx, w.st, gen)
 	})
 	relate.Register(r)
+	w.dates = dates.New(dates.Options{Store: w.st, Runner: r, Sources: srcs, Zone: time.UTC, Clock: w.clk, Logger: log})
+	w.dates.DeferWhile(executor.OrganizeActive)
+	w.dates.Register(r)
 	w.scanner.OnScanDone(func(ctx context.Context, src domain.SourceID) {
 		w.hashing.AfterScan(ctx, src)
 		_ = r.Write(ctx, relations.RequestRefresh)
+		w.dates.AfterScan(ctx, src)
 	})
-	w.dates = dates.New(dates.Options{Store: w.st, Runner: r, Sources: srcs, Zone: time.UTC, Clock: w.clk, Logger: log})
 	w.org = New(Options{Store: w.st, Policy: pol, AllowWrites: true, Clock: w.clk, Logger: log, Dates: w.dates})
 	ex := executor.New(executor.Options{Store: w.st, Sources: srcs, Index: w.org.Index(), AllowWrites: true,
 		Clock: w.clk, Logger: log, Content: w.hashing})

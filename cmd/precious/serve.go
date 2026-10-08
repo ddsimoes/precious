@@ -127,23 +127,29 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		return review.Refresh(ctx, st, gen)
 	})
 	relate.Register(runner)
-	// After each scan: hashing for every online source (sizes are shared
-	// across sources), and a relate pass, because classification feeds the
-	// review lists even when no content changed (design D5).
-	scanner.OnScanDone(func(ctx context.Context, src domain.SourceID) {
-		hashing.AfterScan(ctx, src)
-		if err := runner.Write(ctx, relations.RequestRefresh); err != nil && ctx.Err() == nil {
-			log.Error("relate refresh after a scan", "source", src, "err", err)
-		}
-	})
 	// Media dates (r5 design D2–D11): derived in the zone [dates] time_zone
 	// resolves to; organize's date plans re-derive their targets with it.
+	// The media job waits while its source is being organized, as a scan
+	// does (D4).
 	zone, err := cfg.Dates.Location()
 	if err != nil {
 		return err
 	}
 	mediaDates := dates.New(dates.Options{Store: st, Runner: runner, Sources: srcs, Zone: zone, Clock: d.Clock,
 		Logger: log})
+	mediaDates.DeferWhile(executor.OrganizeActive)
+	mediaDates.Register(runner)
+	// After each scan: hashing for every online source (sizes are shared
+	// across sources), a relate pass, because classification feeds the
+	// review lists even when no content changed (design D5), and the
+	// source's media job.
+	scanner.OnScanDone(func(ctx context.Context, src domain.SourceID) {
+		hashing.AfterScan(ctx, src)
+		if err := runner.Write(ctx, relations.RequestRefresh); err != nil && ctx.Err() == nil {
+			log.Error("relate refresh after a scan", "source", src, "err", err)
+		}
+		mediaDates.AfterScan(ctx, src)
+	})
 	// Organizing (r3 design D3–D14): the executor follows each done step in
 	// the index through organize's adapter, and a scan waits while a change
 	// of its source is queued, running, or has a step recorded as started
@@ -213,6 +219,9 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 	}
 	if err := exec.Startup(ctx, runner); err != nil {
 		log.Error("check interrupted changes at start", "err", err)
+	}
+	if err := mediaDates.Startup(ctx); err != nil {
+		log.Error("request the media jobs at start", "err", err)
 	}
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	defer stopRefresh()
