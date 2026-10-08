@@ -20,8 +20,10 @@
 // identity checks of OpenAt, in read_chunk_bytes chunks, each a watched
 // call; a digest is kept only for a complete read of an unchanged file.
 // Results commit at most 64 files per transaction, each re-checked against
-// its entries row (I9), and the job yields after every commit and every
-// yield_bytes read.
+// its entries row (I9): present, with the identity the read observed, and
+// at the path the read used, so a read through the old path of a folder
+// moved meanwhile is dropped rather than recorded changed (r3 design D18).
+// The job yields after every commit and every yield_bytes read.
 package content
 
 import (
