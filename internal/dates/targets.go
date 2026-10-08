@@ -297,22 +297,35 @@ func expandFolders(ctx context.Context, tx *sql.Tx, ids []domain.EntryID, camera
 		out.Media, err = cameraPhotos(ctx, tx, tgs, camera)
 		return out, err
 	}
-	// The folders not below another target, in path order: their subtrees
-	// are disjoint ranges of paths, so their files come in path order.
-	slices.SortFunc(tgs, func(a, b target) int { return bytes.Compare(a.path, b.path) })
-	var tops []target
-	for _, tg := range tgs {
-		if n := len(tops); n > 0 && below(tg.path, tops[n-1].path) {
+	// The folders not below another target, in the order of their subtrees'
+	// ranges of paths: by path with a '/' appended, so that a folder comes
+	// right before its descendants and a sibling whose name extends it with
+	// a byte below '/' (`Fotos - Copia` beside `Fotos`) never comes between
+	// them. The tops' subtrees are then disjoint, ordered ranges, so their
+	// files come once each, in path order (Addendum G5).
+	type ranged struct {
+		path, lo []byte
+	}
+	rs := make([]ranged, len(tgs))
+	for i, tg := range tgs {
+		rs[i] = ranged{path: tg.path}
+		if len(tg.path) > 0 {
+			rs[i].lo = append(append(make([]byte, 0, len(tg.path)+1), tg.path...), '/')
+		}
+	}
+	slices.SortFunc(rs, func(a, b ranged) int { return bytes.Compare(a.lo, b.lo) })
+	var tops []ranged
+	for _, r := range rs {
+		if n := len(tops); n > 0 && below(r.path, tops[n-1].path) {
 			continue
 		}
-		tops = append(tops, tg)
+		tops = append(tops, r)
 	}
 	for _, top := range tops {
 		where, args := `e.source_id = ?`, []any{string(src)}
 		if len(top.path) > 0 {
-			lo := append(append([]byte{}, top.path...), '/')
 			hi := append(append([]byte{}, top.path...), '0')
-			where, args = where+` AND e.path >= ? AND e.path < ?`, append(args, lo, hi)
+			where, args = where+` AND e.path >= ? AND e.path < ?`, append(args, top.lo, hi)
 		}
 		args = append(args, max+1-len(out.Media))
 		rows, err := tx.QueryContext(ctx, `SELECT e.id FROM entries e WHERE `+where+` AND `+MediaCond("e")+`

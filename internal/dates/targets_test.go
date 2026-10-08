@@ -155,6 +155,15 @@ func TestExpandTargets(t *testing.T) {
 	if got, want := expand("the top", Targets{FolderIDs: []string{e.ref(corpusSource, "")}}).Media, below(""); !slices.Equal(got, want) {
 		t.Errorf("the top: %d media, want the truth's %d", len(got), len(want))
 	}
+	// A sibling whose name extends a target's sorts between the target and
+	// its descendants (`Fotos` < `Fotos - Copia` < `Fotos/2006`): the
+	// nested target still collapses, and the media come once, in path order.
+	fotos := append(below("Fotos - Copia"), below("Fotos")...)
+	if got := expand("a sibling between nested folders", Targets{FolderIDs: []string{e.ref(corpusSource, "Fotos"),
+		e.ref(corpusSource, "Fotos - Copia"), e.ref(corpusSource, "Fotos/2006"),
+		e.ref(corpusSource, "Fotos/2006/Praia")}}); !slices.Equal(got.Media, fotos) {
+		t.Errorf("a sibling between nested folders: %d media %v, want %d %v", len(got.Media), got.Media, len(fotos), fotos)
+	}
 
 	// A camera in two events: its photos directly in them, in path order.
 	var sony, canon []domain.EntryID
