@@ -238,7 +238,7 @@ After a failed sign-in, the next attempt is refused for 1 s, and each further co
 
 ### Audit trail
 
-Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `source_writes_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, `tag_deleted`, `category_set`, `group_set`, `action_run`, `action_cancelled`, and `recovery_resolved` (see [Organizing](#organizing)). To read the latest ones, run this as the user that owns the state directory:
+Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `source_writes_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, `tag_deleted`, `category_set`, `group_set`, `action_run`, `action_cancelled`, `recovery_resolved` (see [Organizing](#organizing)), `date_correction_set`, and `date_correction_cleared` (see [Correcting dates](#correcting-dates)). To read the latest ones, run this as the user that owns the state directory:
 
 ```sh
 sqlite3 <state_dir>/precious.db \
@@ -1222,6 +1222,44 @@ Decisions and tags change through the command API, `POST /api/commands/{name}` w
 A request naming both one entry and several, or neither, or more than 1,000 IDs, is refused with `invalid_request`. A request naming any unknown entry, tag, or selection is refused whole with `not_found`, a duplicate tag name with `tag_exists`, and an entry in a quarantine with `in_quarantine` (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). A refused request changes nothing.
 
 Each accepted request writes one audit event (`decision_set`, `tags_set`, `tag_created`, `tag_renamed`, or `tag_deleted`) with the time, the client address, the entries or selection it named with the counts of changed and skipped entries, and the old and new values.
+
+## Correcting dates
+
+Every photo and video has an effective date, which Precious derives from what the file and its place say. When that date is wrong, you correct it. A correction is your decision, like a keep or a tag: no scan, rule, or job sets, changes, or removes it. It stays through rescans, through moves and renames, and while the file is missing, and it goes only when the file's entry leaves the index. Like your own decision, it keeps a missing file's place: Precious never moves or creates another item at that path while the correction is there. Corrections change no file on the disk, so Keep never limits them.
+
+A correction is one of:
+
+- **Set** a date: a year (`2004`), a month (`2004-12`), a day (`2004-12-24`), or a time (`2004-12-24T20:10:00`), read in the configured zone, `[dates] time_zone`, or, for a time only, at a given offset from UTC (`offset_min`, from −840 to 840). The date keeps the precision you gave: a year stays a year, never a made-up day. Any age is accepted, such as `1978` for a scanned print; a date after tomorrow is refused.
+- **Shift** by a number of seconds, up to 50 years either way: the shift moves the camera's capture date, or, for a file without one, its effective date. Use it for a camera whose clock was wrong. The interface counts a year as 365 days and a day as 24 hours, so "+1 year 3 hours" is 31,546,800 seconds.
+- **Use name** or **Use folder**: take the date in the file's name (such as `IMG-20110416-WA0003.jpg`) or in the nearest folder above it named with a date (such as `2010-07 Bahia`), even where a capture date would otherwise win.
+
+A correction names its files in one of three ways: one file (`entry_id`), up to 1,000 files (`entry_ids`), or up to 100 folders of one source (`folder_ids`), which take every photo and video at or below them. With a camera (`camera_key`), folders take only that camera's photos directly inside them, which is what a camera's suggested shift names. One request covers at most 50,000 photos and videos.
+
+A correction of one file either applies or is refused with `409 invalid_entry_state`: the file is not a photo or video, its name or folders hold no date, or the shift would move it past tomorrow. A correction of several files applies to every file it can and skips the rest, listing them with a reason: `not_media` (not a photo or video, a folder, or a file inside an archive), `no_name_date`, `no_folder_date`, `in_future` (a shift past tomorrow), or `no_date` (a shift of a file with no date at all). A request that names a file or folder in a quarantine is refused whole with `409 in_quarantine` and changes nothing; folders never take what their quarantine holds.
+
+Setting a correction replaces the earlier one of each file it applies to; **Clear** removes it, and the file's date is derived again as if it had never been corrected. Either way the new dates show at once: they are derived in the same transaction. Precious then runs the source's media job again, which recomputes the cameras and their suggestions with the corrected dates, so a shifted camera stops being flagged. Each request writes one audit event, `date_correction_set` or `date_correction_cleared`, with the files or folders it named, the correction, the counts applied and skipped (or cleared), and its batch ID.
+
+## Dates API
+
+Dates have their own commands and reads; every read and command needs a signed-in session. IDs are strings, as elsewhere; times are UTC in RFC 3339 form.
+
+| Command | Request | Response |
+|---|---|---|
+| `set-date-correction` | One of `{"entry_id":"12"}`, `{"entry_ids":[…]}` (1 to 1,000), or `{"folder_ids":[…]}` (1 to 100, one source) with an optional `"camera_key"`, plus `"correction"`: `{"kind":"set","local":"2004-12","offset_min"?}`, `{"kind":"shift","shift_s":31546800}`, `{"kind":"use_name"}`, or `{"kind":"use_folder"}` | `{"applied","skipped_count","skipped":[{"entry_id","path","path_b64","reason"}],"batch_id"}`, the first 100 skipped in path order |
+| `clear-date-correction` | The same targets, without `correction` | `{"cleared","batch_id"}` |
+
+A malformed request, a date that does not parse or lies after tomorrow, an `offset_min` without a time, a shift of 0 or beyond 50 years, a file inside an archive as `entry_id` or `folder_ids`, targets on two sources, or more than 50,000 photos and videos are `400 invalid_request`; an unknown ID is `404 not_found`; a target in a quarantine is `409 in_quarantine`. A single `set-date-correction` that cannot apply is `409 invalid_entry_state`; a single `clear-date-correction` of a file without a correction clears nothing.
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/dates/summary?source=ID` | One source's totals, or, without `source`, every source's added up: `media`, `metadata` (`pending`, `read`, `none`, `unreadable`), `by_source` (`owner`, `exif`, `gps`, `container`, `file_name`, `folder_name`, `mtime`, `none`), `by_confidence` (`high`, `medium`, `low`, `lowest`, `none`), `flags` (`mtime_disagrees`, `implausible`, `camera_offset`, `no_date_metadata`), `cameras` (`offset`, `disagrees`), `time_zone`, `time_zone_set`, `summary_at`, and `detected_at`. `time_zone` is the configured zone's name, or, when it is unset (`time_zone_set` false), the server's local zone as its abbreviation and offset, such as `UTC (UTC+00:00)`. The totals are kept by the media job and each correction; `summary_at` and `detected_at` are when the job last counted and detected cameras, the oldest source's without `source`, and `null` until then. |
+| `GET /api/dates?source=ID` | One source's photos and videos with their dates, 200 to a page (`limit`, at most 1,000), with `next_cursor` while more remain. Filters: `flag` (one flag name), `date_source` (one source of date), `camera` (a camera key), and `within` (a folder ID: everything at or below it). Without `within` the list is by effective date, then entry, with the undated last; with `within` it is in path order. `count=only` answers `{"count"}` instead. `source` is required. |
+| `GET /api/dates/cameras?source=ID` | The cameras the media job found: `{"items":[{"key","make","model","serial","source_id","photos","state","suggested_shift_s","events":[{"folder":{"id","path","path_b64"},"delta_s","photos","reference"}],"computed_at"}]}`, those with a suggested shift (`offset`) first, then those that disagree with no reference (`disagrees`), then the rest (`ok`), each by photos. `reference` is `gps`, `folder_name`, `own_gps`, or `null`. An event whose folder is gone or in a quarantine is left out, and a camera none of whose photos is left. |
+| `GET /api/entries/{id}/dates` | `{"dates":…}`: the entry's date as a list item has it, without `entry`, plus `candidates`, every date found for it (`source`, `local`, `offset_min`, `instant`, `precision`, `plausible`), the owner's first. `dates` is `null` for anything that is not a photo or video of the index: a folder, another file, a file inside an archive, a missing file, or one in a quarantine. |
+
+A list item is `{"entry":{"id","source_id","name","path","path_b64","size","mtime"},"date":{"instant","local","offset_min","precision","source","confidence","refined","corrected"},"metadata","flags":[…],"camera":{"key","make","model","serial"},"correction":{"kind","local","offset_min","shift_s","created_at"}}`. `local` is the date as it reads where it was taken, at its precision (`2004`, `2004-12`, `2004-12-24`, or `2004-12-24T20:10:00`); `instant` is that moment, or the start of the period, in UTC. `metadata` is `pending` until the file is read, then `read`, `none` for a format Precious does not read, or `unreadable`. `camera` and `correction` are `null` when there is none, and a correction carries only the fields of its kind. Every read leaves out what is in a quarantine, missing, or not a photo or video, even before the media job runs again.
+
+Errors: an unknown or repeated parameter, a bad value, a cursor the server did not give for that request, or `GET /api/dates` without `source`, are `400 invalid_request`; an unknown source is `404 unknown_source`, and an unknown entry or `within` folder `404 not_found`.
 
 ## Changing disks
 
