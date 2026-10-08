@@ -198,8 +198,9 @@ func candidates(photos []Photo, exclude map[string]bool) map[string][]candidate 
 }
 
 // candidateIn is a camera's candidate in one event: from its own GPS when
-// that gives one, else when its photos span less than a day and all lie
-// outside the other cameras' widened range.
+// that gives one, else when its photos span less than a day and all lie on
+// one side of the other cameras' widened range: all before it or all after
+// it (Addendum G6), so the medians' difference measures a clock offset.
 func candidateIn(folder int64, own, others []Photo, date *Date) (Event, bool) {
 	caps := captures(own)
 	span := caps[len(caps)-1] - caps[0]
@@ -213,10 +214,8 @@ func candidateIn(folder int64, own, others []Photo, date *Date) (Event, bool) {
 	}
 	oc := captures(others)
 	lo, hi := oc[0]-int64(eventMargin), oc[len(oc)-1]+int64(eventMargin)
-	for _, c := range caps {
-		if c >= lo && c <= hi {
-			return Event{}, false
-		}
+	if caps[len(caps)-1] >= lo && caps[0] <= hi {
+		return Event{}, false
 	}
 	ev.DeltaS = roundSecond(medianInt(caps) - medianInt(oc))
 	switch {

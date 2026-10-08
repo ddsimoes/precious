@@ -155,6 +155,15 @@ func TestExpandTargets(t *testing.T) {
 	if got, want := expand("the top", Targets{FolderIDs: []string{e.ref(corpusSource, "")}}).Media, below(""); !slices.Equal(got, want) {
 		t.Errorf("the top: %d media, want the truth's %d", len(got), len(want))
 	}
+	// A sibling whose name extends a target's sorts between the target and
+	// its descendants (`Fotos` < `Fotos - Copia` < `Fotos/2006`): the
+	// nested target still collapses, and the media come once, in path order.
+	fotos := append(below("Fotos - Copia"), below("Fotos")...)
+	if got := expand("a sibling between nested folders", Targets{FolderIDs: []string{e.ref(corpusSource, "Fotos"),
+		e.ref(corpusSource, "Fotos - Copia"), e.ref(corpusSource, "Fotos/2006"),
+		e.ref(corpusSource, "Fotos/2006/Praia")}}); !slices.Equal(got.Media, fotos) {
+		t.Errorf("a sibling between nested folders: %d media %v, want %d %v", len(got.Media), got.Media, len(fotos), fotos)
+	}
 
 	// A camera in two events: its photos directly in them, in path order.
 	var sony, canon []domain.EntryID
@@ -178,6 +187,28 @@ func TestExpandTargets(t *testing.T) {
 	if got := expand("a camera elsewhere", Targets{FolderIDs: []string{e.ref(corpusSource, ouroPreto)},
 		CameraKey: sonyKey}); len(got.Media) != 0 {
 		t.Errorf("the Sony in Ouro Preto: %v", got.Media)
+	}
+	// As set-date-correction expands it (G2): the photos detection flagged.
+	// The Sony's 12 are flagged as the cameras pass flags them; the Canon's
+	// 8 are not, and one holds a set correction, which is skipped.
+	e.setCameraBitsB(corpusSource, sony)
+	e.exec(`INSERT INTO date_corrections (entry_id, kind, set_local, batch_id, created_at)
+		VALUES (?, 'set', '2010-07-17', 'b', 0)`, int64(canon[1]))
+	flagged := func(key string) Expanded {
+		t.Helper()
+		out, err := e.expandAs(Targets{FolderIDs: events, CameraKey: key}, max, true)
+		if err != nil {
+			t.Fatalf("%s flagged: %v", key, err)
+		}
+		return out
+	}
+	if got := flagged(sonyKey); !slices.Equal(got.Media, sony) || len(got.Skipped) != 0 {
+		t.Errorf("the Sony flagged: %v, skipped %v; want %v", got.Media, got.Skipped, sony)
+	}
+	if got := flagged(canonKey); len(got.Media) != 0 ||
+		!slices.Equal(got.Skipped, []Skip{{Entry: domain.Ref{Entry: canon[1]}, Reason: "has_correction"}}) {
+		t.Errorf("the Canon flagged: %v, skipped %v; want none, and %d skipped has_correction", got.Media, got.Skipped,
+			canon[1])
 	}
 
 	// Refusals.

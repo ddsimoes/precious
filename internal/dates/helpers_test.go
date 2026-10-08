@@ -391,11 +391,18 @@ func (e *env) rederive(ids ...domain.EntryID) {
 // expand runs ExpandTargets in a transaction that is rolled back.
 func (e *env) expand(t Targets, max int) (Expanded, error) {
 	e.t.Helper()
+	return e.expandAs(t, max, false)
+}
+
+// expandAs runs expandTargets, with flagged as set-date-correction passes
+// it, in a transaction that is rolled back.
+func (e *env) expandAs(t Targets, max int, flagged bool) (Expanded, error) {
+	e.t.Helper()
 	var out Expanded
 	errDone := errors.New("done")
 	err := e.st.Write(context.Background(), func(tx *sql.Tx) error {
 		var err error
-		out, err = ExpandTargets(context.Background(), tx, t, max)
+		out, err = expandTargets(context.Background(), tx, t, max, flagged)
 		if err != nil {
 			return err
 		}

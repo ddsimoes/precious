@@ -206,7 +206,7 @@ func TestDateTruthMatchesMedia(t *testing.T) {
 					ph.GPS = &g.Date.Instant
 				}
 			}
-			if fd, ok := media.FolderDate([]byte(path.Base(dir)), time.UTC, now); ok {
+			if fd, ok := media.FolderPathDate([]byte(dir), time.UTC, now); ok {
 				ph.FolderDate = &fd
 			}
 			photos = append(photos, ph)

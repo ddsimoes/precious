@@ -240,6 +240,23 @@ func TestDeriveCorrections(t *testing.T) {
 	i = with(nil, Correction{Kind: CorrectionShift, ShiftS: 60})
 	i.Path, i.Mtime = []byte("Fotos/foto.jpg"), nil
 	checkEff(t, "shift of nothing", Derive(i), wantEff{source: SourceNone, conf: ConfidenceNone, flags: FlagNoDateMetadata})
+	// A shift landing outside the years 1700–2200 does not apply (G9): the
+	// instant would not fit effective_ns at 1660, nor be a date P4 reads.
+	for name, c := range map[string]struct {
+		capture string
+		s       int64
+	}{
+		"before 1700": {"1710-01-01T00:00:00", -1577880000},
+		"after 2200":  {"2190-06-01T00:00:00", 1577880000},
+	} {
+		e := Derive(with(&Meta{CaptureLocal: c.capture}, Correction{Kind: CorrectionShift, ShiftS: c.s}))
+		if e.Corrected != "" || e.Source == SourceOwner {
+			t.Errorf("a shift %s applied: %+v", name, e.Date)
+		}
+	}
+	checkEff(t, "a shift to 1700", Derive(with(&Meta{CaptureLocal: "1710-01-01T00:00:00"},
+		Correction{Kind: CorrectionShift, ShiftS: -10 * 365 * 86400})), wantEff{source: SourceOwner, conf: ConfidenceMedium,
+		local: "1700-01-03T00:00:00", prec: PrecisionSecond, corr: CorrectionShift, flags: FlagImplausible | FlagMtimeDisagrees})
 
 	// Set: any precision, any age, never skipped.
 	for _, c := range []struct {

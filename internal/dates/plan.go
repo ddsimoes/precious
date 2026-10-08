@@ -13,6 +13,13 @@ import (
 // planWindow is the span of entry IDs pass 1 enrols per write.
 const planWindow = 50_000
 
+// planWindowSQL reads the media of one window of entry IDs without a
+// media_meta row. entries is read NOT INDEXED, by its rowid range, for the
+// reason deriveWindowSQL is (Addendum G1).
+var planWindowSQL = `SELECT e.id, e.ext, e.size, e.mtime_ns, e.ctime_ns, e.ino FROM entries e NOT INDEXED
+				WHERE e.id > ? AND e.id <= ? AND e.source_id = ? AND ` + MediaCond("e") + `
+					AND NOT EXISTS (SELECT 1 FROM media_meta m WHERE m.entry_id = e.id)`
+
 // plan is pass 1 (D3, D4): a media_meta row for every media file of src
 // (MediaCond) without one, with the identity of its entries row: pending
 // for a format media.FormatOf reads, none for any other. Entry IDs are
@@ -27,9 +34,7 @@ func (s *Service) plan(ctx context.Context, rt jobs.Runtime, src domain.SourceID
 		var n int
 		err := s.st.Write(ctx, func(tx *sql.Tx) error {
 			n = 0
-			rows, err := tx.QueryContext(ctx, `SELECT e.id, e.ext, e.size, e.mtime_ns, e.ctime_ns, e.ino FROM entries e
-				WHERE e.id > ? AND e.id <= ? AND e.source_id = ? AND `+MediaCond("e")+`
-					AND NOT EXISTS (SELECT 1 FROM media_meta m WHERE m.entry_id = e.id)`, from, from+planWindow, string(src))
+			rows, err := tx.QueryContext(ctx, planWindowSQL, from, from+planWindow, string(src))
 			if err != nil {
 				return err
 			}

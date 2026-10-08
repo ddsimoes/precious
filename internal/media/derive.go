@@ -12,7 +12,7 @@ import (
 
 // DeriveVersion is part of every inputs key: raising it re-derives every
 // date (D9).
-const DeriveVersion = 1
+const DeriveVersion = 2
 
 // Inputs are the facts a file's effective date is derived from (D9).
 type Inputs struct {
@@ -113,11 +113,11 @@ func captureDate(m *Meta, zone *time.Location) (Date, bool) {
 }
 
 // nearestFolderDate is the date of the nearest dated ancestor folder below
-// the source's top (D6).
+// the source's top (D6, Addendum G12).
 func nearestFolderDate(p []byte, zone *time.Location, now time.Time) (Date, bool) {
 	parts := strings.Split(string(p), "/")
 	for i := len(parts) - 2; i >= 0; i-- {
-		if d, ok := FolderDate([]byte(parts[i]), zone, now); ok {
+		if d, ok := folderDateAt(parts, i, zone, now); ok {
 			return d, true
 		}
 	}
@@ -229,7 +229,9 @@ func Derive(in Inputs) Effective {
 				base = &cands[exif].Date
 			}
 			if base != nil {
-				e = owner(shift(*base, c.ShiftS, zone), ConfidenceMedium, CorrectionShift)
+				if d, ok := shift(*base, c.ShiftS, zone); ok {
+					e = owner(d, ConfidenceMedium, CorrectionShift)
+				}
 			}
 		case CorrectionUseName:
 			if name >= 0 {
@@ -291,15 +293,21 @@ func owner(d Date, c Confidence, kind string) Effective {
 }
 
 // shift moves a date by s seconds, keeping its precision and offset; a date
-// coarser than a second starts its new period.
-func shift(d Date, s int64, zone *time.Location) Date {
+// coarser than a second starts its new period. A result whose year (as it
+// reads where it was taken) lies outside minYear–maxYear is refused, as P4
+// bounds every date read or set, so its instant fits an int64 of
+// nanoseconds (Addendum G9).
+func shift(d Date, s int64, zone *time.Location) (Date, bool) {
 	loc := zoneOf(zone, d.OffsetMin)
 	t := d.Instant.Add(time.Duration(s) * time.Second).In(loc)
+	if y := t.Year(); y < minYear || y > maxYear {
+		return Date{}, false
+	}
 	if d.Precision == PrecisionSecond {
-		return Date{Instant: t.UTC(), Local: t.Format(localSecond), OffsetMin: copyInt(d.OffsetMin), Precision: PrecisionSecond}
+		return Date{Instant: t.UTC(), Local: t.Format(localSecond), OffsetMin: copyInt(d.OffsetMin), Precision: PrecisionSecond}, true
 	}
 	w, _, _ := parseWall(t.Format(layouts[d.Precision]))
-	return fromWall(w, d.Precision, loc, d.OffsetMin)
+	return fromWall(w, d.Precision, loc, d.OffsetMin), true
 }
 
 // InputsKey is the FNV-64a of every input but Now (D9).

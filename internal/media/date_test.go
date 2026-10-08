@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 	"time"
+	_ "time/tzdata" // America/Sao_Paulo wherever the tests run
 )
 
 var (
@@ -60,6 +61,46 @@ func TestNameDate(t *testing.T) {
 	}
 }
 
+// r5 review, Addendum G7: in America/Sao_Paulo, daylight saving started
+// at midnight of 2018-11-04 (00:00 -03 became 01:00 -02, at 03:00 UTC).
+// The day named IMG-20181104-WA0001.jpg begins at that change and ends at
+// midnight of the 5th; the 3rd ends at the change. So neither the 3rd's
+// last minutes nor 00:30 on the 5th are taken as the 4th's time.
+func TestPeriodsAroundADaylightSavingStart(t *testing.T) {
+	sp, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, ok := NameDate([]byte("IMG-20181104-WA0001.jpg"), sp)
+	if !ok || d.Local != "2018-11-04" {
+		t.Fatalf("NameDate = %+v %v", d, ok)
+	}
+	change := time.Date(2018, 11, 4, 3, 0, 0, 0, time.UTC)
+	if !d.Instant.Equal(change) {
+		t.Errorf("the 4th begins at %v, want %v", d.Instant, change)
+	}
+	if end, want := d.end(sp), time.Date(2018, 11, 5, 2, 0, 0, 0, time.UTC); !end.Equal(want) {
+		t.Errorf("the 4th ends at %v, want %v", end, want)
+	}
+	day3, _ := NameDate([]byte("IMG-20181103-WA0001.jpg"), sp)
+	if end := day3.end(sp); !end.Equal(change) {
+		t.Errorf("the 3rd ends at %v, want %v", end, change)
+	}
+	month, _ := FolderDate([]byte("2018-10"), sp, now)
+	if end, want := month.end(sp), time.Date(2018, 11, 1, 3, 0, 0, 0, time.UTC); !end.Equal(want) {
+		t.Errorf("October ends at %v, want %v", end, want)
+	}
+	for _, mtime := range []time.Time{time.Date(2018, 11, 3, 23, 30, 0, 0, sp), time.Date(2018, 11, 5, 0, 30, 0, 0, sp)} {
+		if d.contains(mtime, sp, 0) {
+			t.Errorf("the 4th contains %v", mtime)
+		}
+		in := Inputs{Path: []byte("Fotos/IMG-20181104-WA0001.jpg"), Mtime: &mtime, MetaState: MetaNone, Zone: sp, Now: now}
+		if e := Derive(in); e.Refined || e.Date == nil || e.Date.Local != "2018-11-04" {
+			t.Errorf("modified at %v: Derive = %+v refined %v, want the 4th unrefined", mtime, e.Date, e.Refined)
+		}
+	}
+}
+
 func TestFolderDate(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -97,6 +138,46 @@ func TestFolderDate(t *testing.T) {
 			t.Errorf("FolderDate(%q) = %+v, want none", name, d)
 		}
 	}
+}
+
+// r5 review, Addendum G12: the layout a date organize writes,
+// `{year}/{month}` and `{year}/{month}/{day}`, carries the month or day.
+func TestFolderPathDate(t *testing.T) {
+	for _, c := range []struct {
+		path, local string
+		prec        Precision
+	}{
+		{"Fotos/2010/07", "2010-07", PrecisionMonth},
+		{"2010/07", "2010-07", PrecisionMonth},
+		{"Fotos/2010/07/17", "2010-07-17", PrecisionDay},
+		{"Fotos/2010/07 Bahia", "2010-07", PrecisionMonth},
+		{"Fotos/2010/07/17_praia", "2010-07-17", PrecisionDay},
+		{"Fotos/2010", "2010", PrecisionYear},
+		{"Fotos/2010/13", "", ""},          // no 13th month, and "13" is no D6 date
+		{"Fotos/2010/02/30", "", ""},       // no February 30th: "30" alone is no date
+		{"Fotos/2010/7", "", ""},           // one digit
+		{"Fotos/2010/070", "", ""},         // three digits
+		{"Fotos/Album 2010/07", "", ""},    // the year must be alone
+		{"Fotos/2010-07 Bahia/08", "", ""}, // nor a month
+		{"Fotos/2027/07", "", ""},          // after now's year
+		{"Fotos/2010/07/2011-03", "2011-03", PrecisionMonth},
+	} {
+		d, ok := FolderPathDate([]byte(c.path), recif, now)
+		if ok != (c.local != "") || d.Local != c.local || d.Precision != c.prec {
+			t.Errorf("FolderPathDate(%q) = %+v %v, want %q %s", c.path, d, ok, c.local, c.prec)
+		}
+	}
+	// A file moved from "Viagens/2010-07 Bahia" into "Fotos/2010/07" keeps
+	// its month: the modification time, in December, is outside it, so the
+	// date stays the month, unrefined, from the folder name.
+	mtime := tp(2010, 12, 26, 15, 0, 0)
+	for _, p := range []string{"Viagens/2010-07 Bahia/scan.jpg", "Fotos/2010/07/scan.jpg"} {
+		checkEff(t, p, Derive(in(p, mtime, nil)), wantEff{source: SourceFolderName, conf: ConfidenceLow, local: "2010-07",
+			prec: PrecisionMonth, flags: FlagNoDateMetadata})
+	}
+	checkEff(t, "a day folder", Derive(in("Fotos/2010/07/17/scan.jpg", tp(2010, 7, 17, 15, 0, 0), nil)), wantEff{
+		source: SourceFolderName, conf: ConfidenceMedium, local: "2010-07-17T15:00:00", prec: PrecisionSecond,
+		refined: true, flags: FlagNoDateMetadata})
 }
 
 func TestParseLocal(t *testing.T) {

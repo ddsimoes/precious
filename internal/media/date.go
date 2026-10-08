@@ -101,8 +101,29 @@ func zoneOf(zone *time.Location, offsetMin *int) *time.Location {
 
 // fromWall builds the Date of a wall time read in loc, at a precision.
 func fromWall(w time.Time, p Precision, loc *time.Location, offsetMin *int) Date {
-	t := time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), w.Nanosecond(), loc)
+	var t time.Time
+	if p == PrecisionSecond {
+		t = time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), w.Nanosecond(), loc)
+	} else {
+		t = dayStart(w.Year(), w.Month(), w.Day(), loc)
+	}
 	return Date{Instant: t.UTC(), Local: w.Format(layouts[p]), OffsetMin: copyInt(offsetMin), Precision: p}
+}
+
+// dayStart is the first instant of the day y-m-d (normalized, so the day
+// after the 31st is the 1st) in loc: its midnight, or, when a clock change
+// skips that midnight, the instant the day begins. time.Date moves a wall
+// time that does not exist by the zone in effect after the change, which
+// for a skipped midnight is the previous day's 23:00 (Addendum G7).
+func dayStart(y int, m time.Month, d int, loc *time.Location) time.Time {
+	y, m, d = time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Date()
+	t := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	if ty, tm, td := t.Date(); ty != y || tm != m || td != d {
+		if _, end := t.ZoneBounds(); !end.IsZero() {
+			return end
+		}
+	}
+	return t
 }
 
 // fromInstant is the second-precision Date of an instant, with its wall
@@ -150,8 +171,11 @@ func DateFromRow(effectiveNs int64, local string, offsetMin *int, precision stri
 }
 
 // end is the end of the date's period (exclusive), read in the zone or its
-// own offset. Without a zone (detection), the offset its instant implies at
-// the start of the period is used.
+// own offset: the next period's first midnight, built from the wall fields,
+// so a period whose own midnight does not exist (a daylight saving start,
+// which Go moves to 01:00) still ends at midnight (Addendum G7). Without a
+// zone (detection), the offset its instant implies at the start of the
+// period is used.
 func (d Date) end(zone *time.Location) time.Time {
 	w, p, err := parseWall(d.Local)
 	if err != nil {
@@ -161,14 +185,13 @@ func (d Date) end(zone *time.Location) time.Time {
 	if zone == nil && d.OffsetMin == nil {
 		loc = time.FixedZone("", int(w.Sub(d.Instant)/time.Second))
 	}
-	start := time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), 0, loc)
 	switch p {
 	case PrecisionYear:
-		return start.AddDate(1, 0, 0)
+		return dayStart(w.Year()+1, time.January, 1, loc)
 	case PrecisionMonth:
-		return start.AddDate(0, 1, 0)
+		return dayStart(w.Year(), w.Month()+1, 1, loc)
 	case PrecisionDay:
-		return start.AddDate(0, 0, 1)
+		return dayStart(w.Year(), w.Month(), w.Day()+1, loc)
 	}
 	return d.Instant.Add(time.Second)
 }
@@ -319,4 +342,83 @@ func FolderDate(name []byte, zone *time.Location, now time.Time) (Date, bool) {
 		return Date{}, false
 	}
 	return fromWall(w, p, zone, nil), true
+}
+
+// FolderPathDate is the date the folder at path (below the source's top)
+// carries by its own name, as folderDateAt reads it: D6's syntax, or the
+// nested layout a date organize writes (Addendum G12).
+func FolderPathDate(path []byte, zone *time.Location, now time.Time) (Date, bool) {
+	if len(path) == 0 {
+		return Date{}, false
+	}
+	parts := strings.Split(string(path), "/")
+	return folderDateAt(parts, len(parts)-1, zone, now)
+}
+
+// folderDateAt is the date the folder parts[i] carries, read with the
+// folders above it (Addendum G12). The nested layout a date organize writes
+// comes first: a folder named by a two-digit month (01–12) right below one
+// named by a year alone, `2010/07`, is that month, and a two-digit day below
+// those, `2010/07/17`, that day; the month or day may be followed by a
+// space, '-', '_', or '.' and more (`2010/07 Bahia`). Otherwise it is the
+// date of its own name (FolderDate).
+func folderDateAt(parts []string, i int, zone *time.Location, now time.Time) (Date, bool) {
+	if zone == nil {
+		zone = time.UTC
+	}
+	if i >= 2 {
+		if d, ok := nestedDate(parts[i-2], parts[i-1], parts[i], zone, now); ok {
+			return d, true
+		}
+	}
+	if i >= 1 {
+		if d, ok := nestedDate(parts[i-1], parts[i], "", zone, now); ok {
+			return d, true
+		}
+	}
+	return FolderDate([]byte(parts[i]), zone, now)
+}
+
+// nestedDate reads year/month[/day] folder names: year exactly four digits
+// that FolderDate accepts, month and day (when day is not empty) two digits
+// alone or before a separator, together a valid date.
+func nestedDate(year, month, day string, zone *time.Location, now time.Time) (Date, bool) {
+	if len(year) != 4 {
+		return Date{}, false
+	}
+	if y, ok := FolderDate([]byte(year), zone, now); !ok || y.Precision != PrecisionYear {
+		return Date{}, false
+	}
+	mm, ok := twoDigits(month)
+	if !ok {
+		return Date{}, false
+	}
+	dd, p := "01", PrecisionMonth
+	if day != "" {
+		if dd, ok = twoDigits(day); !ok {
+			return Date{}, false
+		}
+		p = PrecisionDay
+	}
+	w, ok := wallFromDigits(year, mm, dd, "00", "00", "00")
+	if !ok {
+		return Date{}, false
+	}
+	return fromWall(w, p, zone, nil), true
+}
+
+// twoDigits returns the two digits a folder name starts with when they are
+// the whole name or followed by a space, '-', '_', or '.'.
+func twoDigits(s string) (string, bool) {
+	if len(s) < 2 || s[0] < '0' || s[0] > '9' || s[1] < '0' || s[1] > '9' {
+		return "", false
+	}
+	if len(s) > 2 {
+		switch s[2] {
+		case ' ', '-', '_', '.':
+		default:
+			return "", false
+		}
+	}
+	return s[:2], true
 }

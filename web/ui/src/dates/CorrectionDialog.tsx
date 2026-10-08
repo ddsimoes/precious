@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import type { TFunction } from 'i18next'
 import { useId, useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -16,6 +17,7 @@ import {
   type ShiftUnit,
 } from '@/api/dates'
 import { maxBulkIds } from '@/api/decisions'
+import { ApiError } from '@/app/api'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { useCsrfToken } from '@/app/session'
 import { Button } from '@/components/ui/button'
@@ -45,6 +47,15 @@ const valueControl = {
   day: { type: 'date', label: 'dates.correct.day' },
   second: { type: 'datetime-local', label: 'dates.correct.time' },
 } as const
+
+// shiftRefusal says why the server refused to shift one date: a shift is
+// refused for more than one reason (a date it would put after tomorrow, or
+// none to shift), so the server's reason, which ends its message, is shown.
+function shiftRefusal(t: TFunction, error: unknown): string {
+  const message = error instanceof ApiError ? error.message : ''
+  const colon = message.lastIndexOf(': ')
+  return t('dates.correct.refused.shift', { reason: colon < 0 ? message : message.slice(colon + 2) })
+}
 
 // Scope is what a correction applies to: one entry, from the detail panel,
 // or the selection or folders of the Dates screen.
@@ -143,7 +154,8 @@ export function CorrectionDialog({ title, scope, onClose }: { title: string; sco
     kinds.push('clear')
   }
   const tooMany = scope.kind === 'bulk' && choice?.mode === 'selected' && scope.selected.length > maxBulkIds
-  const refused = kind === 'clear' ? undefined : t(`dates.correct.refused.${kind}`)
+  const refused =
+    kind === 'clear' ? undefined : kind === 'shift' ? shiftRefusal(t, apply.error) : t(`dates.correct.refused.${kind}`)
   const result = apply.data
 
   return (

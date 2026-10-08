@@ -67,14 +67,14 @@ func (s *Service) cameras(ctx context.Context, job jobs.Job) error {
 // detect reads src's detection input (D8): each media photo with a read
 // plausible EXIF capture and a camera key gives its capture (moved by a
 // shift correction), its folder, its GPS time, and its folder's own date
-// (D6); a photo with any other correction is left out. It runs
-// media.Detect over them.
+// (D6, read by media.FolderPathDate); a photo with any other correction is
+// left out. It runs media.Detect over them.
 func (s *Service) detect(ctx context.Context, tx *sql.Tx, src domain.SourceID) (detection, error) {
 	caps, err := sourceCaps(ctx, tx, src)
 	if err != nil {
 		return detection{}, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.parent_id, p.name, p.path, e.path, e.mtime_ns,
+	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.parent_id, p.path, e.path, e.mtime_ns,
 		m.capture_local, m.capture_offset_min, m.gps_ns, m.container_ns, m.make, m.model, m.serial,
 		c.kind, c.shift_s
 		FROM media_meta m JOIN entries e ON e.id = m.entry_id JOIN entries p ON p.id = e.parent_id
@@ -91,12 +91,12 @@ func (s *Service) detect(ctx context.Context, tx *sql.Tx, src domain.SourceID) (
 	var photos []media.Photo
 	for rows.Next() {
 		var (
-			r                      inputsRow
-			parent                 int64
-			parentName, parentPath []byte
+			r          inputsRow
+			parent     int64
+			parentPath []byte
 		)
 		r.metaState.String, r.metaState.Valid = string(media.MetaRead), true
-		if err := rows.Scan(&r.id, &parent, &parentName, &parentPath, &r.path, &r.mtime,
+		if err := rows.Scan(&r.id, &parent, &parentPath, &r.path, &r.mtime,
 			&r.captureLocal, &r.captureOffset, &r.gpsNs, &r.containerNs, &r.mk, &r.model, &r.serial,
 			&r.corrKind, &r.corrShift); err != nil {
 			return detection{}, err
@@ -119,7 +119,7 @@ func (s *Service) detect(ctx context.Context, tx *sql.Tx, src domain.SourceID) (
 		}
 		fd, seen := folderDates[parent]
 		if !seen {
-			if d, ok := media.FolderDate(parentName, s.zone, now); ok && len(parentPath) > 0 {
+			if d, ok := media.FolderPathDate(parentPath, s.zone, now); ok {
 				fd = &d
 			}
 			folderDates[parent] = fd

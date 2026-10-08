@@ -164,22 +164,32 @@ func blob(v view, off, n int64) ([]byte, error) {
 	return v.at(off, int(n))
 }
 
+// field reads n bytes at off within b's payload; a field past the payload's
+// end is malformed, so a short box never borrows its sibling's bytes
+// (Addendum G8).
+func field(v view, b box, off, n int64) ([]byte, error) {
+	if off < 0 || n > b.end-b.payload-off {
+		return nil, errMalformed
+	}
+	return v.at(b.payload+off, int(n))
+}
+
 // mvhdCreation is `mvhd`'s creation_time, read as UTC; 0 is absent.
 func mvhdCreation(v view, b box) (*time.Time, error) {
-	h, err := v.at(b.payload, 4)
+	h, err := field(v, b, 0, 4)
 	if err != nil {
 		return nil, err
 	}
 	var secs uint64
 	switch h[0] {
 	case 0:
-		c, err := v.at(b.payload+4, 4)
+		c, err := field(v, b, 4, 4)
 		if err != nil {
 			return nil, err
 		}
 		secs = uint64(binary.BigEndian.Uint32(c))
 	case 1:
-		c, err := v.at(b.payload+4, 8)
+		c, err := field(v, b, 4, 8)
 		if err != nil {
 			return nil, err
 		}
@@ -200,6 +210,9 @@ func readMetaBox(s *source, v view, meta box) (exifFields, error) {
 	var f exifFields
 	var iinf, iloc, idat *box
 	// `meta` is a full box: version and flags precede its children.
+	if meta.end-meta.payload < 4 {
+		return f, errMalformed
+	}
 	err := boxes(s, v, meta.payload+4, meta.end, 2, func(b box) error {
 		switch b.typ {
 		case "iinf":
@@ -262,21 +275,24 @@ func readMetaBox(s *source, v view, meta box) (exifFields, error) {
 
 // exifItem returns the ID of the first `infe` of type "Exif" in `iinf`.
 func exifItem(s *source, v view, iinf box) (uint32, bool, error) {
-	h, err := v.at(iinf.payload, 4)
+	h, err := field(v, iinf, 0, 4)
 	if err != nil {
 		return 0, false, err
 	}
-	first := iinf.payload + 6 // version and flags, entry_count (16 bits)
+	first := int64(6) // version and flags, entry_count (16 bits)
 	if h[0] != 0 {
-		first = iinf.payload + 8 // entry_count (32 bits)
+		first = 8 // entry_count (32 bits)
+	}
+	if first > iinf.end-iinf.payload {
+		return 0, false, errMalformed
 	}
 	var id uint32
 	found := false
-	err = boxes(s, v, first, iinf.end, 3, func(b box) error {
+	err = boxes(s, v, iinf.payload+first, iinf.end, 3, func(b box) error {
 		if found || b.typ != "infe" {
 			return nil
 		}
-		ver, err := v.at(b.payload, 4)
+		ver, err := field(v, b, 0, 4)
 		if err != nil {
 			return err
 		}
@@ -289,7 +305,7 @@ func exifItem(s *source, v view, iinf box) (uint32, bool, error) {
 		default:
 			return nil // versions 0 and 1 carry no item type
 		}
-		e, err := v.at(b.payload+4, int(idLen+2+4))
+		e, err := field(v, b, 4, idLen+2+4)
 		if err != nil {
 			return err
 		}

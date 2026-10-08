@@ -11,12 +11,14 @@ import {
   camera,
   dateJSON,
   datesSummary,
+  entryDates,
   entryDetail,
+  entryRow,
   folderRow,
   fotosSource,
   mediaDate,
 } from '@/test/fixtures'
-import { jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
+import { errorResponse, jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
 
 type Route = (request: Request) => Response | Promise<Response>
 
@@ -526,5 +528,243 @@ describe('The Dates screen', () => {
     expect(await screen.findByText(/Choose a source at the top/)).toBeInTheDocument()
     expect(await screen.findByText('562 photos and videos')).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Photos and videos' })).not.toBeInTheDocument()
+  })
+
+  it('previews a camera’s shift as the server applies it, and counts only the photos it moves', async () => {
+    const path = (n: number) => `${bahia.path}/DSC0070${n}.JPG`
+    const created_at = '2026-10-08T10:00:00Z'
+    // Flagged, no correction: its date is the camera's.
+    const plain = sonyPhoto('701', path(1), '2009-07-17T07:00:00', false)
+    // Flagged, shifted by the owner by an hour: the camera said 07:30.
+    const shifted = mediaDate('702', path(2), {
+      date: dateJSON({ instant: '2009-07-17T08:30:00Z', local: '2009-07-17T08:30:00', source: 'owner', corrected: 'shift' }),
+      flags: ['camera_offset'],
+      camera: sonyRef,
+      correction: { kind: 'shift', shift_s: 3_600, created_at },
+    })
+    // Set by the owner: it keeps its date.
+    const set = mediaDate('703', path(3), {
+      date: dateJSON({ instant: '2010-07-20T12:00:00Z', local: '2010-07-20T12:00:00', source: 'owner', corrected: 'set' }),
+      flags: ['camera_offset'],
+      camera: sonyRef,
+      correction: { kind: 'set', local: '2010-07-20T12:00:00', created_at },
+    })
+    // Not flagged, and not among the event's photos: the shift leaves it.
+    const agreeing = mediaDate('704', path(4), {
+      date: dateJSON({ instant: '2010-07-18T09:00:00Z', local: '2010-07-18T09:00:00' }),
+      camera: sonyRef,
+    })
+    const sony = camera(sonyKey, {
+      photos: 4,
+      state: 'offset',
+      suggested_shift_s: shiftS,
+      events: [{ folder: bahia, delta_s: -shiftS, photos: 3, reference: 'gps' }],
+    })
+    const requests = stubApi(
+      routes(
+        (params) =>
+          params.get('camera') === sonyKey && params.get('within') === bahia.id ? [plain, shifted, set, agreeing] : [],
+        () => [sony],
+        {
+          'POST /api/commands/set-date-correction': () =>
+            jsonResponse(200, { applied: 2, skipped_count: 1, skipped: [], batch_id: 'b4' }),
+        },
+      ),
+    )
+    renderApp('/dates?source=fotos')
+
+    const card = within(await screen.findByRole('article', { name: 'SONY DSC-W55' }))
+    await userEvent.click(card.getByRole('button', { name: /^Shift \+1 year 3 hours/ }))
+    const dialog = within(await screen.findByRole('alertdialog', { name: /^Shift the photos of SONY DSC-W55/ }))
+    const moved = lines(await dialog.findByRole('list', { name: 'Photos to shift' }))
+    expect(moved).toHaveLength(2)
+    expect(moved[0]).toContain(`${path(1)}: Jul 17, 2009, 7:00:00 AM → Jul 17, 2010, 10:00:00 AM`)
+    // The camera's 07:30 moved by the shift, not the owner's 08:30.
+    expect(moved[1]).toContain(`${path(2)}: Jul 17, 2009, 8:30:00 AM → Jul 17, 2010, 10:30:00 AM`)
+    expect(moved[1]).toContain('+1 hour')
+    expect(moved[0]).not.toContain('+1 hour')
+    const kept = lines(dialog.getByRole('list', { name: 'Photos that keep your correction' }))
+    expect(kept).toEqual([`${path(3)}: Jul 20, 2010, 12:00:00 PM`])
+    expect(dialog.queryByText(new RegExp(path(4)))).not.toBeInTheDocument()
+
+    await userEvent.click(dialog.getByRole('button', { name: 'Shift 2 photos' }))
+    expect(await screen.findByText('2 dates corrected.')).toBeInTheDocument()
+    expect(await bodies(requests, 'set-date-correction')).toEqual([
+      { folder_ids: [bahia.id], camera_key: sonyKey, correction: { kind: 'shift', shift_s: shiftS } },
+    ])
+  })
+
+  it('sends a camera’s shift over more than 100 folders in requests of at most 100', async () => {
+    const folders = Array.from({ length: 101 }, (_, i) => {
+      const path = `Eventos/${i}`
+      return { id: String(1000 + i), path, path_b64: btoa(path) }
+    })
+    const sony = camera(sonyKey, {
+      photos: 101,
+      state: 'offset',
+      suggested_shift_s: shiftS,
+      events: folders.map((folder) => ({ folder, delta_s: -shiftS, photos: 1, reference: 'gps' as const })),
+    })
+    const requests = stubApi(
+      routes(
+        (params) => {
+          const folder = folders.find((f) => f.id === params.get('within'))
+          return folder === undefined || params.get('camera') !== sonyKey
+            ? []
+            : [sonyPhoto(String(2000 + Number(folder.id)), `${folder.path}/DSC.JPG`, '2009-07-17T07:00:00', false)]
+        },
+        () => [sony],
+        {
+          'POST /api/commands/set-date-correction': async (request) => {
+            const body = (await request.clone().json()) as { folder_ids: string[] }
+            return jsonResponse(200, { applied: body.folder_ids.length, skipped_count: 0, skipped: [], batch_id: 'b5' })
+          },
+        },
+      ),
+    )
+    renderApp('/dates?source=fotos')
+
+    const card = within(await screen.findByRole('article', { name: 'SONY DSC-W55' }))
+    await userEvent.click(card.getByRole('button', { name: /^Shift \+1 year 3 hours/ }))
+    const dialog = within(await screen.findByRole('alertdialog', { name: /^Shift the photos of SONY DSC-W55/ }))
+    await userEvent.click(await dialog.findByRole('button', { name: 'Shift 101 photos' }, { timeout: 5_000 }))
+    expect(await screen.findByText('101 dates corrected.')).toBeInTheDocument()
+
+    const sent = (await bodies(requests, 'set-date-correction')) as Array<{ folder_ids: string[]; camera_key: string }>
+    expect(sent).toHaveLength(2)
+    for (const body of sent) {
+      expect(body.folder_ids.length).toBeLessThanOrEqual(100)
+      expect(body.camera_key).toBe(sonyKey)
+    }
+    expect(sent.flatMap((body) => body.folder_ids)).toEqual(folders.map((folder) => folder.id))
+  })
+
+  it('ignores a folder in the address that belongs to another source', async () => {
+    const other = fotosSource({ id: 'other', label: 'Other', root_entry_id: '2', writes: { enabled: true, unavailable: null } })
+    const requests = stubApi({
+      ...routes(
+        () => [mediaDate('801', 'Fotos/a.jpg')],
+        () => [],
+        {
+          // Folder 77 is one of fotos.
+          'GET /api/entries/77': () => jsonResponse(200, entryDetail(folderRow('77', 'Viagens'))),
+          'POST /api/commands/set-date-correction': () =>
+            jsonResponse(200, { applied: 1, skipped_count: 0, skipped: [], batch_id: 'b6' }),
+        },
+      ),
+      'GET /api/sources': () => jsonResponse(200, { sources: [fotos, other] }),
+    })
+    renderApp('/dates?source=other&within=77')
+
+    // The list of the whole source is asked for once the folder is known.
+    await waitFor(() =>
+      expect(
+        requests.some((r) => {
+          const url = new URL(r.url)
+          return url.pathname === '/api/dates' && url.searchParams.get('source') === 'other' && !url.searchParams.has('within')
+        }),
+      ).toBe(true),
+    )
+    // No notice limits the list to the folder.
+    expect(screen.queryByRole('button', { name: 'Everywhere' })).not.toBeInTheDocument()
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Correct dates…' }))
+    const dialog = within(await screen.findByRole('dialog', { name: 'Correct dates' }))
+    await userEvent.click(dialog.getByRole('radio', { name: 'Take the date in the file name' }))
+    await userEvent.click(dialog.getByRole('button', { name: 'Apply' }))
+    const sent = (await bodies(requests, 'set-date-correction')) as Array<{ folder_ids?: string[] }>
+    expect(sent.filter((body) => body.folder_ids?.includes('77'))).toEqual([])
+  })
+
+  it('offers no bulk action while the list fails', async () => {
+    stubApi(
+      routes(
+        () => [],
+        () => [],
+        { 'GET /api/dates': () => errorResponse(404, 'not_found') },
+      ),
+    )
+    renderApp('/dates?source=fotos')
+
+    await screen.findByRole('button', { name: 'Try again' })
+    expect(screen.getByRole('button', { name: 'Correct dates…' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Set file dates…' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Organize by date…' })).toBeDisabled()
+  })
+
+  it('says why a bulk shift skipped files: no date to shift, or the owner’s own correction', async () => {
+    stubApi(
+      routes(
+        () => [mediaDate('901', 'Fotos/a.jpg'), mediaDate('902', 'Fotos/b.jpg')],
+        () => [],
+        {
+          'POST /api/commands/set-date-correction': () =>
+            jsonResponse(200, {
+              applied: 0,
+              skipped_count: 2,
+              skipped: [
+                { entry_id: '901', path: 'Fotos/a.jpg', path_b64: '', reason: 'no_date' },
+                { entry_id: '902', path: 'Fotos/b.jpg', path_b64: '', reason: 'has_correction' },
+              ],
+              batch_id: 'b7',
+            }),
+        },
+      ),
+    )
+    renderApp('/dates?source=fotos')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Select all shown' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Correct dates…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Correct dates' })
+    await userEvent.click(within(dialog).getByRole('radio', { name: 'Shift the date' }))
+    await userEvent.type(within(dialog).getByRole('spinbutton', { name: 'Hours' }), '1')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Apply' }))
+
+    expect(await within(dialog).findByText('2 not corrected:')).toBeInTheDocument()
+    expect(text(dialog)).not.toContain('dates.correct.skip.')
+    expect(within(dialog).getByText(/^Fotos\/a\.jpg \(.*no date to shift.*\)$/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/^Fotos\/b\.jpg \(.*correction.*\)$/)).toBeInTheDocument()
+  })
+
+  it('says the server’s reason when it refuses to shift one date', async () => {
+    const row = entryRow({
+      id: '410',
+      name: 'IMG_0410.JPG',
+      name_b64: btoa('IMG_0410.JPG'),
+      path: 'Fotos/IMG_0410.JPG',
+      path_b64: btoa('Fotos/IMG_0410.JPG'),
+      file_kind: 'image',
+      category: 'personal_media',
+      family: 'personal',
+      triage: 'keep',
+    })
+    stubApi({
+      'GET /api/session': () => jsonResponse(200, signedIn),
+      'GET /api/sources': () => jsonResponse(200, { sources: [fotos] }),
+      'GET /api/tags': () => jsonResponse(200, { tags: [] }),
+      'GET /api/entries/410': () => jsonResponse(200, entryDetail(row)),
+      'GET /api/entries/410/dates': () => jsonResponse(200, { dates: entryDates() }),
+      'POST /api/commands/set-date-correction': () =>
+        errorResponse(
+          409,
+          'invalid_entry_state',
+          'entry 410 cannot be corrected: it has no date to shift, or the shift would move it outside the years 1700 to 2200',
+        ),
+    })
+    renderApp(`/search?entry=${row.id}`)
+
+    const panel = within(await screen.findByRole('complementary', { name: 'IMG_0410.JPG' }))
+    const section = within(await panel.findByRole('region', { name: 'Dates' }))
+    await userEvent.click(await section.findByRole('button', { name: 'Correct the date…' }))
+    const dialog = within(await screen.findByRole('dialog', { name: 'Correct the date of “IMG_0410.JPG”' }))
+    await userEvent.click(dialog.getByRole('radio', { name: 'Shift the date' }))
+    await userEvent.type(dialog.getByRole('spinbutton', { name: 'Hours' }), '1')
+    await userEvent.click(dialog.getByRole('button', { name: 'Apply' }))
+
+    const alert = await dialog.findByRole('alert')
+    // The headline, not only the technical details with the status, gives
+    // the reason.
+    expect(within(alert).getByText(/^(?!409).*no date to shift/)).toBeInTheDocument()
+    expect(text(alert)).not.toContain('after tomorrow')
   })
 })

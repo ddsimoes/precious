@@ -253,6 +253,7 @@ func TestCorrectionRefusals(t *testing.T) {
 func TestCorrectionsSurviveARescan(t *testing.T) {
 	e, root, _ := newCorpusEnv(t)
 	datestest.Seed(t, e.st, e.src, e.svc, corpusSource)
+	e.setCameraBitsB(corpusSource, e.mediaOfCameraB(sonyKey)) // the camera target takes the flagged photos
 	api := e.apiB()
 	const shift = 31546800
 	var got setAnswerB
