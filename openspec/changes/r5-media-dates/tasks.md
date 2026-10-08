@@ -47,7 +47,7 @@
   - `InputsKey` changes with each input except `Now`; `ZoneKey` differs for two zones that are both named "Local".
 
   Run `go test -race ./internal/media` (under 60 s).
-- [ ] 1.6 Shared contracts for the slices (design Interfaces), owning only these additions:
+- [x] 1.6 Shared contracts for the slices (design Interfaces), owning only these additions:
   - `content.Opener`, with `OpenAt` and the hashing job moved onto it unchanged;
   - `executor.Index.ApplyModTime`, implemented in organize's adapter (`index.ApplyModTime` + `Refold`);
   - the `set_mtime` op constant and `new_mtime_ns`/`prev_mtime_ns` in the executor's item, ending `failed` (`unknown step`) until 2.8, as r4 F6;
