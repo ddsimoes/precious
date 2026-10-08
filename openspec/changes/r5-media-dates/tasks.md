@@ -202,14 +202,14 @@ Each slice owns its implementation task and the test tasks labelled with its let
 
 ## 3. Integration
 
-- [ ] 3.1 Playwright tests after the last R4 test ("Home shows what is in quarantine beside the decisions"), with `[dates] time_zone = "UTC"` in `web/ui/e2e/global-setup.ts`:
+- [x] 3.1 Playwright tests after the last R4 test ("Home shows what is in quarantine beside the decisions"), with `[dates] time_zone = "UTC"` in `web/ui/e2e/global-setup.ts`:
   - R5.1 and R5.3: the Dates screen's totals, and the `Viagens` and `celular_2011` rows equal their truth, flags included;
   - R5.2: the Sony's suggestion, the shift, its 12 photos at their truth's corrected dates, and no suggestion after the next job;
   - R5.4: "Set file dates…" on `Ouro Preto`, the files' mtimes on disk, History, then Undo restoring them;
   - R5.5: "Organize by date…" of `Viagens` and `celular_2011` into `Fotos`, the preview, "Discard these copies", the suffix, the run, and the disk.
 
   Verify: `npx playwright test` passes headless.
-- [ ] 3.2 Full verification:
+- [x] 3.2 Full verification:
   - gofmt, `go vet ./...`, and `go vet -tags e2e,slow ./...`;
   - `go test -race ./...`, with no package over about 60 s;
   - `make test-slow`;
@@ -218,7 +218,7 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - Playwright;
   - `scripts/e2e-docker.sh`;
   - `openspec validate --all --strict`.
-- [ ] 3.3 A smoke check of the built binary, run as an unprivileged user, with a throwaway script on a copy of an r4 database:
+- [x] 3.3 A smoke check of the built binary, run as an unprivileged user, with a throwaway script on a copy of an r4 database:
   - first, check that the user owns the smoke's photo files (`stat -c %U`), and that a file it does not own ends `not_owner`;
   - the migration applies, and History keeps its actions and items;
   - the `media` job reads a photo folder;
