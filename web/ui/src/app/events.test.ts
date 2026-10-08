@@ -1,8 +1,10 @@
 import { QueryClient } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { entryQueryKey } from '@/api/entries'
 import { homeQueryKey, type Home } from '@/api/home'
 import { opportunitiesQueryKey, reviewQueryKey } from '@/api/opportunities'
+import { historyQueryKey } from '@/api/organize'
 import { sourcesQueryKey, type SourcesResponse } from '@/api/sources'
 import { JobEventStream } from '@/app/events'
 import { sessionQueryKey } from '@/app/session'
@@ -249,5 +251,27 @@ describe('job event stream', () => {
     expect(invalidated(queryClient, opportunitiesQueryKey(null))).toBe(true)
     expect(invalidated(queryClient, reviewQueryKey('system_junk', null, false))).toBe(true)
     expect(invalidated(queryClient, homeQueryKey(null))).toBe(true)
+  })
+
+  it('refetches the history on organize progress, and everything a move changes when it ends', () => {
+    const queryClient = seededClient()
+    queryClient.setQueryData(historyQueryKey(), { pages: [], pageParams: [] })
+    queryClient.setQueryData(entryQueryKey('12'), {})
+    queryClient.setQueryData(['map-start', '1'], {})
+    stream = new JobEventStream(queryClient)
+    stream.start()
+    const source = MockEventSource.latest()
+    const event = scanEvent({ job_id: '70', kind: 'organize', progress: { items: 3, done: 1 } })
+
+    source.emit('job', event, '7')
+    expect(invalidated(queryClient, historyQueryKey())).toBe(true)
+    expect(invalidated(queryClient, entryQueryKey('12'))).toBe(false)
+    expect(invalidated(queryClient, ['map-start', '1'])).toBe(false)
+
+    source.emit('job', { ...event, state: 'succeeded' }, '8')
+    expect(invalidated(queryClient, entryQueryKey('12'))).toBe(true)
+    expect(invalidated(queryClient, ['map-start', '1'])).toBe(true)
+    expect(invalidated(queryClient, homeQueryKey(null))).toBe(true)
+    expect(invalidated(queryClient, sourcesQueryKey)).toBe(true)
   })
 })

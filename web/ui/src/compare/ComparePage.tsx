@@ -6,6 +6,8 @@ import { Link, useNavigate, useSearchParams } from 'react-router'
 import { buckets, compareQueryKey, fetchCompare, isBucket, type Bucket, type CompareItem } from '@/api/compare'
 import { checkNow } from '@/api/content'
 import { isMember, type EntryRow } from '@/api/entries'
+import { planMerge } from '@/api/organize'
+import { useSources } from '@/api/sources'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { PageTitle } from '@/app/PageTitle'
 import { useCsrfToken } from '@/app/session'
@@ -16,13 +18,17 @@ import { useEntryLink } from '@/detail/useEntryLink'
 import { useFormat } from '@/lib/format'
 import { useSourceLabel } from '@/lib/sourceParams'
 import { cn } from '@/lib/utils'
+import { OrganizeOutcome } from '@/organize/OrganizeOutcome'
+import { useOrganize } from '@/organize/useOrganize'
 
 // ComparePage answers "which copy do I keep?" (spec §11.6, R2 design D11):
 // two folders or archives side by side, named in the address
 // (/compare?left=&right=&bucket=) so a comparison can be bookmarked, their
 // files in five groups, each decided with the usual controls. Without a
 // group in the address, the server opens on the first group that holds
-// files and names it, and the address takes that group (r2b D11).
+// files and names it, and the address takes that group (r2b D11). The files
+// only on one side of two folders can be moved into the other (R3 design
+// D13).
 export function ComparePage() {
   const { t } = useTranslation()
   const [params] = useSearchParams()
@@ -49,6 +55,9 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const [checkStarted, setCheckStarted] = useState(false)
+  const sources = useSources()
+  const sourceLabel = useSourceLabel()
+  const organize = useOrganize()
   // opened is the group the server chose for an address without one: the
   // address then names it, and its page stays the one already fetched.
   const [opened, setOpened] = useState<Bucket | null>(null)
@@ -67,6 +76,24 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
   })
   const first = pages.data?.pages[0]
   const items = pages.data?.pages.flatMap((page) => page.items) ?? []
+
+  // The files only on one side move into the other side when both are
+  // folders, not archives, of one source Precious may change.
+  let merge: { from: 'left' | 'right'; into: EntryRow } | null = null
+  if (first !== undefined && (first.bucket === 'only_left' || first.bucket === 'only_right') && items.length > 0) {
+    const source = sources.data?.sources.find((s) => s.id === first.left.source_id)
+    const folders = [first.left, first.right].every((side) => side.kind === 'directory' && !isMember(side))
+    if (
+      folders &&
+      first.left.source_id === first.right.source_id &&
+      source !== undefined &&
+      source.writes.enabled &&
+      source.state === 'online'
+    ) {
+      merge =
+        first.bucket === 'only_left' ? { from: 'left', into: first.right } : { from: 'right', into: first.left }
+    }
+  }
 
   const bucketSearch = (b: Bucket) => {
     const next = new URLSearchParams(params)
@@ -150,6 +177,29 @@ function Comparison({ left, right, bucket }: { left: string; right: string; buck
                 })}
               </ul>
             </nav>
+
+            {merge !== null && (
+              <div className="grid gap-1 text-sm">
+                <div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={organize.pending}
+                    onClick={() =>
+                      organize.start((csrfToken) => planMerge(first.left.id, first.right.id, merge.from, csrfToken), {
+                        always: true,
+                      })
+                    }
+                  >
+                    {t('compare.mergeInto', {
+                      side: merge.into.path === '' ? sourceLabel(merge.into.source_id) : merge.into.path,
+                    })}
+                  </Button>
+                </div>
+                <p className="text-muted-foreground">{t('compare.mergeHelp')}</p>
+              </div>
+            )}
+            <OrganizeOutcome organize={organize} />
 
             {items.length === 0 ? (
               <p className="text-sm text-muted-foreground">{t('compare.empty')}</p>

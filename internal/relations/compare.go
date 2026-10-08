@@ -118,22 +118,7 @@ func Compare(ctx context.Context, q store.Queryer, left, right domain.Ref, bucke
 	}
 	limit = min(limit, compareMaxLimit)
 
-	ls, err := resolveSide(ctx, q, left)
-	if err != nil {
-		return CompareResult{}, err
-	}
-	rs, err := resolveSide(ctx, q, right)
-	if err != nil {
-		return CompareResult{}, err
-	}
-	if ls.contains(rs) || rs.contains(ls) {
-		return CompareResult{}, domain.Errorf(domain.CodeInvalidRequest, "%s and %s: one side contains the other", left, right)
-	}
-	lf, err := ls.files(ctx, q)
-	if err != nil {
-		return CompareResult{}, err
-	}
-	rf, err := rs.files(ctx, q)
+	lf, rf, err := compareFiles(ctx, q, left, right)
 	if err != nil {
 		return CompareResult{}, err
 	}
@@ -171,6 +156,42 @@ func Compare(ctx context.Context, q store.Queryer, left, right domain.Ref, bucke
 		res.NextCursor = strconv.Itoa(end)
 	}
 	return res, nil
+}
+
+// Wrappers returns the prefix Compare drops from each side, nil when none
+// (r3 design D13): the single top folder of one side that lines its paths up
+// with the other side's (see Compare), without a trailing '/'. At most one
+// side has one. It refuses the sides Compare refuses.
+func Wrappers(ctx context.Context, q store.Queryer, left, right domain.Ref) (leftWrap, rightWrap []byte, err error) {
+	lf, rf, err := compareFiles(ctx, q, left, right)
+	if err != nil {
+		return nil, nil, err
+	}
+	leftWrap, rightWrap = dropWrapper(lf, rf)
+	return leftWrap, rightWrap, nil
+}
+
+// compareFiles resolves both sides of a comparison and reads their files,
+// relative to each side, before any wrapper is dropped.
+func compareFiles(ctx context.Context, q store.Queryer, left, right domain.Ref) (lf, rf []cfile, err error) {
+	ls, err := resolveSide(ctx, q, left)
+	if err != nil {
+		return nil, nil, err
+	}
+	rs, err := resolveSide(ctx, q, right)
+	if err != nil {
+		return nil, nil, err
+	}
+	if ls.contains(rs) || rs.contains(ls) {
+		return nil, nil, domain.Errorf(domain.CodeInvalidRequest, "%s and %s: one side contains the other", left, right)
+	}
+	if lf, err = ls.files(ctx, q); err != nil {
+		return nil, nil, err
+	}
+	if rf, err = rs.files(ctx, q); err != nil {
+		return nil, nil, err
+	}
+	return lf, rf, nil
 }
 
 // side is a resolved Compare side.
@@ -367,17 +388,21 @@ func (s side) memberFiles(ctx context.Context, q store.Queryer) ([]cfile, error)
 	return out, nil
 }
 
-// dropWrapper drops the single top folder of one side (see Compare).
-func dropWrapper(l, r []cfile) {
+// dropWrapper drops the single top folder of one side (see Compare) and
+// returns the folder dropped from each side, nil for none.
+func dropWrapper(l, r []cfile) (lw, rw []byte) {
 	lt, lok := topFolder(l)
 	rt, rok := topFolder(r)
 	switch {
 	case lok == rok:
 	case lok && aligned(l, r, len(lt)+1) > aligned(l, r, 0):
+		lw = bytes.Clone(lt)
 		strip(l, len(lt)+1)
 	case rok && aligned(r, l, len(rt)+1) > aligned(r, l, 0):
+		rw = bytes.Clone(rt)
 		strip(r, len(rt)+1)
 	}
+	return lw, rw
 }
 
 // topFolder returns the single top folder all of fs lie in.

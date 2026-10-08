@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"io"
-	"time"
 
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
@@ -66,87 +65,19 @@ type frame struct {
 
 	listed, unreadable, boundary bool
 
-	// The subtree's facts. newest and oldest span the files with a known
-	// time (dated, domain.KnownModTime).
-	files, bytes                               int64
-	newest, oldest                             int64
-	dated                                      bool
-	dirs, symlinks, specials, unreadableN, mts int64
-	partial                                    bool
-	byKind                                     map[domain.FileKind]rules.KindTotals
-	byYear                                     map[int]counts
-	// comp is the composition: the bytes and files of the content by
-	// family, bottom-up (design D21).
-	comp                         [4]counts
-	childSignals, subtreeSignals map[rules.SignalID]int
-	indicators                   int
-	refs                         []indicatorRef
-	// inside holds the notable entries below the folder, largest first, for
-	// each family that may turn out to be its dominant one (familyKeys
-	// order), and at noDominant for no bytes (design D21).
-	inside [noDominant + 1][]insideRef
+	// agg is the fold of the folder's finished children.
+	agg
 }
 
 func (f *frame) reset() {
-	children, byKind, byYear := f.children, f.byKind, f.byYear
-	childSignals, subtreeSignals, stems := f.childSignals, f.subtreeSignals, f.stems
-	subdirs, deferred, refs, inside := f.subdirs, f.deferred, f.refs, f.inside
+	children, stems, subdirs, deferred := f.children, f.stems, f.subdirs, f.deferred
 	clear(children)
-	clear(byKind)
-	clear(byYear)
-	clear(childSignals)
-	clear(subtreeSignals)
 	clear(stems)
 	clear(subdirs)
 	clear(deferred)
-	clear(refs)
-	for i := range inside {
-		clear(inside[i])
-		inside[i] = inside[i][:0]
-	}
-	*f = frame{
-		children: children, byKind: byKind, byYear: byYear, childSignals: childSignals,
-		subtreeSignals: subtreeSignals, stems: stems, subdirs: subdirs[:0], deferred: deferred[:0],
-		refs: refs[:0], inside: inside,
-	}
-}
-
-func (f *frame) addRange(oldest, newest int64) {
-	if !f.dated {
-		f.oldest, f.newest, f.dated = oldest, newest, true
-		return
-	}
-	f.oldest = min(f.oldest, oldest)
-	f.newest = max(f.newest, newest)
-}
-
-// unknownYear is the by_year key of the files without a known time.
-const unknownYear = 0
-
-// ownRange is a file's or leaf's own newest and oldest time: its
-// modification time when known, else none.
-func ownRange(mtime opt) (newest, oldest opt) {
-	if !mtime.ok || !domain.KnownModTime(mtime.v) {
-		return opt{}, opt{}
-	}
-	return mtime, mtime
-}
-
-// addFile counts one regular file of the subtree under its file family.
-func (f *frame) addFile(kind domain.FileKind, size, mtime int64, family domain.Family) {
-	f.files++
-	f.bytes += size
-	y := unknownYear
-	if domain.KnownModTime(mtime) {
-		f.addRange(mtime, mtime)
-		y = time.Unix(0, mtime).UTC().Year()
-	}
-	kt := f.byKind[kind]
-	f.byKind[kind] = rules.KindTotals{Files: kt.Files + 1, Bytes: kt.Bytes + size}
-	c := f.byYear[y]
-	c.add(counts{files: 1, bytes: size})
-	f.byYear[y] = c
-	f.comp[familyIndex(family)].add(counts{files: 1, bytes: size})
+	a := f.agg
+	a.reset()
+	*f = frame{children: children, stems: stems, subdirs: subdirs[:0], deferred: deferred[:0], agg: a}
 }
 
 // walk is one scan attempt's walk of its source.
@@ -165,12 +96,8 @@ type walk struct {
 	frames []*frame
 	depth  int
 	sigs   []rules.SignalID
-	// token numbers the entries the scan inserts that a list refers to;
-	// held counts the lists referring to each, and release collects the
-	// ones no list refers to any more, for the next folder finish.
-	token   uint64
-	held    map[uint64]int32
-	release []uint64
+	// tokens numbers the entries the scan inserts that a list refers to.
+	tokens
 	// owner holds the owner's overrides of the source's entries, read when
 	// the scan started (r2b design D3).
 	owner map[domain.EntryID]domain.Override
@@ -184,9 +111,7 @@ func (s *walk) top() *frame { return s.frames[s.depth-1] }
 func (s *walk) push() *frame {
 	if s.depth == len(s.frames) {
 		s.frames = append(s.frames, &frame{
-			children: map[string]*stored{}, byKind: map[domain.FileKind]rules.KindTotals{},
-			byYear: map[int]counts{}, childSignals: map[rules.SignalID]int{},
-			subtreeSignals: map[rules.SignalID]int{}, stems: map[string]bool{},
+			children: map[string]*stored{}, stems: map[string]bool{}, agg: newAgg(),
 		})
 	}
 	f := s.frames[s.depth]
@@ -296,6 +221,7 @@ func (s *walk) descend(p *frame, c child) error {
 			if c.old != nil && c.old.row.state != "missing" {
 				return s.missing(p, c.name, c.old, true, true)
 			}
+			s.drop(c.token) // the hold its frame would have taken over
 			return nil
 		case outcome == domain.OutcomeUnavailable:
 			return errSourceGone
@@ -320,11 +246,13 @@ func (s *walk) descend(p *frame, c child) error {
 		}
 	} else {
 		// A new folder may enter its parent's inside lists when it finishes:
-		// its frame holds a token until then.
+		// its frame holds a token until then, taken when it was listed
+		// (entry), so that its parent's lists cannot release it before the
+		// writer has inserted it.
 		if f.token == 0 {
 			f.token = s.newToken()
+			s.hold(f.token)
 		}
-		s.hold(f.token)
 		b := s.batch()
 		o := op{kind: opInsert, id: p.id, path: b.add(f.path), name: b.add(c.name), token: f.token}
 		if p.id == 0 {
@@ -448,28 +376,25 @@ func (s *walk) entry(f *frame, name []byte, info *fsaccess.EntryInfo) error {
 	}
 	c := child{name: name, info: *info, old: old}
 
-	s.sigs = s.pol.AppendNameSignals(s.sigs[:0], name, info.Kind)
-	var indicator rules.SignalID
-	for _, sig := range s.sigs {
-		f.childSignals[sig]++
-		f.subtreeSignals[sig]++
-		if indicator == "" && s.pol.IsIndicator(sig) {
-			indicator = sig
-		}
+	if info.Kind == domain.EntryDirectory && old == nil {
+		// The hold of its frame, taken now (descend).
+		c.token = s.newToken()
+		s.hold(c.token)
 	}
-	if indicator != "" {
-		f.indicators++
-		if len(f.refs) < maxIndicators {
-			ref := indicatorRef{path: joinPath(f.path, name), signal: indicator}
-			if old != nil {
-				ref.id = old.id
-			} else {
+	var indicator rules.SignalID
+	s.sigs, indicator = f.nameSignals(s.pol, s.sigs, name, info.Kind)
+	if indicator != "" && f.refFits(f.path, name) {
+		ref := indicatorRef{path: joinPath(f.path, name), signal: indicator}
+		if old != nil {
+			ref.id = old.id
+		} else {
+			if c.token == 0 {
 				c.token = s.newToken()
-				ref.token = c.token
 			}
-			s.hold(ref.token)
-			f.refs = append(f.refs, ref)
+			ref.token = c.token
 		}
+		s.hold(ref.token)
+		s.addRef(&f.agg, ref)
 	}
 
 	switch info.Kind {
@@ -525,47 +450,16 @@ func (s *walk) facts(r *row, c *child) bool {
 func (s *walk) file(f *frame, c *child, kind domain.FileKind) error {
 	r := row{kind: string(domain.EntryFile), state: "present"}
 	same := s.facts(&r, c)
-	res := s.pol.ClassifyFile(rules.FileFacts{Name: c.name, Kind: kind, Size: r.size, SiblingStems: f.stems})
+	var id domain.EntryID
 	if c.old != nil {
-		res = s.applyOwner(res, c.old.id)
+		id = c.old.id
 	}
-	r.classify(&res, s.codec)
-	r.fileKind = text(kind)
-	r.ext = s.codec.ext(c.name)
-	r.totalBytes, r.totalFiles = r.size, 1
-	r.newest, r.oldest = ownRange(r.mtime)
-	family := domain.FileFamily(res.Category, kind)
+	family := fileRow(s.pol, s.codec, c.name, kind, f.stems, s.ownerOf(id), &r)
 	f.addFile(kind, r.size, r.mtime.v, family)
-	s.notableFile(f, c, &r, family)
+	s.notableFile(&f.agg, f.path, c.name, id, &c.token, &r, family)
 	s.files++
 	s.bytes += r.size
 	return s.write(f, c, &r, nil, false, !same)
-}
-
-// notableFile offers the file c of f, with row r, to the inside lists of the
-// families it differs from (design D21). A new file that any of them takes
-// gets a token, so that the writer can resolve its ID.
-func (s *walk) notableFile(f *frame, c *child, r *row, family domain.Family) {
-	own := familyIndex(family)
-	var ref insideRef
-	for i := range familyKeys {
-		if i == own || !accepts(f.inside[i], r.size, f.path, c.name) {
-			continue
-		}
-		if ref.path == nil {
-			ref = insideRef{path: joinPath(f.path, c.name), category: r.category, family: text(family),
-				bytes: r.size, files: 1}
-			if c.old != nil {
-				ref.id = c.old.id
-			} else {
-				if c.token == 0 {
-					c.token = s.newToken()
-				}
-				ref.token = c.token
-			}
-		}
-		s.offer(&f.inside[i], &ref)
-	}
 }
 
 // leaf processes a symlink or a special file: recorded, never followed or
@@ -638,85 +532,23 @@ func (s *walk) finish(f *frame) error {
 		f.dir.Close()
 		f.dir = nil
 	}
-	res := s.pol.ClassifyFolder(rules.FolderFacts{
-		Name: f.name, ChildSignals: f.childSignals, SubtreeSignals: f.subtreeSignals,
-		Files: f.files, Bytes: f.bytes, ByKind: f.byKind, Indicators: f.indicators,
-	})
-	if f.id != 0 {
-		res = s.applyOwner(res, f.id)
-	}
-	r := row{kind: string(domain.EntryDirectory), state: "present", partial: f.partial}
+	r := row{kind: string(domain.EntryDirectory), state: "present"}
 	if f.unreadable {
 		r.state = "unreadable"
 	}
 	c := child{info: f.info, old: f.old}
 	s.facts(&r, &c)
-	r.classify(&res, s.codec)
-	r.totalBytes, r.totalFiles = f.bytes, f.files
-	if f.dated {
-		r.newest, r.oldest = some(f.newest), some(f.oldest)
-	}
-	if f.files > 0 {
-		r.mainKind = mainKind(f.byKind)
-	}
-	// Its composition is its content's (design D21); what it adds to its
-	// parent's is the same, unless it is a group outside Containers, which
-	// counts whole under its own family.
-	contribution := f.comp
-	if fam := res.Family; res.Group && fam != "" && fam != domain.FamilyContainers {
-		contribution = [4]counts{}
-		contribution[familyIndex(fam)] = counts{files: f.files, bytes: f.bytes}
-	}
-	inside := f.inside[dominant(&f.comp, f.bytes)]
+	contribution, inside, cols := f.finishFolder(s.pol, s.codec, f.name, s.ownerOf(f.id), &r)
 	stats := &dirStats{
-		cols: statsCols{
-			dirs: f.dirs, files: f.files, symlinks: f.symlinks, specials: f.specials,
-			unreadable: f.unreadableN, mounts: f.mts,
-			byKind: s.codec.byKind(f.byKind), byYear: s.codec.byYear(f.byYear),
-			byFamily: s.codec.byFamily(&f.comp), signals: s.codec.signals(f.subtreeSignals),
-		},
+		cols:   cols,
 		refs:   append([]indicatorRef(nil), f.refs...),
 		inside: append([]insideRef(nil), inside...),
 	}
 
 	s.depth--
 	if s.depth > 0 {
-		p := s.top()
-		p.dirs += 1 + f.dirs
-		p.symlinks += f.symlinks
-		p.specials += f.specials
-		p.unreadableN += f.unreadableN + boolInt(f.unreadable)
-		p.mts += f.mts + boolInt(f.boundary)
-		p.partial = p.partial || f.partial || f.unreadable
-		p.files += f.files
-		p.bytes += f.bytes
-		if f.dated {
-			p.addRange(f.oldest, f.newest)
-		}
-		for k, t := range f.byKind {
-			pt := p.byKind[k]
-			p.byKind[k] = rules.KindTotals{Files: pt.Files + t.Files, Bytes: pt.Bytes + t.Bytes}
-		}
-		for y, n := range f.byYear {
-			pc := p.byYear[y]
-			pc.add(n)
-			p.byYear[y] = pc
-		}
-		for i := range contribution {
-			p.comp[i].add(contribution[i])
-		}
-		for sig, n := range f.subtreeSignals {
-			p.subtreeSignals[sig] += n
-		}
-		p.indicators += f.indicators
-		for _, ref := range f.refs {
-			if len(p.refs) < maxIndicators {
-				p.refs = append(p.refs, ref)
-			} else {
-				s.drop(ref.token)
-			}
-		}
-		s.notableFolder(p, f, &r, inside)
+		s.absorb(&s.top().agg, &finished{a: &f.agg, r: &r, id: f.id, token: f.token, path: f.path,
+			inside: inside, contribution: contribution})
 	} else {
 		// The root: nothing refers to an indicator after it.
 		for _, ref := range f.refs {
@@ -730,8 +562,7 @@ func (s *walk) finish(f *frame) error {
 		}
 	}
 	s.drop(f.token)
-	stats.release = append([]uint64(nil), s.release...)
-	s.release = s.release[:0]
+	stats.release = s.released()
 
 	b := s.batch()
 	o := op{kind: opFinish, id: f.id, row: r, stats: stats, old: f.old}
@@ -741,15 +572,18 @@ func (s *walk) finish(f *frame) error {
 	return s.emit(&o)
 }
 
-// applyOwner gives the owner's override of the stored entry id, if any,
-// precedence over the rules' result, before anything reads it: the row,
-// the file family, the contribution to the parent's composition, and the
-// inside lists, so all come out as for a rule result (r2b design D3).
-func (s *walk) applyOwner(res rules.Result, id domain.EntryID) rules.Result {
-	if o, ok := s.owner[id]; ok {
-		return rules.ApplyOwner(res, o)
+// ownerOf returns the owner's override of the stored entry id, or nil: it
+// takes precedence over the rules' result before anything reads it (the
+// row, the file family, the contribution to the parent's composition, and
+// the inside lists), so all come out as for a rule result (r2b design D3).
+func (s *walk) ownerOf(id domain.EntryID) *domain.Override {
+	if id == 0 {
+		return nil
 	}
-	return res
+	if o, ok := s.owner[id]; ok {
+		return &o
+	}
+	return nil
 }
 
 // mainKind is the file kind with the most bytes, then the most files, then

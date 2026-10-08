@@ -11,17 +11,23 @@ import (
 //
 // Every recognised type stores names byte for byte, without Unicode
 // normalization. NTFS is treated as case-insensitive because Windows treats
-// its names that way.
+// its names that way. NoReplaceRename is true for the local types whose
+// drivers honour RENAME_NOREPLACE (r3 design D2); "ntfs" is the old kernel
+// driver and ntfs-3g through fuseblk, which do not.
 func fsTypeCapabilities(fsType string, readOnly bool) Capabilities {
 	var c Capabilities
 	switch fsType {
 	case "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "tmpfs":
-		c = Capabilities{CaseSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: time.Nanosecond}
+		c = Capabilities{CaseSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: time.Nanosecond,
+			NoReplaceRename: true}
 	case "vfat":
-		c = Capabilities{LocalTime: true, TimeResolution: 2 * time.Second}
+		c = Capabilities{LocalTime: true, TimeResolution: 2 * time.Second, NoReplaceRename: true}
 	case "exfat":
-		c = Capabilities{TimeResolution: 10 * time.Millisecond}
-	case "ntfs", "ntfs3":
+		c = Capabilities{TimeResolution: 10 * time.Millisecond, NoReplaceRename: true}
+	case "ntfs3":
+		c = Capabilities{StableIdentity: true, HardLinks: true, TimeResolution: 100 * time.Nanosecond,
+			NoReplaceRename: true}
+	case "ntfs":
 		c = Capabilities{StableIdentity: true, HardLinks: true, TimeResolution: 100 * time.Nanosecond}
 	case "iso9660", "udf":
 		c = Capabilities{CaseSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: time.Second}

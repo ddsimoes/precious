@@ -154,7 +154,7 @@ While a source is `offline` or `unavailable`, its entries, folder aggregates, de
 - **THEN** the request fails with `404 unknown_source`
 
 ### Requirement: Removing a source deletes its index
-`remove-source` SHALL delete the source with its entries, folder aggregates, decisions, and tag assignments, and SHALL leave the files on disk and every other source untouched. While a scan of the source is queued, running, or paused, it SHALL fail with `409 job_active` and change nothing.
+`remove-source` SHALL delete the source with its entries, folder aggregates, decisions, tag assignments, and history of actions. It SHALL leave the files on disk and every other source untouched. It SHALL fail with `409 job_active`, and change nothing, while a scan of the source is queued, running, or paused, or while an action of the source is queued or running. It SHALL fail with `409 recovery_needed` while an item of the source has its intent recorded or awaits manual recovery, so the record of a step in flight is never deleted.
 
 #### Scenario: Source removed
 - **WHEN** the owner removes a scanned source with decisions and tags
@@ -163,6 +163,10 @@ While a source is `offline` or `unavailable`, its entries, folder aggregates, de
 #### Scenario: Active scan blocks removal
 - **WHEN** `remove-source` names a source whose scan is running
 - **THEN** the request fails with `409 job_active`, and the source and its index are unchanged
+
+#### Scenario: A move in progress blocks removal
+- **WHEN** `remove-source` names a source with a queued move, or with an item awaiting manual recovery
+- **THEN** the request fails with `409 job_active` or `409 recovery_needed`, and the source, its index, and its history are unchanged
 
 ### Requirement: Availability is refreshed periodically and on listing
 Source availability SHALL be re-evaluated every minute and whenever `GET /api/sources` is read. A refresh SHALL update only each source's state, reason, mount point, and capabilities, and SHALL never add, change, or mark missing any entry.

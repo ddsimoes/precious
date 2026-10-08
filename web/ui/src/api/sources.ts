@@ -12,7 +12,8 @@ import { apiGet, postCommand } from '@/app/api'
 
 // Sources, the folder picker, and the source commands (design Interfaces:
 // GET /api/sources, GET /api/picker, add-source, rename-source,
-// remove-source, set-source-schedule, start-scan).
+// remove-source, set-source-schedule, start-scan, and R3's
+// set-source-writes).
 
 export type SourceState = 'online' | 'offline' | 'unavailable'
 
@@ -37,6 +38,20 @@ export interface Capabilities {
   local_time: boolean
   hard_links: boolean
   time_resolution_ns: number
+  // no_replace_rename is true where the file system can rename without ever
+  // replacing what holds the new name (R3 design D2).
+  no_replace_rename: boolean
+}
+
+// WritesUnavailable says why changes cannot be allowed on a source (R3
+// design D1), in the order the server checks.
+export type WritesUnavailable = 'forbidden_by_config' | 'read_only' | 'no_replace_rename'
+
+// SourceWrites is whether Precious may change the source when the owner
+// asks: off until the owner allows it, and impossible while unavailable.
+export interface SourceWrites {
+  enabled: boolean
+  unavailable: WritesUnavailable | null
 }
 
 export interface Totals {
@@ -83,6 +98,7 @@ export interface Source {
   schedule: Schedule | null
   next_scan_at: string | null
   schedule_skipped: ScheduleSkip | null
+  writes: SourceWrites
 }
 
 export interface SourcesResponse {
@@ -165,6 +181,12 @@ export function setSourceSchedule(
   csrfToken: string,
 ): Promise<SourceResult> {
   return postCommand<SourceResult>('set-source-schedule', { source_id: sourceId, schedule }, csrfToken)
+}
+
+// setSourceWrites allows or stops changes by Precious on a source. The
+// owner confirms allowing them first; stopping needs no confirmation.
+export function setSourceWrites(sourceId: string, enabled: boolean, csrfToken: string): Promise<SourceResult> {
+  return postCommand<SourceResult>('set-source-writes', { source_id: sourceId, enabled }, csrfToken)
 }
 
 // updateSource replaces one source in the cached list.

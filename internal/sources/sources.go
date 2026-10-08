@@ -1,7 +1,9 @@
 // Package sources is the source registry (§6.1, design D4/D5): the sources
 // table, where each source's volume is mounted now, the picker that is the
 // only way to name a folder, and the add-source, rename-source,
-// remove-source, and set-source-schedule commands.
+// remove-source, set-source-schedule, and set-source-writes commands. It also
+// says whether a source may be changed now (CheckWrites, r3 design D1), which
+// the commands that organize a source and the executor check.
 //
 // A source is recorded as a volume identity plus its root folder relative to
 // that volume, never as an absolute path. Resolving it reads the current mount
@@ -94,6 +96,10 @@ type Source struct {
 	// the source's state then. Both are unset when the last due time ran.
 	SkippedAt  *time.Time
 	SkipReason string
+	// WriteEnabled is the owner's write permission (r3 design D1), off
+	// until the owner turns it on. Writes also need WritesUnavailable to be
+	// empty; CheckWrites checks both.
+	WriteEnabled bool
 }
 
 // Opened is an online source with its root folder open. The caller closes
@@ -117,6 +123,9 @@ type Service struct {
 	// key signs picker handles; it is made at start, so a restart
 	// invalidates every handle.
 	key []byte
+	// allowWrites is [sources] allow_writes (r3 design D1), which
+	// set-source-writes and the sources list read.
+	allowWrites bool
 
 	// refresh coalesces concurrent refreshes (Refresh).
 	refreshMu sync.Mutex
@@ -134,7 +143,8 @@ var _ jobs.Registry = (*Service)(nil)
 
 // New returns the registry over st and fsys. Allowed roots are cfg's, or the
 // platform defaults that exist when cfg has none, resolved through symlinks
-// once here. The picker's signing key is generated here.
+// once here, and cfg.AllowWrites says whether a source's writes may be turned
+// on at all. The picker's signing key is generated here.
 func New(st *store.Store, fsys fsaccess.FS, cfg config.Sources, clk clock.Clock) (*Service, error) {
 	roots, err := allowedRoots(cfg.AllowedRoots)
 	if err != nil {
@@ -151,7 +161,7 @@ func New(st *store.Store, fsys fsaccess.FS, cfg config.Sources, clk clock.Clock)
 	if clk == nil {
 		clk = clock.Real{}
 	}
-	return &Service{st: st, fs: fsys, clk: clk, roots: roots, stateDir: stateDir, key: key}, nil
+	return &Service{st: st, fs: fsys, clk: clk, roots: roots, stateDir: stateDir, key: key, allowWrites: cfg.AllowWrites}, nil
 }
 
 // AllowedRoots returns the resolved allowed roots, in the order the picker
@@ -161,7 +171,7 @@ func (s *Service) AllowedRoots() []string { return append([]string(nil), s.roots
 const sourceColumns = `s.id, s.label, s.volume_kind, s.volume_id, s.volume_label, s.fs_type, s.strong,
 	s.rel_root, s.device_key, s.capabilities, s.state, s.state_reason, s.mount_point, s.scan_gen,
 	s.last_scan_at, (SELECT e.id FROM entries e WHERE e.source_id = s.id AND e.path = X''),
-	s.scan_schedule, s.next_scan_at, s.schedule_skipped_at, s.schedule_skip_reason`
+	s.scan_schedule, s.next_scan_at, s.schedule_skipped_at, s.schedule_skip_reason, s.write_enabled`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -180,7 +190,7 @@ func scanSource(r rowScanner) (Source, error) {
 	)
 	err := r.Scan(&src.ID, &src.Label, &kind, &src.Volume.ID, &volumeLabel, &src.Volume.FSType, &strong,
 		&src.RelRoot, &deviceKey, &caps, &state, &reason, &mountPoint, &src.ScanGen, &lastScanAt, &rootEntry,
-		&schedule, &nextScanAt, &skippedAt, &skipReason)
+		&schedule, &nextScanAt, &skippedAt, &skipReason, &src.WriteEnabled)
 	if err != nil {
 		return Source{}, err
 	}

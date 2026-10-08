@@ -45,9 +45,10 @@ type env struct {
 	src *sources.Service
 	cfg config.Scan
 	// pol replaces the default policy when set; onDone is the handler's
-	// after-scan hook when set.
+	// after-scan hook and active its DeferWhile check when set.
 	pol    *rules.Policy
 	onDone func(ctx context.Context, src domain.SourceID)
+	active func(ctx context.Context, q store.Queryer, src domain.SourceID) (bool, error)
 }
 
 func newEnv(t *testing.T) *env {
@@ -76,6 +77,9 @@ func (e *env) handler() *Handler {
 	h := NewHandler(e.st, e.src, pol, fixedClock{testNow}, e.cfg)
 	if e.onDone != nil {
 		h.OnScanDone(e.onDone)
+	}
+	if e.active != nil {
+		h.DeferWhile(e.active)
 	}
 	return h
 }

@@ -491,7 +491,10 @@ func (r *Runner) dispatch(ctx context.Context) {
 	for ctx.Err() == nil {
 		a, h, again, err := r.claim(ctx)
 		if err != nil {
-			r.log.Error("jobs: claim", "err", err)
+			// A claim cut short by Stop is the shutdown itself, not an error.
+			if ctx.Err() == nil {
+				r.log.Error("jobs: claim", "err", err)
+			}
 			return
 		}
 		if a == nil {

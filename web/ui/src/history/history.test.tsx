@@ -1,0 +1,254 @@
+import { act, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it } from 'vitest'
+
+import type { Action } from '@/api/organize'
+import { MockEventSource } from '@/test/eventSource'
+import { action, actionItem, folderRow, fotosSource, scanEvent } from '@/test/fixtures'
+import { jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
+
+type Route = (request: Request) => Response | Promise<Response>
+
+const documentos = folderRow('40', 'Documentos')
+
+const moved = action(
+  {
+    id: '12',
+    state: 'done',
+    destination: documentos,
+    files: 3,
+    bytes: 3 * 1024 ** 2,
+    started_at: '2026-10-07T10:01:00Z',
+    finished_at: '2026-10-07T10:02:00Z',
+    undo: { possible: true, reason: null },
+  },
+  { done: 3, conflict: 1 },
+)
+const waiting = action({ id: '13', state: 'queued', destination: documentos, bulk: true }, { planned: 2 })
+const stuck = action(
+  { id: '14', kind: 'rename', state: 'stopped', finished_at: '2026-10-07T09:00:00Z' },
+  { manual_recovery: 1 },
+)
+const undone = action(
+  { id: '11', state: 'done', destination: documentos, undo: { possible: false, reason: 'already_undone' } },
+  { done: 1 },
+)
+
+const recoveryItem = actionItem('301', 'Docs/a.txt', 'Docs/b.txt', {
+  state: 'manual_recovery',
+  found: { from: 'same', to: 'other' },
+})
+
+function routes(history: () => Action[], extra: Record<string, Route> = {}): Record<string, Route> {
+  return {
+    'GET /api/session': () => jsonResponse(200, signedIn),
+    'GET /api/sources': () =>
+      jsonResponse(200, { sources: [fotosSource({ writes: { enabled: true, unavailable: null } })] }),
+    'GET /api/history': () => jsonResponse(200, { items: history(), next_cursor: null }),
+    'GET /api/history/14/items': () => jsonResponse(200, { items: [recoveryItem], next_cursor: null }),
+    ...extra,
+  }
+}
+
+function bodies(requests: Request[], name: string) {
+  return Promise.all(
+    requests
+      .filter((r) => r.method === 'POST' && new URL(r.url).pathname === `/api/commands/${name}`)
+      .map((r) => r.clone().json() as Promise<unknown>),
+  )
+}
+
+function historyGets(requests: Request[]) {
+  return requests.filter((r) => new URL(r.url).pathname === '/api/history').length
+}
+
+function card(name: string) {
+  return within(screen.getByRole('article', { name }))
+}
+
+describe('History', () => {
+  it('lists the actions newest first, with their state and counts', async () => {
+    stubApi(routes(() => [waiting, moved, stuck, undone]))
+    renderApp('/history')
+
+    const list = within(await screen.findByRole('list', { name: 'Changes' }))
+    expect(list.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual([
+      'Move into “Documentos”',
+      'Move into “Documentos”',
+      'Rename',
+      'Move into “Documentos”',
+    ])
+    const done = within(list.getAllByRole('article')[1]!)
+    expect(done.getByText('Done')).toBeInTheDocument()
+    expect(
+      within(done.getByRole('list', { name: 'Items' }))
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual(['Done: 3', 'Left as they were: 1'])
+    await waitFor(() =>
+      expect(done.getByText(/Oct 7, 2026/)).toHaveTextContent(/^Fotos · Oct 7, 2026, 10:02\sAM · 3 files, 3\sMiB$/),
+    )
+    expect(done.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+    expect(done.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+
+    const queued = within(list.getAllByRole('article')[0]!)
+    expect(queued.getByText('Waiting for its turn')).toBeInTheDocument()
+    expect(queued.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    expect(queued.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+
+    const old = within(list.getAllByRole('article')[3]!)
+    expect(old.getByText('Undone')).toBeInTheDocument()
+    expect(old.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'History', current: 'page' })).toHaveAttribute('href', '/history')
+  })
+
+  it('undoes an action, and lists its items on demand', async () => {
+    const undo = action({ id: '20', kind: 'undo', undo_of: '12' }, { planned: 3 })
+    const requests = stubApi(
+      routes(() => [moved], {
+        'GET /api/history/12/items': () =>
+          jsonResponse(200, {
+            items: [
+              actionItem('1', 'Fotos/2004', 'Documentos/2004', { state: 'done' }),
+              actionItem('2', 'Fotos/x.jpg', 'Documentos/x.jpg', { state: 'conflict', reason: 'name_taken' }),
+            ],
+            next_cursor: null,
+          }),
+        'POST /api/commands/plan-undo': () => jsonResponse(201, { action: undo, items: [], next_cursor: null }),
+        'POST /api/commands/run-action': () =>
+          jsonResponse(202, { action: { ...undo, state: 'queued' }, job_id: '9', state: 'queued' }),
+        'GET /api/history/20': () => jsonResponse(200, { ...undo, state: 'running' }),
+      }),
+    )
+    renderApp('/history')
+    await screen.findByRole('article', { name: 'Move into “Documentos”' })
+    const moveCard = card('Move into “Documentos”')
+
+    await userEvent.click(moveCard.getByRole('button', { name: 'Show items' }))
+    const items = within(await moveCard.findByRole('list', { name: 'Items of this change' }))
+    expect(items.getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Fotos/2004 → Documentos/2004Done',
+      'Fotos/x.jpg → Documentos/x.jpgLeft as it is · Name taken',
+    ])
+
+    await userEvent.click(moveCard.getByRole('button', { name: 'Undo' }))
+    expect(await moveCard.findByText('Undoing…')).toBeInTheDocument()
+    expect(await bodies(requests, 'plan-undo')).toEqual([{ action_id: '12' }])
+    expect(await bodies(requests, 'run-action')).toEqual([{ action_id: '20' }])
+  })
+
+  it('asks for a destination when an undo has conflicts', async () => {
+    const conflicted = action({ id: '21', kind: 'undo', undo_of: '12' }, { planned: 2, conflict: 1 })
+    const redirected = action({ id: '22', kind: 'undo', undo_of: '12', destination: documentos }, { planned: 3 })
+    const requests = stubApi(
+      routes(() => [moved], {
+        'POST /api/commands/plan-undo': async (request) => {
+          const body = (await request.clone().json()) as { destination_id?: string }
+          return body.destination_id === undefined
+            ? jsonResponse(201, {
+                action: conflicted,
+                items: [actionItem('5', 'Documentos/x.jpg', 'Fotos/x.jpg', { state: 'conflict', reason: 'name_taken' })],
+                next_cursor: null,
+              })
+            : jsonResponse(201, {
+                action: redirected,
+                items: [actionItem('6', 'Documentos/x.jpg', 'Documentos/Old/x.jpg')],
+                next_cursor: null,
+              })
+        },
+        'GET /api/entries/1/children': () => jsonResponse(200, { items: [documentos], next_cursor: null }),
+        'GET /api/entries/40/children': () => jsonResponse(200, { items: [], next_cursor: null }),
+      }),
+    )
+    renderApp('/history')
+    await screen.findByRole('article', { name: 'Move into “Documentos”' })
+
+    await userEvent.click(card('Move into “Documentos”').getByRole('button', { name: 'Undo' }))
+    const preview = within(await screen.findByRole('alertdialog', { name: 'Undo' }))
+    expect(preview.getByText('Documentos/x.jpg → Fotos/x.jpg')).toBeInTheDocument()
+    await userEvent.click(preview.getByRole('button', { name: 'Choose a folder for them…' }))
+    const chooser = within(
+      await screen.findByRole('dialog', { name: 'Choose a folder for the items that cannot go back' }),
+    )
+    await userEvent.click(await chooser.findByRole('button', { name: 'Documentos' }))
+    await userEvent.click(chooser.getByRole('button', { name: 'Move here' }))
+
+    expect(await screen.findByRole('alertdialog', { name: 'Undo into “Documentos”' })).toBeInTheDocument()
+    expect(await bodies(requests, 'plan-undo')).toEqual([{ action_id: '12' }, { action_id: '12', destination_id: '40' }])
+    expect(requests.some((r) => new URL(r.url).pathname === '/api/commands/run-action')).toBe(false)
+  })
+
+  it('cancels a queued action', async () => {
+    let history = [waiting]
+    const requests = stubApi(
+      routes(() => history, {
+        'POST /api/commands/cancel-action': () => {
+          history = [{ ...waiting, state: 'stopped', counts: { ...waiting.counts, planned: 0, not_attempted: 2 } }]
+          return jsonResponse(200, { action: history[0] })
+        },
+      }),
+    )
+    renderApp('/history')
+    await screen.findByRole('article', { name: 'Move into “Documentos”' })
+
+    await userEvent.click(card('Move into “Documentos”').getByRole('button', { name: 'Cancel' }))
+    expect(await card('Move into “Documentos”').findByText('Stopped')).toBeInTheDocument()
+    expect(card('Move into “Documentos”').getByText('Not attempted: 2')).toBeInTheDocument()
+    expect(card('Move into “Documentos”').queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+    expect(await bodies(requests, 'cancel-action')).toEqual([{ action_id: '13' }])
+  })
+
+  it('shows an item that needs a check with both paths and what was found, and resolves it', async () => {
+    let history = [stuck]
+    const requests = stubApi(
+      routes(() => history, {
+        'POST /api/commands/resolve-recovery': () => {
+          history = [{ ...stuck, counts: { ...stuck.counts, manual_recovery: 0, resolved: 1 } }]
+          return jsonResponse(200, { action: history[0], scan: { job_id: '50', coalesced: false } })
+        },
+      }),
+    )
+    renderApp('/history')
+    await screen.findByRole('article', { name: 'Rename' })
+    const rename = card('Rename')
+
+    expect(rename.getByText('Needs your check: 1')).toBeInTheDocument()
+    const check = within(await rename.findByRole('list', { name: 'Items to check' }))
+    expect(check.getByText('Before: Docs/a.txt')).toBeInTheDocument()
+    expect(check.getByText('After: Docs/b.txt')).toBeInTheDocument()
+    expect(
+      check.getByText('Found at the place before: the item. At the place after: something else.'),
+    ).toBeInTheDocument()
+    const itemsRequest = requests.find((r) => new URL(r.url).pathname === '/api/history/14/items')
+    expect(new URL(itemsRequest?.url ?? '').searchParams.getAll('state')).toEqual(['manual_recovery'])
+
+    await userEvent.click(check.getByRole('button', { name: 'I fixed it' }))
+    await waitFor(() => expect(rename.queryByText('Needs your check')).not.toBeInTheDocument())
+    expect(await bodies(requests, 'resolve-recovery')).toEqual([{ item_id: '301' }])
+  })
+
+  it('follows organize job events', async () => {
+    let history = [waiting]
+    const requests = stubApi(routes(() => history))
+    renderApp('/history')
+    await screen.findByText('Waiting for its turn')
+    const stream = MockEventSource.latest()
+    act(() => stream.open())
+    // A progress event refetches the history; one that ends refetches it
+    // with everything a move changes.
+    const before = historyGets(requests)
+    act(() => stream.emit('job', scanEvent({ job_id: '9', kind: 'organize', progress: { items: 2, done: 1 } }), '1'))
+    await waitFor(() => expect(historyGets(requests)).toBe(before + 1))
+
+    history = [{ ...waiting, state: 'done', counts: { ...waiting.counts, planned: 0, done: 2 } }]
+    act(() =>
+      stream.emit(
+        'job',
+        scanEvent({ job_id: '9', kind: 'organize', state: 'succeeded', progress: { items: 2, done: 2 } }),
+        '2',
+      ),
+    )
+    expect(await screen.findByText('Done: 2')).toBeInTheDocument()
+    expect(historyGets(requests)).toBe(before + 2)
+  })
+})

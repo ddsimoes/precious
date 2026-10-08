@@ -10,7 +10,7 @@
 
 Precious is a self-hosted web application for the owner of an old, messy archive: copied `Program Files` and `WINDOWS` trees, photo folders copied three times over, zip files sitting next to their unpacked copies, installers from 2005, and somewhere in there the files that actually matter.
 
-It indexes every file and folder on the disks you add and shows where the space goes. You can find any file, see what each folder is made of, look at files safely, and record what to keep and what to discard. It **never writes to your disks**. It is one binary you run on your file server or your own computer, reached from a browser on your local network, with no cloud service involved.
+It indexes every file and folder on the disks you add and shows where the space goes. You can find any file, see what each folder is made of, look at files safely, and record what to keep and what to discard. It **only reads your disks** until you allow changes on one; then it moves, renames, and creates folders there when you ask, never replaces a file, and keeps a history you can undo. It is one binary you run on your file server or your own computer, reached from a browser on your local network, with no cloud service involved.
 
 ![The Map: a treemap and a table of the same folder, with each folder's composition and the details of a Windows drive backup](docs/images/map.png)
 
@@ -38,7 +38,8 @@ Precious is built around a handful of questions:
 - **Inside archives.** Browse zip and tar archives in the Map and open their photos and documents in the viewer, read in memory without unpacking anything to disk.
 - **Look without risk.** Preview photos, video, audio, PDF, text, source code, and Markdown right in the detail panel. File types come from Precious's own table, never from the content. HTML and SVG from your disk never run, and Markdown is sanitized with no remote content.
 - **Decide, safely.** Mark folders and files keep, discard, or later; a decision on a folder applies to everything inside it. Bulk decisions never override something you kept, and they report exactly what they skipped. Free-form tags are inherited the same way. Duplicates never decide anything for you: each copy is yours to decide.
-- **Read-only by design.** Scanning, hashing, archive reading, classification, and previews never write to a source; tests prove it on a read-only mount. Changing files on disk is a later, explicit, reversible step (see the [roadmap](#status-and-roadmap)).
+- **Organize, with undo.** Rename and move files and folders, create folders, move search results in bulk after a preview of every item and conflict, rescue the kept items out of a folder, and move the files only in one copy of a folder into the other copy from Compare. Every change goes into a History where it can be undone. Decisions, tags, and checked content follow each item, and a rescan sees nothing new.
+- **Read-only until you allow changes.** Scanning, hashing, archive reading, classification, and previews never write to a source; tests prove it on a read-only mount. Changes are allowed per source, off by default. One executor makes them: it records each step before it runs it, uses the filesystem's no-replace rename so a file is never replaced, and recovers after a crash, stopping for your check when a step's outcome is unclear ([how Precious changes a disk](docs/operator.md#how-precious-changes-a-disk)).
 - **Disks that come and go.** Each source is recognized by its volume identity (filesystem UUID, ZFS dataset, or Btrfs filesystem ID), not its path. A USB disk mounted somewhere else is the same source, and an unplugged disk stays browsable and searchable. A source can be rescanned on a daily or weekly schedule; a disk that is not connected at that time is skipped and says so.
 - **Self-contained and private.** One static Go binary with the web interface built in. It needs no runtime dependencies, makes no outbound connections, and loads nothing from the internet. Access is protected by a password, server-side sessions, CSRF checks, and a strict Content-Security-Policy.
 - **Fast on large archives.** In the R1 measurement on a 4-core Celeron J4125 home server with four hard disks in RAIDZ1, a first scan of 1.49 million entries (about 780 GiB) took 3.5 minutes from a cold cache, 1.23 times a bare metadata walk of the same tree. On a benchmark index of 2 million entries, Map pages answer in under 10 ms at the 95th percentile.
@@ -64,7 +65,7 @@ The screenshots show the built-in regression corpus, a generated copy of a typic
 
 ## Status and roadmap
 
-Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so are R2b, R2c, and R2d, the short steps after R2, accepted on 2026-10-07. There are no tagged releases yet, and things may change incompatibly until 1.0.
+Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so are R2b, R2c, and R2d, the short steps after R2, accepted on 2026-10-07. R3 was accepted on 2026-10-08. There are no tagged releases yet, and things may change incompatibly until 1.0.
 
 | Milestone | Scope | Status |
 |---|---|---|
@@ -73,7 +74,7 @@ Precious is in **early development**. Milestones R1 and R2 are complete, each ac
 | **R2b** Your corrections and polish | Your own categories and group marks, scheduled rescans, search without accents, Map keyboard, both paths and extra copies in Compare, similar folders | ✅ Done |
 | **R2c** Gems removed | Gems could not tell what is valuable and is gone ([ADR 0009](docs/adr/0009-remove-gems.md)); its list of your files inside programs is now an opportunity card | ✅ Done |
 | **R2d** Clearer figures | The installers card lists installers and disk images, not whole downloads folders; the duplicated share reads "Has copies", which is not space you could free; only Compare counts files on one side ([ADR 0010](docs/adr/0010-clearer-figures.md)) | ✅ Done |
-| **R3** Organizing | Moves and renames with undo, through one journaled, no-overwrite executor | Planned |
+| **R3** Organizing | Moves, renames, and new folders with undo, through one executor that journals first and never overwrites; changes allowed per source; bulk moves after a preview; rescuing kept items; merging the files only in one copy of a folder into the other | ✅ Done |
 | **R4** Cleanup | Cleanup plans, a reversible quarantine, a pre-delete check that every file has a verified copy, and purge | Planned |
 | **R5** Media dates | Photo and video dates from metadata, corrections, and organizing by date | Planned |
 | **R6** Classifier assistant | An optional model that suggests categories where the rules are unsure; it never decides | Planned |
@@ -144,11 +145,12 @@ make ui          # rebuild the web interface into web/dist
 |---|---|
 | `cmd/precious` | The binary: `serve`, `check-config`, `admin set-password`, `backup`, `version` |
 | `internal/index` | The scanner: one pass that records every entry with folder totals, composition, and classification |
-| `internal/fsaccess` | Read-only, rooted filesystem access: no symlink following, no mount crossing, byte-exact names |
+| `internal/fsaccess` | Rooted filesystem access: no symlink following, no mount crossing, byte-exact names; its only write surface (no-replace rename, folder creation) is used by the executor alone |
 | `internal/rules`, `policies/` | Classification rules and name markers |
-| `internal/sources` | Sources, volume identity, the folder picker |
+| `internal/sources` | Sources, volume identity, the folder picker, per-source write permission |
 | `internal/search`, `internal/web/api`, `internal/viewer` | Search, the read API, and the safe viewer |
 | `internal/decisions` | Decisions, tags, and selections |
+| `internal/organize`, `internal/executor` | Organizing: plans and history, and the one executor that changes disks |
 | `web/ui` | The React and TypeScript interface (Vite, Tailwind, TanStack, ECharts) |
 | `internal/corpus`, `tools/` | The regression corpus generator and the scan benchmark |
 | `openspec/` | Change proposals, designs, and requirement specs |

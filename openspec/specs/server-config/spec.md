@@ -17,17 +17,6 @@ The server SHALL load its configuration from a single operator-supplied file and
 - **WHEN** `curator check-config` runs against a valid configuration
 - **THEN** it exits zero and prints the effective settings, with secret values redacted
 
-### Requirement: Write mode unavailable in this release
-No configuration key, command, or endpoint SHALL enable writes to a source in this release; writes arrive in a later milestone (R3). A v0.2 write setting such as `mode` SHALL be refused as an unknown key.
-
-#### Scenario: Write mode requested
-- **WHEN** the configuration's `[sources]` section contains `mode = "read_write"`
-- **THEN** startup fails with an error naming `sources.mode` as an unknown key
-
-#### Scenario: No write toggle offered
-- **WHEN** the owner reads `GET /api/sources`
-- **THEN** no source reports a write permission, and no command exists to turn one on
-
 ### Requirement: Loopback-by-default listener
 The listener SHALL default to `127.0.0.1:8080`. A non-loopback listen address SHALL require `allow_non_loopback_listen = true`. An external origin SHALL always be configured. An `https://` origin SHALL be accepted on any host. An `http://` origin, on any host, SHALL be accepted only when `allow_insecure_http = true`, so Precious can run over plain HTTP on a local network (§3).
 
@@ -146,3 +135,14 @@ A configuration that still contains a section removed in this release (`[[source
 #### Scenario: v0.2 copies section still refused
 - **WHEN** the configuration contains the v0.2 section `[copies]`
 - **THEN** startup fails with an error naming `copies`
+
+### Requirement: Writes can be forbidden by the configuration
+`[sources] allow_writes` SHALL be a boolean, `true` by default. When it is `false`, no source SHALL allow writes, whatever its stored write permission, and the write permission SHALL be unavailable with the reason `forbidden_by_config` (§6.1). `check-config` SHALL print it among the effective settings. A v0.2 write setting such as `mode` SHALL still be refused as an unknown key.
+
+#### Scenario: Read-only installation
+- **WHEN** the configuration sets `sources.allow_writes = false` and a source had writes on
+- **THEN** the source reports `writes.unavailable` as `forbidden_by_config`, and no organize job changes anything on it
+
+#### Scenario: Write mode requested with the old key
+- **WHEN** the configuration's `[sources]` section contains `mode = "read_write"`
+- **THEN** startup fails with an error naming `sources.mode` as an unknown key

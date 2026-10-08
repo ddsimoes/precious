@@ -1,8 +1,8 @@
 # Precious operator guide
 
-Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks: it never writes to, moves, or deletes anything on them. This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
+Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks, except where you allow changes on one: there it moves, renames, and creates folders when you ask, and it never deletes, overwrites, or writes into a file (see [Changing disks](#changing-disks)). This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
 
-This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, and opportunity cards with review lists, among them your own files found inside programs. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing files into new folders and cleanup (quarantine and deletion) come in later releases. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
+This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, and opportunity cards with review lists, among them your own files found inside programs. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing (moving, renaming, and creating folders on the sources where you allow it) comes with R3 (see [Changing disks](#changing-disks)); cleanup (quarantine and deletion) comes in a later release. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
 
 ## Installation
 
@@ -54,7 +54,7 @@ GOTOOLCHAIN=local GOPROXY=off CGO_ENABLED=0 \
 | `User=precious`, `Group=precious` | dedicated system account, no login shell |
 | `StateDirectory=precious`, `StateDirectoryMode=0700`, `UMask=0077` | `/var/lib/precious` owned by `precious` with mode `0700`; every file the service creates is owner-only |
 | `ProtectSystem=strict`, `ProtectHome=read-only` | the whole filesystem, `/home` included, is read-only to the service; only the state directory is writable |
-| `ReadOnlyPaths=` | the disks to index, listed explicitly in a drop-in (below) |
+| `ReadOnlyPaths=` | the disks to index, listed explicitly in a drop-in (below); a disk you allow Precious to change goes in `ReadWritePaths=` instead (see [Allowing changes in the deployment](#allowing-changes-in-the-deployment)) |
 | `NoNewPrivileges=yes`, `CapabilityBoundingSet=` | no capabilities and no way to gain privileges |
 | `PrivateTmp=yes`, `PrivateDevices=yes` | private `/tmp`; no device nodes |
 | `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` | local and IP sockets only |
@@ -130,11 +130,11 @@ Then open <http://127.0.0.1:8080>. `PRECIOUS_VERSION=v0.1.0` in the environment 
 
 ### Read-only disk mounts (recommended)
 
-Precious never writes to the disks it indexes, but present every disk read-only at the operating-system level as well:
+Precious writes to a disk only when you allow changes on that source and organize it (see [Changing disks](#changing-disks)); scanning, hashing, and viewing never write. Present every disk read-only at the operating-system level as well, unless you allow changes on it (see [Allowing changes in the deployment](#allowing-changes-in-the-deployment)):
 
 - Mount the filesystems read-only on the host, for example `mount -o ro,nosuid,nodev,noexec /dev/sdb1 /srv/old-disk` or `ro,nosuid,nodev,noexec` in `/etc/fstab`. A read-only mount also prevents the access-time updates that reading directories and files would otherwise write.
 - For an original disk that must not change at all, set the block device read-only first (`blockdev --setro /dev/sdb`): an `ro` mount of ext3/ext4 with a dirty journal still replays the journal unless you add `noload`.
-- Under systemd, list each disk in `ReadOnlyPaths=`; under Compose, bind each disk read-only.
+- Under systemd, list each disk in `ReadOnlyPaths=`; under Compose, bind each disk read-only. Only a disk whose source you allow Precious to change needs `ReadWritePaths=` or a writable bind.
 - systemd's read-only settings do not extend to mounts created after the service started, and a container bind mount does not see filesystems mounted beneath it later. Restart Precious after attaching a disk it should see.
 
 ## First run
@@ -238,7 +238,7 @@ After a failed sign-in, the next attempt is refused for 1 s, and each further co
 
 ### Audit trail
 
-Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, `tag_deleted`, `category_set`, and `group_set`. To read the latest ones, run this as the user that owns the state directory:
+Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `source_writes_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, `tag_deleted`, `category_set`, `group_set`, `action_run`, `action_cancelled`, and `recovery_resolved` (see [Organizing](#organizing)). To read the latest ones, run this as the user that owns the state directory:
 
 ```sh
 sqlite3 <state_dir>/precious.db \
@@ -396,6 +396,7 @@ Durations are strings such as `"30s"`, `"15m"`, or `"12h"`.
 | `jobs.event_retention_rows` | integer | `10000` | Job events kept for reconnecting browsers. At least 1. |
 | `jobs.event_retention_age` | duration | `"24h"` | Job events older than this are discarded. Must be positive. |
 | `sources.allowed_roots` | array of strings | `[]` | Folders the picker offers, and below which sources may be added. Each entry must be the absolute path of an existing directory; entries are cleaned. Empty selects the platform defaults: on Linux the service account's home, `/media`, `/mnt`, `/run/media`, and `/srv`, those that exist. |
+| `sources.allow_writes` | boolean | `true` | Whether any source may be changed. `false` forbids writes on every source, whatever its own write permission, which then reads as unavailable with the reason `forbidden_by_config`. Every source starts with writes off either way; the owner turns them on per source. |
 | `scan.batch_size` | integer | `1000` | Most row changes a scan commits in one write transaction, 1 to 10000. |
 | `scan.list_batch` | integer | `256` | Most directory entries one directory read returns, 1 to 4096. |
 | `hashing.read_chunk_bytes` | integer | `1048576` | Bytes one read call takes when Precious reads a file's content to compare it, 65536 (64 KiB) to 16777216 (16 MiB). |
@@ -416,7 +417,7 @@ Precious builds for Linux, macOS, and Windows, each on amd64 and arm64 (`make cr
 | Linux, amd64 and arm64 | Complete and tested. Precious reads the system's mount table, identifies each volume so a disk is recognized wherever it is mounted, and detects each filesystem's capabilities from its type. |
 | macOS and Windows, amd64 and arm64 | Precious builds and runs, and sources can be added, scanned, browsed, searched, and viewed. Every source is recognized only at its current location, and every filesystem gets the conservative capabilities described below. Native volume recognition and filesystem detection for these systems are planned for a later release (R8 in the product specification). |
 
-The API and the interface are the same on every system; only the reported volume and capabilities differ. On every system Precious only reads: it never follows a symlink, never opens a FIFO, socket, or device, and never enters another filesystem mounted inside a source.
+The API and the interface are the same on every system; only the reported volume and capabilities differ. On every system Precious reads a source without changing it, unless you allow changes on it, which needs the no-replace rename only Linux offers in this release (see [Changing disks](#changing-disks)). It never follows a symlink, never opens a FIFO, socket, or device, and never enters another filesystem mounted inside a source.
 
 ### Volume identity
 
@@ -443,14 +444,15 @@ Precious learns all this by reading `/proc/self/mountinfo`, `/dev/disk/by-uuid`,
 
 Each source records the capabilities of its filesystem, detected when the source is added and on every availability check. On Linux they follow the filesystem type:
 
-| Filesystem type | Names | Stable file identity | Time resolution | Local time | Read-only |
-|---|---|---|---|---|---|
-| ext2, ext3, ext4, xfs, btrfs, zfs, f2fs, tmpfs | case-sensitive | yes | 1 ns | no | as mounted |
-| vfat (FAT) | case-insensitive | no | 2 s | yes | as mounted |
-| exfat | case-insensitive | no | 10 ms | no | as mounted |
-| ntfs, ntfs3, NTFS through ntfs-3g (`fuseblk`) | case-insensitive | yes | 100 ns | no | as mounted |
-| iso9660, udf (optical discs) | case-sensitive | yes | 1 s | no | always |
-| anything else, and every filesystem on macOS and Windows | case-insensitive | no | 2 s | no | as mounted (Linux only) |
+| Filesystem type | Names | Stable file identity | Time resolution | Local time | Read-only | No-replace rename |
+|---|---|---|---|---|---|---|
+| ext2, ext3, ext4, xfs, btrfs, zfs, f2fs, tmpfs | case-sensitive | yes | 1 ns | no | as mounted | yes |
+| vfat (FAT) | case-insensitive | no | 2 s | yes | as mounted | yes |
+| exfat | case-insensitive | no | 10 ms | no | as mounted | yes |
+| ntfs3 | case-insensitive | yes | 100 ns | no | as mounted | yes |
+| ntfs, NTFS through ntfs-3g (`fuseblk`) | case-insensitive | yes | 100 ns | no | as mounted | no |
+| iso9660, udf (optical discs) | case-sensitive | yes | 1 s | no | always | no |
+| anything else, and every filesystem on macOS and Windows | case-insensitive | no | 2 s | no | as mounted (Linux only) | no |
 
 The last row is the conservative set, reported with `known: false`: Precious assumes the least it can rely on. NTFS is treated as case-insensitive because Windows treats its names that way. An NTFS volume mounted through ntfs-3g shows the type `fuseblk`, which other drivers use too; Precious recognizes it by its NTFS volume serial (16 hexadecimal digits in `/dev/disk/by-uuid`), and gives any other `fuseblk` filesystem the conservative set. No filesystem normalizes Unicode in names, so two names that differ only in Unicode composition stay two names everywhere.
 
@@ -460,7 +462,8 @@ What the capabilities change:
 - **Time resolution.** A rescan treats a file as unchanged when its size is the same and its modification time differs by no more than the resolution. A FAT memory card, which stores times in 2-second steps, therefore does not show every file as modified, while on ext4 a change of a microsecond is a change.
 - **Local time.** FAT stores times in local time, without a time zone, so after a daylight-saving change every time on the card can move by an hour. On a local-time filesystem a difference of one hour (within the resolution) also counts as unchanged. A card read in another time zone shows its files as changed: Precious does not hide edits made within the same hour.
 - **Stable file identity.** Where it is missing (FAT, exFAT, and the conservative set), device and inode numbers change between mounts, so Precious does not rely on them and matches a file by its path, size, and modification time.
-- **Read-only.** Follows the mount; optical discs always report read-only. Precious never writes to a source either way.
+- **Read-only.** Follows the mount; optical discs always report read-only. Precious never writes to a read-only source.
+- **No-replace rename.** Whether the filesystem's driver can rename an entry only when the new name is free, failing instead of replacing what holds it (`RENAME_NOREPLACE` on Linux). Precious changes a source only where it can, so a move or a rename can never overwrite a file; without it, writes on that source are unavailable. Should a filesystem refuse the flag at run time even so (old OpenZFS releases do), Precious stops, moves nothing, and turns that source's write permission off.
 
 ## Sources
 
@@ -483,7 +486,7 @@ Some folders are refused:
 
 The browser never sends a typed path. Each folder the picker shows carries an opaque handle signed with a key that Precious makes when it starts, and adding a source names that handle. After a restart the old handles are refused, so reopen the picker.
 
-Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed while its scan is queued, running, or paused (`job_active`); cancel the scan first. A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
+Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, history of changes by Precious, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed, and nothing changes, while its scan is queued, running, or paused, or while a change by Precious on it (a move, a rename, a new folder) is waiting its turn or running (`job_active`); cancel it first. Nor can it while a step of a change is still being recorded or waits for you to check it in History (`recovery_needed`): removing the source would delete the only record of a step that may be half done. Resolve the step first. A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
 
 ### Allowed roots
 
@@ -528,6 +531,24 @@ Each source can be rescanned on a schedule: off (the default), daily at a time o
 
 Each source in `GET /api/sources` carries `schedule` (the object above, or `null` when off), `next_scan_at` (the next due time, or `null`), and `schedule_skipped` (`{"at","reason"}` for the last due time when it was skipped, or `null` when it ran). The reason is the source's state then, `offline` or `unavailable`, or `invalid_schedule` for a stored schedule that no longer validates, which stops its scans until it is set again.
 
+### Changes by Precious
+
+Each source has its own write permission: whether Precious may move, rename, and create folders on it when you ask. Every source starts with it off, so Precious only reads it. Turn it on with **Allow changes…** on the Sources screen, which asks first, and off with **Turn off**, which takes effect at once; the next step of a change in progress checks it and stops.
+
+| Command | Request | Response |
+|---|---|---|
+| `set-source-writes` | `{"source_id":"fotos","enabled":true}`; `"enabled":false` turns it off | 200 `{"source": …}` |
+
+Each source in `GET /api/sources` carries `writes`: `{"enabled":false,"unavailable":null}`. `enabled` is the permission. `unavailable` is `null` when it can be turned on, or the reason it cannot, the first that applies:
+
+| Reason | Meaning |
+|---|---|
+| `forbidden_by_config` | [`sources.allow_writes`](#configuration-reference) is `false`, which forbids changes on every source. |
+| `read_only` | The filesystem is mounted read-only, as the shipped systemd unit and Compose file mount the disks (see [Read-only disk mounts](#read-only-disk-mounts-recommended)); allow writes there first. |
+| `no_replace_rename` | The filesystem cannot rename without the risk of replacing an existing file (`capabilities.no_replace_rename` is `false`; see [Filesystem capabilities](#filesystem-capabilities)). |
+
+The reasons read the capabilities as last recorded, which Precious refreshes every minute and whenever the list is loaded. Turning writes on while `unavailable` is not `null` is refused with `409 writes_unavailable` and changes nothing; turning them off always succeeds, also where they are unavailable. A missing or malformed `enabled`, or any other field, is `invalid_request`, and an unknown source `unknown_source`. Each change writes one `source_writes_set` audit event with the source, the new value, and the previous one; a request that sets the value the source already has changes nothing and writes no event.
+
 ### Volumes that cannot be recognized when moved
 
 A source on a volume with the weak `path` identity, reported with `"strong": false`, is recognized only at the mount point it was added at. Mounted anywhere else, it shows as offline. This applies to filesystems with no UUID, dataset, or btrfs identity (network shares, tmpfs, most FUSE filesystems), to disks whose UUID the service cannot see, and to every source on macOS and Windows in this release. To keep such a source:
@@ -566,6 +587,10 @@ Every scan walks the whole source again. It compares each entry with the one sto
 Changing the rules between releases does not need anything special: the next scan reclassifies every entry whose classification differs and writes only those.
 
 A scan that finishes successfully starts a hashing job for every online source (see [Hashing](#hashing)); a failed or cancelled scan does not.
+
+### Moves made by Precious
+
+When Precious itself moves or renames an entry, or creates or removes a folder, on a source, the index follows in the same database transaction that records the step, without a rescan. A moved entry keeps its ID, so its decision, tags, classification overrides, digests, and archive listing go with it, and so does everything below a moved folder; its effective decision then comes from its new folder unless it has its own. Its classification, and the totals, breakdowns, and classification of every folder above its old and new places, are recomputed from the index exactly as a scan computes them, so after moves and renames the next rescan finds nothing to change (after a new folder, it only records the folder's own size on disk). A folder's indicator examples are therefore the first 20 by path; the first scan after upgrading reorders those lists once. A large folder moves in one transaction, which holds other writes to the index for a moment (well under 10 seconds for 100,000 entries). A missing entry that holds the destination's name is removed from the index, with whatever is below it, unless one of them carries your decision, a tag, or an override: the step is then refused. A scan waits while Precious is changing its source.
 
 ### Scheduled scans
 
@@ -984,11 +1009,12 @@ The interface reads the index through a small JSON API under `/api`. The same en
 |---|---|
 | `GET /api/home`, `GET /api/home?source=ID` | The figures of Home for every source, or for one: totals, bytes and files by family, by file kind, and by year, the decision totals, whether the figures are partial, and the scans in progress. |
 | `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). |
-| `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable). |
+| `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable); with `kind=directory`, only its folders, archives left out. |
 | `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. |
 | `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
 | `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text` | A file's content, and its text decoded. See [Viewer safety](#viewer-safety). |
+| `GET /api/history`, `GET /api/history/{id}`, `GET /api/history/{id}/items` | The changes Precious made or planned on the disks, and their items. See [Organizing](#organizing). |
 
 Every entry row carries its name and path twice: `name` and `path` are the escaped display form, and `name_b64` and `path_b64` are the exact bytes on disk in base64. A name that is not valid UTF-8 is therefore never lost. For example, a Latin-1 `fé.txt` shows as `f\xE9.txt`, and its raw bytes are `ZukudHh0`. Times are in UTC, in RFC 3339 form, or `null` when unknown.
 
@@ -996,13 +1022,13 @@ Every entry row also carries `composition`, its bytes and files by family as a l
 
 The detail of `GET /api/entries/{id}` also helps the Map shorten paths and explain archives. Each folder in `ancestors` has `only_child`, true when it holds nothing but the next one (the entry itself for its parent). `only_folder` is the ID of a folder's only item when that item is a folder, and `null` otherwise. `archive_note` says why an archive file has no `archive`: `unsupported` for a format Precious recognizes but does not open (7z, rar, xz, cab, jar, and the like), `nested` for an archive inside an archive, `not_listed` for a format it opens that was not listed yet, and `null` for anything else. Items in every state count, as in the children list.
 
-Children are sorted with `sort=bytes`, `files`, `newest` (the newest change inside a folder), or `name`, and with `order=desc` or `asc`. By default the sort is by bytes, largest first. A sort by name defaults to ascending and compares the raw bytes of the names, so `Zeta` comes before `alfa`. A page holds 200 rows unless `limit` asks for another number, and never more than 1,000. A page with more after it carries `next_cursor`, and the same request with `cursor=` set to it gives the next page. A cursor belongs to the folder's order: changing `sort` or `order` needs a new first page. A cursor holds the position of the last row, not a row count. So a row added or removed while you page does not shift the other rows: a new row is listed only when it sorts after the current page. A row whose size or date a scan changes may move to a page already read.
+Children are sorted with `sort=bytes`, `files`, `newest` (the newest change inside a folder), or `name`, and with `order=desc` or `asc`. By default the sort is by bytes, largest first. A sort by name defaults to ascending and compares the raw bytes of the names, so `Zeta` comes before `alfa`. `kind=directory` lists only the folders, in every state, sorted and paged the same way; an archive is a file, so it is left out, even one Precious can open as a folder, and inside such an archive only the member folders are listed. It is the only `kind` accepted. A page holds 200 rows unless `limit` asks for another number, and never more than 1,000. A page with more after it carries `next_cursor`, and the same request with `cursor=` set to it gives the next page. A cursor belongs to the folder's order and `kind`: changing `sort`, `order`, or `kind` needs a new first page. A cursor holds the position of the last row, not a row count. So a row added or removed while you page does not shift the other rows: a new row is listed only when it sorts after the current page. A row whose size or date a scan changes may move to a page already read.
 
 Errors use the usual envelope, `{"error":{"code","message"}}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | An unknown or repeated parameter, a bad value (such as `sort=color` or `limit=0`), or a cursor the server did not give for this order. |
+| 400 | `invalid_request` | An unknown or repeated parameter, a bad value (such as `sort=color`, `limit=0`, or a `kind` other than `directory`), or a cursor the server did not give for this order and `kind`. |
 | 404 | `not_found` | An entry, source, or folder (`within`) that does not exist, or an ID that is not a valid one. |
 | 409 | `invalid_entry_state` | The content or text of a folder, of a missing file, or of a file that changed on disk since the last scan. |
 | 409 | `source_offline` | The content or text of a file whose source is not online. |
@@ -1162,11 +1188,141 @@ A request naming both one entry and several, or neither, or more than 1,000 IDs,
 
 Each accepted request writes one audit event (`decision_set`, `tags_set`, `tag_created`, `tag_renamed`, or `tag_deleted`) with the time, the client address, the entries or selection it named with the counts of changed and skipped entries, and the old and new values.
 
+## Changing disks
+
+Precious changes a disk only to organize it, when you ask: it moves and renames files and folders, creates folders, and removes an empty folder that one of its own changes created, when you undo that change. It never deletes a file, never writes into one, and never changes a file's times or permissions. Every change is listed in [History](#history). How the index follows a move, without a rescan, is described under [Scanning and the index](#scanning-and-the-index).
+
+### Organizing
+
+Every change Precious makes on a disk is an **action** that you plan first and then run. Planning reads only the index, never the disk, and changes nothing anywhere: it lists every step the action would take, its **items**, each with the path before and after. Running it queues an `organize` job that does exactly the steps that were planned, in order (see [How Precious changes a disk](#how-precious-changes-a-disk)). A plan can be run for one hour; after that it reads `expired`, running it is refused with `action_expired`, and you plan again. Expired plans are deleted a day later.
+
+**The actions:**
+
+- **Move** (`plan-move`) moves one entry, several ticked entries (up to 1,000), or all the results of a selection into one folder, under their names. An entry inside another entry of the same move goes with it, as one item. An action holds at most 10,000 items; a larger one is refused with `invalid_request`, so move a folder instead of its contents.
+- **Rename** (`plan-rename`) gives one entry a new name in its folder. **New folder** (`plan-create-folder`) creates an empty folder. When the name is already taken in that folder, by an entry the last scan saw or by a missing one that carries your decision, tags, or category, both are refused at once with `name_taken` and no action is made. A name is refused with `invalid_request` when it is empty, `.` or `..`, holds `/` or a NUL character, or is longer than 255 bytes, and so is the current name. On a disk that does not tell letter case apart (FAT, exFAT, NTFS), a rename that changes only the letter case, such as `FOTO.JPG` to `foto.jpg`, is refused too: that disk sees both as the same name and cannot make the change in one step. On a FAT, exFAT, or NTFS disk (filesystem type `vfat`, `exfat`, `ntfs3`, `ntfs`, or `fuseblk`), a new name with any of `" * : < > ? \ |`, a control character, or a space or dot at its end is refused with `invalid_request` as well, since that disk cannot hold it: `Recibos: 2023` or `Novo.` there needs another name.
+- **Rescue kept items** (`plan-rescue`) moves the items kept on their own inside a folder into another folder, so the folder can be discarded: only the outermost ones (a kept folder goes with everything in it), keeping their names, all into the chosen folder. A folder that is itself kept has nothing to rescue and is refused with `invalid_entry_state`, as is one with nothing kept on its own inside; a destination inside the folder is refused with `invalid_request`.
+- **Merge** (`plan-merge`) moves the files Compare lists as only on one side into the other folder, each to the same place it has on its side: `2006/Praia/DSC_editada.JPG` only in `Fotos - Copia` goes to `Fotos/2006/Praia/DSC_editada.JPG`. When Compare left out a single wrapper folder on the receiving side, such as `Fotos (copia)/Fotos/` against `Fotos/`, the files go inside that wrapper. Each folder missing on the way is created first, as its own item, but only when at least one file is planned to go into it or below it: a folder whose files are all refused or in conflict is not created. Files with the same name and different content, and files not checked yet, are never moved. Both sides must be folders of the same source; an archive, or a folder inside one, is refused with `invalid_request`, since its files cannot be moved.
+- **Undo** (`plan-undo`) is described below.
+
+**What a plan leaves out.** An item that cannot be done is planned as **refused** (not included) or **conflict** (left as it is), with its reason, and the rest of the action still runs. Refused:
+
+| Reason | Meaning |
+|---|---|
+| `other_source` | The entry is on another source than the destination. Moves stay inside one source. |
+| `inside_archive` | The entry is a member of an archive. |
+| `missing` | The last scan did not find the entry. |
+| `source_root` | The entry is a source's top folder. |
+| `into_itself` | A folder would go into itself, or into a folder inside it. |
+| `already_there` | The entry is already in the destination under that name. |
+| `other_filesystem` | The entry is where another filesystem is mounted, or the destination is on another filesystem. |
+| `contains_mount` | Another filesystem is mounted somewhere inside the folder; moving it would leave that mount behind. |
+| `would_lose_keep` | A move of many entries would take away an entry's keep (see below). |
+
+In conflict:
+
+| Reason | Meaning |
+|---|---|
+| `name_taken` | An entry with that name is in the destination. On a disk that does not tell letter case apart, `Foto.jpg` and `foto.jpg` are the same name. For a merge, it also marks the files below a place where a folder is needed and a file is. |
+| `name_taken_in_plan` | An earlier item of the same action takes that name. |
+| `name_taken_by_missing` | A missing entry with that name carries your decision, tags, or category. Precious never lets a move take that place, so your intent is never lost; a missing entry without any gives way. |
+| `previous_folder_gone` | (Undo) the folder the item came from is no longer there. |
+
+A name taken on the disk but not yet indexed is found when the step runs: the item then ends `conflict`, and nothing is replaced. Items that changed between the plan and the run end `changed`, so a plan is only ever a preview of what the index shows.
+
+**Decisions follow the place, not the move.** A move never changes a decision. An entry with a decision of its own keeps it; one without takes the decision of its new folder, which the plan shows for each item as `decision_after`. A move of one entry, a rename, and an undo may take away a keep the entry had through its folder; the plan counts those items in `kept_lost`, and the interface warns "N kept items would no longer be kept" before it runs. A move of many entries (ticked entries, a selection, a rescue, or a merge) never takes away a keep: such an item is refused with `would_lose_keep`, and if the destination's decision changes before the item runs, it ends `changed` with that reason.
+
+**Undo.** Every action that ran can be undone from History while some of its done items are not undone yet. `plan-undo` plans the reverse of those items, last first: each moved or renamed entry goes from wherever it is now back to its previous folder and name, and each folder the action created is removed, if it is still empty (an `rmdir` item, which ends `not_empty` otherwise). An item whose previous name is taken now is a conflict (`name_taken`), as is one whose previous folder is gone (`previous_folder_gone`); planned again with `destination_id`, those items go into that folder under their previous names, still in conflict if taken there too. An item counts as undone only once its undo step is done, so an undo that stopped early, was cancelled, or expired leaves the rest undoable, and an undo planned twice does each item once (the second ends `changed`, `already_undone`). An undo is itself an action, which can be undone in turn. A move of many entries is one action and is undone as a whole.
+
+**Run and cancel.** `run-action` queues a planned action. It is refused with `action_expired` after the hour, with `action_not_runnable` when the action is not planned any more or has no item to run, and with the source's own refusals. `cancel-action` stops an action that is waiting or running: a waiting one stops at once and none of its items runs; a running one stops after the step in progress, which is confirmed and recorded. Its items not yet attempted end `not_attempted`, and a stopped action never runs later.
+
+**What every plan and run checks.** The source must allow changes now: refused with `source_offline` while its disk is not connected, `writes_unavailable` while changes cannot be allowed (see [Changes by Precious](#changes-by-precious)), and `writes_disabled` while its **Changes by Precious** is off. While one of the source's items needs your check (see [Recovery after an interruption](#recovery-after-an-interruption)), nothing can be planned or run on it: `recovery_needed`. Resolve it with `resolve-recovery`, which marks the item resolved and starts a scan of the source, so the index shows what you left on the disk; the source must be online for that scan.
+
+**Commands** (`POST /api/commands/{name}` with an `Idempotency-Key`; IDs are strings):
+
+| Command | Request | Response |
+|---|---|---|
+| `plan-move` | exactly one of `{"entry_id":"12"}`, `{"entry_ids":["12","13"]}` (1 to 1,000), or `{"selection_id":"…"}`, with `"destination_id":"40"` | 201 `{"action","items","next_cursor"}` |
+| `plan-rename` | `{"entry_id":"12","name":"curriculo 2005.doc"}` | 201, as above |
+| `plan-create-folder` | `{"parent_id":"40","name":"2006"}` | 201, as above |
+| `plan-rescue` | `{"folder_id":"30","destination_id":"40"}` | 201, as above |
+| `plan-merge` | `{"left_id":"50","right_id":"51","from":"right"}`: the files only on the `from` side go into the other one | 201, as above |
+| `plan-undo` | `{"action_id":"7"}`, optionally with `"destination_id":"40"` | 201, as above |
+| `run-action` | `{"action_id":"8"}` | 202 `{"action","job_id","state"}` |
+| `cancel-action` | `{"action_id":"8"}` | 200 `{"action"}` |
+| `resolve-recovery` | `{"item_id":"77"}` | 200 `{"action","scan":{"job_id","coalesced"}}` |
+
+A plan answers with the action and the first 200 of its items; `next_cursor` continues them through `GET /api/history/{id}/items`. A plan of one entry is individual; one of `entry_ids` or of a selection is bulk (`"bulk": true`), as are rescues and merges. An unknown entry, folder, action, item, or selection is `not_found`; a destination or parent that is not a folder the last scan saw (a file, an archive, a missing folder, an archive member) is `invalid_request`. `run-action`, `cancel-action`, and `resolve-recovery` each write an audit event (`action_run`, `action_cancelled`, `recovery_resolved`) with the action, its kind and source, and the job; plans write none, since they change nothing.
+
+**Read endpoints** (each needs a session, like every endpoint):
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/history?source=&cursor=&limit=` | The actions that ran (waiting, running, done, or stopped), newest first, 50 per page by default and at most 200: `{"items":[Action],"next_cursor"}`. An unknown `source` is `not_found`. |
+| `GET /api/history/{id}` | One action in any state, planned and expired ones included. |
+| `GET /api/history/{id}/items?state=&cursor=&limit=` | The action's items in order, 200 per page by default and at most 1,000; `state` repeats, such as `state=manual_recovery` or `state=done&state=conflict`. |
+
+An **action** has its `id`, `kind` (`move`, `rename`, `create_folder`, `rescue`, `merge`, or `undo`), `source_id`, `state` (`planned`, `queued`, `running`, `done`, `stopped`, or `expired`), `created_at`, `expires_at`, `started_at`, and `finished_at`, its `destination` as an entry row (`null` for a rename or an undo to the previous places), `job_id`, `undo_of` (the action an undo reverses), `bulk`, `counts` (its items in each state, every state listed), `bytes` and `files` (of the items planned, under way, or done), `kept_lost`, `reversed` (its items undone), and `undo`: `{"possible":true,"reason":null}`, or `possible` false with `not_done` (it did not run), `nothing_done` (no item was done), or `already_undone`.
+
+An **item** has its `id`, `seq`, `op` (`rename` for a move or rename, `mkdir`, or `rmdir`), `entry` (the entry's row as it is now, or `null`), `from` and `to` (`{"path","path_b64"}` or `null`), `state`, `reason` (from the tables above), `decision_after`, `detail` (the system's message of a `failed` item), `found` (for an item that needs your check, what was at each name: `{"from","to"}`, each `absent`, `same`, or `other`), `reversed`, `bytes`, and `files`. Item states are `planned`, `refused`, `conflict`, `intent` (started and not yet confirmed), `done`, `not_permitted`, `offline`, `changed`, `failed`, `no_safe_rename`, `not_empty`, `manual_recovery`, `not_attempted`, and `resolved`.
+
+**Errors** of the commands above, besides `invalid_request` and `not_found`:
+
+| Status | Code | When |
+|---|---|---|
+| 409 | `name_taken` | A rename or new folder whose name is taken in its folder. |
+| 409 | `action_expired` | Running a plan made over an hour ago. |
+| 409 | `action_not_runnable` | Running an action that is not planned, or has nothing to run; cancelling one that is not waiting or running. |
+| 409 | `action_not_undoable` | Undoing an action that did not run, or has nothing left to undo. |
+| 409 | `recovery_needed` | Planning or running on a source with an item that needs your check. |
+| 409 | `writes_disabled` | The source's **Changes by Precious** is off. |
+| 409 | `writes_unavailable` | Changes cannot be allowed on the source (see [Changes by Precious](#changes-by-precious)). |
+| 409 | `source_offline` | The source's disk is not connected. |
+| 409 | `selection_expired` | A selection older than an hour. |
+| 409 | `invalid_entry_state` | A rescue of a kept folder or of one with nothing kept inside; resolving an item that does not need your check. |
+
+### How Precious changes a disk
+
+- **Only on sources you allowed.** A source changes only while its **Changes by Precious** is on (off for every new source), the configuration allows it (`sources.allow_writes`), the disk is online and mounted writable, and its filesystem has the no-replace rename (see [Filesystem capabilities](#filesystem-capabilities)). Precious checks all of these again just before each step, in the same database transaction that records the step, so turning changes off stops a change before its next step: that item ends `not_permitted` (`offline` when the disk went away), and the rest of the change is not attempted.
+- **Never replaces a file.** Every move and rename uses the filesystem's no-replace rename (`renameat2` with `RENAME_NOREPLACE` on Linux). When the new name is taken, even by something that appeared after the preview, the item ends `conflict` (Name taken), nothing is replaced, and the change goes on with its next item. Should the filesystem refuse the flag at run time (old OpenZFS releases do), the item ends `no_safe_rename`, nothing moves, the rest is not attempted, and Precious turns that source's **Changes by Precious** off, with a `source_writes_set` audit event whose actor is `system` and whose reason is `no_replace_rename`.
+- **Checked before each step.** Precious goes down from the source's top folder one name at a time, never by path: it never follows a link and never crosses into another mounted filesystem, and each folder must still be the one the index holds. The item itself must still be what the last scan saw: the same kind, the same size and modification time for anything but a folder (within the filesystem's time resolution), and the same device and inode where the filesystem keeps them stable. Anything else ends the item `changed` (Changed on disk since the last scan). An item that is itself a mount point, or the two folders on different filesystems, ends `refused` with `other_filesystem`, and a folder with a mount point inside it with `contains_mount`.
+- **Recorded first, then done, flushed, and confirmed.** Before each step Precious records what it is about to do: both folders and names, and the identity it expects. Only then does it rename, create, or remove. Afterwards it flushes every folder the step changed to the disk (`fsync`), looks at both names again, and records the result together with the index update in one transaction. When the index cannot be updated, the item ends `manual_recovery` (Needs your check) instead of staying half recorded, and the change stops. When a flush fails, the item stays recorded as started, the change stops, and a check like the one after an interruption (below) decides it.
+- **Errors.** Permission denied ends the item `failed` with the system's message, and the change goes on. So does "invalid argument" on a rename on any filesystem but ZFS: the disk refused the name, and changes stay on. A filesystem that became read-only ends it `failed` and stops the change; a folder to remove that is not empty ends it `not_empty`. Any other error (an I/O error, for example) is looked at as after an interruption: `failed` when the step clearly did not happen, done when it clearly did, `manual_recovery` otherwise, which stops the change.
+- **One at a time.** The changes of one source run one at a time, oldest first, each in the order of its items, as an `organize` job whose progress counts `items` and `done`.
+- **Changes wait for scans, and scans for changes.** A change waits while a scan of its source is running, deferring by one second, and runs when the scan ends. A scan waits while a change of its source is waiting or running, or one of its steps is recorded as started and not yet confirmed. Hashing goes on meanwhile: a result it read through a path that has since moved is dropped, and the file is read again.
+- **Cancel.** Cancelling a change in History, or cancelling its job, stops a waiting change at once, and a running one after the step in progress, which is confirmed and recorded. The rest of the change is not attempted and never runs later.
+
+### Recovery after an interruption
+
+When Precious stops between recording a step and recording its result (a crash, a power cut, or the service stopped at the wrong moment), the step is checked before anything else changes on that source. At the next start Precious queues that check for every source that needs it, without touching a disk; every change of the source also checks first. The check runs only while no scan of the source is running, and it only looks at the two names:
+
+- the item still at its old name with the identity recorded, and the new name free: the step did not happen, and it runs once (or ends `not_attempted` when its change was stopped meanwhile);
+- the item at its new name with that identity, and the old name free: the step happened, and Precious records it and updates the index without renaming again;
+- anything else, such as both names taken or neither: the item ends `manual_recovery`, **Needs your check**, with what was found at each name (`absent`, `same`, or `other`).
+
+While a source has an item that needs your check, no change can be planned or run on it. Put things right on the disk, then choose **I fixed it** in History: Precious marks the item resolved and scans the source again. A source that is offline keeps its unchecked step until it is back, and its scans wait until then.
+
+### Allowing changes in the deployment
+
+The shipped deployments keep every disk read-only at the operating-system level: the systemd unit lists the disks in `ReadOnlyPaths=`, and the Compose file binds them read-only. Precious sees that as a read-only mount, so **Changes by Precious** on those sources reads that the disk is mounted read-only. To allow changes on one source only:
+
+- **systemd:** in the drop-in, move that disk from `ReadOnlyPaths=` to `ReadWritePaths=`; `ProtectSystem=strict` keeps everything else read-only. Give the `precious` account write permission on the folders to organize, through its group, and restart the service:
+
+  ```ini
+  [Service]
+  ReadOnlyPaths=/media/backup-2003
+  ReadWritePaths=/srv/old-disk
+  ```
+
+- **Compose:** make only that disk's bind writable (`read_only: false` in its long form), keep the others read-only, and recreate the container. UID 65532 needs write permission on the folders to organize.
+- **Host:** mount that filesystem read-write (without `ro`), and leave the block device writable.
+
+Then turn **Changes by Precious** on for that source in Sources. The service's `UMask=0077` does not make new folders private: a folder Precious creates gets its parent's permission bits.
+
 ## Interface
 
-Precious is used through a web interface served by `precious serve` at the address in `server.external_origin`. Everything it needs is built into the binary: it loads nothing from the internet and works on a network with no outside access. The top bar links the four screens, Home, Map, Search, and Sources, and has the Sign out button. Sizes are shown in binary units (KiB, MiB, GiB, where 1 GiB is 1,024 MiB). The interface is in English, the only language in this release, and shows numbers and dates in English formats.
+Precious is used through a web interface served by `precious serve` at the address in `server.external_origin`. Everything it needs is built into the binary: it loads nothing from the internet and works on a network with no outside access. The top bar links the screens, Home, Map, Search, Opportunities, History, and Sources, and has the Sign out button. Sizes are shown in binary units (KiB, MiB, GiB, where 1 GiB is 1,024 MiB). The interface is in English, the only language in this release, and shows numbers and dates in English formats.
 
-Nothing in the interface changes a file on a disk. Decisions and tags are recorded in Precious's database only.
+Decisions and tags are recorded in Precious's database only. The interface changes a disk only when you organize it: moving, renaming, or creating folders on a source where you allowed changes (see [The Sources screen](#the-sources-screen)). Precious never replaces a file, and every change is listed in [History](#history), where it can be undone.
 
 ### Signing in
 
@@ -1192,6 +1348,7 @@ The Sources screen lists each source with its state (online, offline, or unavail
 - **Change schedule** sets the rescan schedule: off, daily, or weekly on a day, at a time in your browser's time zone. See [Rescan schedule](#rescan-schedule).
 - **Rename** changes the label only.
 - **Remove** asks first. It forgets the source with its decisions and tag assignments; no file on the disk is changed.
+- **Changes by Precious** says whether Precious may change the source. Every source starts with it off, and Precious only reads it. **Allow changes…** asks first, saying that Precious will then move, rename, and create folders on that source only when you ask, never replaces a file, and keeps a history you can undo; nothing changes until you confirm. **Turn off** stops it at once, with no question. Where changes cannot be allowed, the row says why instead of offering the button: the server's configuration forbids changes on every source (`sources.allow_writes = false`), the disk is mounted read-only, or its file system cannot rename without the risk of replacing a file. This is separate from the file system's own **Writable** or **Read-only** line above it.
 
 **Add source** opens the folder picker. It starts at the locations Precious may use and lists folders only; open folders until the one you want is current, optionally give it a name, and add it. Then choose Scan now. See [Adding a source](#adding-a-source), [Allowed roots](#allowed-roots), and [Offline and unavailable sources](#offline-and-unavailable-sources).
 
@@ -1235,6 +1392,8 @@ A decision applied to many items never changes a kept one, whether it was kept i
 
 **Manage tags** renames a tag, keeping it on every item, or deletes it from every item after asking.
 
+**Move to…** in the same bulk section moves the ticked items, or all the results you selected, into one folder of a source where you allowed changes. Choose the folder in the destination chooser (see [The detail panel](#the-detail-panel)). A preview then lists every item with its path before and after, the items that cannot go there (a name already taken in that folder, or by another item of the same move) and those not included, each with its reason, such as an archive member, a source's top folder, or a kept item that would no longer be kept there: a move of many items never takes away a keep. Nothing moves until you choose **Confirm**; **Cancel** leaves everything as it is. Items indexed after the preview never join the move. The result then shows, with a link to History.
+
 ### The detail panel
 
 Clicking an item on the Map or in Search opens its details beside the screen, or over it in a window narrower than 1,600 pixels (Escape or × closes it). They show:
@@ -1246,7 +1405,12 @@ Clicking an item on the Map or in Search opens its details beside the screen, or
 - **Classification:** the category, family, and suggestion, the traits, and one sentence per rule explaining why. A file no rule recognized reads "Not classified" and says which family its type counts under. When discard was held back because the folder holds your own material, the panel says so and lists the files that caused it, each a link to its details. See [Reading the explanations](#reading-the-explanations). **Change category** sets your own category or goes back to the rules, and, for a folder, **Review as one item** offers As the rules say, Yes, and No. A value you set reads **set by you**, with what the rules would set beside it, and after a change the panel notes that the figures of the folders above update when the scan ends. See [Your own category and groups](#your-own-category-and-groups).
 - **Decision:** the item's own decision ("None: follows its folder" when it has none) and the one in force, with where it comes from: set on this item, inherited from a named folder (a link), or undecided because no folder above has a decision. The buttons Follow folder, Undecided, Keep, Discard, and Later set this item's own decision, even when it is kept; Follow folder removes it. See [Decisions](#decisions).
 - **Tags:** the item's own tags, each with a button to remove it, and the tags it inherits, each naming the folder it comes from. An inherited tag can be removed only at that folder. Add an existing tag from the list, or type a new name and choose **Create and add**; a name that already exists, in any letter case, is refused with a message.
+- **Organize,** for anything but an archive member or a missing item: **Rename** and **Move to…** (except for a source's top folder), and for a folder **New folder** and **Rescue kept items…** (when the folder itself is not kept), which moves the items kept inside it, the outermost ones, into a folder you choose, keeping their names. A rename, a new folder, or a single move without a conflict runs at once and shows its result with **Undo**; a name already taken is refused with a message, and nothing changes. A move that would take away an item's keep, and every rescue, opens the preview first, with the warning "N kept items would no longer be kept" where it applies. While Precious may not change the item's source, the section says so and links to the Sources screen; while the source's disk is not connected, it asks to connect it.
 - **Technical details,** collapsed until opened: the entry ID, the source, the raw bytes of the name, and the raw path.
+
+**The destination chooser** of Move to… and Rescue kept items… browses the folders Precious indexed, starting where the item is, or at the source's top folder; no path is typed. The path above the list goes back up; **Load more** shows more folders of a large one. **New folder here** creates a folder in the current one, which appears in the list once it is made. **Move here** chooses the current folder; it is off on the item being moved and on any folder inside it.
+
+**The preview** names the change and its destination, and counts the items that will be changed, those that cannot go there, and those not included, with their total size. It lists every item, with **Load more** for long lists, and its path before and after, the decision it would take from its new place, and the reason of each item left out. **Confirm** runs the change; **Cancel** leaves everything as it is, and the plan is forgotten after an hour.
 
 **Show in Map** opens the item's folder on the Map, **Search in this folder** limits Search to a folder, and **Open** shows a file in the viewer. For an archive Precious read completely, the main button is **Open as a folder**, which browses its items on the Map; Open comes second, and Show in Map shows the folder that holds the archive.
 
@@ -1284,11 +1448,22 @@ Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J
 
 **Compare** shows two folders or archives side by side. Open it from a relation in the detail panel, a pair of Similar folders, or the duplicates list, or choose **Compare with…** in a folder's or archive's details, then open the second one on the Map or in Search and choose **Compare with <first>**. The address names both sides (`/compare?left=…&right=…&bucket=…`), so a comparison can be bookmarked. Its five groups (only on the left, only on the right, identical, same name with different content, and not checked yet) show their files and size; each file has the decision buttons for each side that holds it. **Check now** reads the files of both sides that are not checked yet before any other hashing on their disks; the groups update when it ends. Two folders where one is inside the other cannot be compared.
 
+**Move these files into "…"** appears above the files of the only-on-the-left and only-on-the-right groups when both sides are folders, not archives, of the same source, and Precious may change that source. It moves each file only on that side to the same place inside the other folder, creating the folders missing on the way, after the preview. Files with the same name and different content, and files not checked yet, are never moved.
+
 **On the Map,** the **Has copies** column shows the share of each row's bytes that also exists elsewhere (a file is 0% or 100%), "so far" while its folder is not fully checked, and "Not checked" before anything is. It counts every copy, the one you would keep included, so it is not the space you could free: Opportunities shows that, on its duplicates card. Pointing at the column title says so, and so does its description for a screen reader (see [Percent duplicated](#percent-duplicated)). It hides after Changed, Suggestion, and Decision in a narrow window. **Color by → Has copies** paints the treemap in bands (no other copy, less than 25%, 25% to 50%, 50% to 75%, 75% or more has copies), with "Not checked yet" and "Nothing to check" colors, named in the legend. An archive Precious read completely opens like a folder, in the table and the treemap: its items show their sizes and copies, open in the viewer, and are decided with the archive, so their details show the archive's decision with a link to it and no decision or tag buttons.
 
 **Search** has a **Copies** filter: has another copy, no other copy, not checked yet, and, when searching inside a folder, has a copy outside this folder. Select all of the last one, then Discard, to discard the copies a folder holds of files kept elsewhere.
 
 **The detail panel** adds **Copies** for a file (its other copies, each with its path and decision, or why there is none: no other file of its size, different from every file of its size, or not checked yet), **Related folders** for a folder or archive (same content, contained in, or mostly shared, each with its bytes in common and **Compare**, which is where the files only on one side are counted), **Archive** for an archive file (format, what was read, items, size unpacked, and **Open as a folder**), the **Has copies** share, with a line under it saying that it counts every copy and is not the space you could free, which Opportunities shows, and the SHA-256 in the technical details. Every "no other copy" statement carries the share checked on all disks, because a copy can be on any of them; archives Precious does not open (7z, rar, and those over the limits) count as plain files.
+
+### History
+
+**History** (in the main menu) lists every change Precious made on a disk, newest first: what it was (such as "Move into “Documentos”" or "Rename"), its source, when it ran, its size, its state (waiting for its turn, in progress, done, or stopped), and how many of its items were done, left as they were because their place was taken, not included, not done, or not attempted. The list follows running changes live.
+
+- **Undo** puts a done change back: each moved or renamed item returns to its previous folder and name, and each folder the change created is removed if it is still empty. When an item's previous name is taken, or its previous folder is gone, the preview opens and offers to choose a folder for those items, where they go under their previous names. An undo is itself a change in the list, and an item already undone reads Undone.
+- **Cancel**, on a change waiting for its turn or running, stops it after the step in progress; nothing more of it runs.
+- **Show items** lists every item with its paths and what became of it, such as Done, Name taken, or Changed on disk since the last scan.
+- **Needs your check** marks an item whose step Precious could not confirm, for example after a power cut. It shows the item's path before and after and what was found at each (nothing, the item, or something else). Put things right on the disk, then choose **I fixed it**: Precious marks the item resolved and scans the source again. Until then, no other change can be planned on that source.
 
 ### Common tasks
 
@@ -1296,3 +1471,4 @@ Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J
 - **Decide a folder:** open its details and choose Keep, Discard, or Later. Everything inside follows, except items with a decision of their own. Home's decision figures update at once.
 - **Decide many files:** search for them, select all results (or tick some), check the confirmation, and choose the decision. Read the report for the kept items that were skipped.
 - **Label things:** tag a folder in its details, and everything inside it carries the tag. Search by the tag, or color the Map by it, to see them.
+- **Tidy up a disk:** allow changes on its source on the Sources screen, then rename or move items from their details, or move many search results at once with Move to…. Check History to undo a change.

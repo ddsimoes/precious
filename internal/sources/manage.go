@@ -33,6 +33,9 @@ const (
 	// AuditSourceScheduleSet records set-source-schedule with the previous
 	// and the new schedule (r2b design D6).
 	AuditSourceScheduleSet = "source_schedule_set"
+	// AuditSourceWritesSet records a change of a source's write permission
+	// (r3 design D1), with the previous and the new value.
+	AuditSourceWritesSet = "source_writes_set"
 )
 
 // MaxLabelLen bounds a source label, in characters.
@@ -264,14 +267,50 @@ func (s *Service) SetSchedule(ctx context.Context, tx *sql.Tx, id domain.SourceI
 	return s.audit(ctx, tx, AuditSourceScheduleSet, map[string]any{"source_id": id, "schedule": sch, "previous_schedule": previous})
 }
 
+// SetWrites turns the write permission of source id on or off, in tx, with
+// the source_writes_set audit event naming the previous and the new value
+// (r3 design D1). Turning it on is writes_unavailable while
+// WritesUnavailable gives a reason, from the capabilities as last recorded;
+// turning it off always succeeds. Setting the value the source already has
+// changes nothing and writes no event. An unknown ID is unknown_source.
+func (s *Service) SetWrites(ctx context.Context, tx *sql.Tx, id domain.SourceID, enabled bool) error {
+	src, err := getSource(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if enabled {
+		if reason := WritesUnavailable(src, s.allowWrites); reason != "" {
+			return domain.Errorf(domain.CodeWritesUnavailable, "source %q cannot be changed: %s", id, reason)
+		}
+	}
+	if src.WriteEnabled == enabled {
+		return nil
+	}
+	value := 0
+	if enabled {
+		value = 1
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sources SET write_enabled = ? WHERE id = ?`, value, string(id)); err != nil {
+		return err
+	}
+	return s.audit(ctx, tx, AuditSourceWritesSet, map[string]any{"source_id": id, "enabled": enabled, "previous_enabled": src.WriteEnabled})
+}
+
 // Remove deletes source id and its whole index (entries, folder aggregates,
 // decisions, tag assignments, name index rows, selection rows, content data,
-// and its jobs), in tx, with the source_removed audit event. Nothing on disk
-// is touched. A queued, running, or paused scan of the source is job_active,
-// and an unknown ID unknown_source. Any other active job of the source (its
-// hashing) is cancelled, a running attempt as soon as tx commits, and goes
-// away with it; relations are marked for a refresh, so the other sources'
-// relations and review rows drop the removed copies.
+// history of actions, and its jobs), in tx, with the source_removed audit
+// event. Nothing on disk is touched. An unknown ID is unknown_source. It
+// refuses, changing nothing (r3 design D15):
+//   - job_active while a scan of the source is queued, running, or paused, or
+//     an action of the source is queued or running;
+//   - recovery_needed while an item of the source's actions has its intent
+//     recorded or awaits manual recovery, so the only record of a step in
+//     flight is never deleted.
+//
+// Any other active job of the source (its hashing) is cancelled, a running
+// attempt as soon as tx commits, and goes away with it; relations are marked
+// for a refresh, so the other sources' relations and review rows drop the
+// removed copies.
 func (s *Service) Remove(ctx context.Context, tx *jobs.Tx, id domain.SourceID) error {
 	var label string
 	err := tx.SQL().QueryRowContext(ctx, `SELECT label FROM sources WHERE id = ?`, string(id)).Scan(&label)
@@ -287,6 +326,24 @@ func (s *Service) Remove(ctx context.Context, tx *jobs.Tx, id domain.SourceID) e
 	switch {
 	case err == nil:
 		return domain.Errorf(domain.CodeJobActive, "source %q has the active job %d; cancel it first", id, job)
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	var action int64
+	err = tx.SQL().QueryRowContext(ctx, `SELECT id FROM actions WHERE source_id = ?
+		AND state IN ('queued', 'running') ORDER BY id LIMIT 1`, string(id)).Scan(&action)
+	switch {
+	case err == nil:
+		return domain.Errorf(domain.CodeJobActive, "source %q has the active action %d; cancel it first", id, action)
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	var item int64
+	err = tx.SQL().QueryRowContext(ctx, `SELECT i.id FROM action_items i JOIN actions a ON a.id = i.action_id
+		WHERE a.source_id = ? AND i.state IN ('intent', 'manual_recovery') ORDER BY i.id LIMIT 1`, string(id)).Scan(&item)
+	switch {
+	case err == nil:
+		return domain.Errorf(domain.CodeRecoveryNeeded, "source %q has the change %d awaiting recovery; resolve it first", id, item)
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}

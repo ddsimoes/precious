@@ -50,7 +50,7 @@ func Register(mux *http.ServeMux, s *Service, log *slog.Logger) {
 			}
 			out.Sources = make([]sourceJSON, len(srcs))
 			for i, src := range srcs {
-				if out.Sources[i], err = describe(r.Context(), tx, src, mounts); err != nil {
+				if out.Sources[i], err = describe(r.Context(), tx, src, mounts, s.allowWrites); err != nil {
 					return err
 				}
 			}
@@ -141,6 +141,15 @@ type sourceJSON struct {
 	// ScheduleSkipped is the last due time when it was skipped, null when it
 	// ran.
 	ScheduleSkipped *scheduleSkipJSON `json:"schedule_skipped"`
+	Writes          writesJSON        `json:"writes"`
+}
+
+// writesJSON is the owner's write permission and, when writes cannot be
+// turned on, why (r3 design D1): forbidden_by_config, read_only, or
+// no_replace_rename.
+type writesJSON struct {
+	Enabled     bool    `json:"enabled"`
+	Unavailable *string `json:"unavailable"`
 }
 
 type scheduleSkipJSON struct {
@@ -170,9 +179,9 @@ type activeJobJSON struct {
 }
 
 // describe returns src's SourceJSON: its row, its root folder's path through
-// mounts, the totals of its root entry, and its queued, running, or paused
-// scan.
-func describe(ctx context.Context, q store.Queryer, src Source, mounts []fsaccess.Mount) (sourceJSON, error) {
+// mounts, the totals of its root entry, its queued, running, or paused scan,
+// and its writes under allowWrites.
+func describe(ctx context.Context, q store.Queryer, src Source, mounts []fsaccess.Mount, allowWrites bool) (sourceJSON, error) {
 	j := sourceJSON{
 		ID: src.ID, Label: src.Label, State: src.State,
 		StateReason: optString(src.StateReason),
@@ -186,6 +195,10 @@ func describe(ctx context.Context, q store.Queryer, src Source, mounts []fsacces
 		LastScanAt:   src.LastScanAt,
 		Schedule:     src.Schedule,
 		NextScanAt:   src.NextScanAt,
+		Writes: writesJSON{
+			Enabled:     src.WriteEnabled,
+			Unavailable: optString(WritesUnavailable(src, allowWrites)),
+		},
 	}
 	if src.SkippedAt != nil {
 		j.ScheduleSkipped = &scheduleSkipJSON{At: *src.SkippedAt, Reason: src.SkipReason}

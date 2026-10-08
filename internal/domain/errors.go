@@ -37,6 +37,27 @@ const (
 	// CodeInvalidEntryState refuses a request the entry's kind or state does
 	// not allow, such as the content of a folder or of a missing file.
 	CodeInvalidEntryState ErrorCode = "invalid_entry_state"
+	// CodeWritesUnavailable refuses turning writes on for a source whose
+	// writes cannot be safe: forbidden by the configuration, a read-only
+	// filesystem, or one without a no-replace rename (r3 design D1).
+	CodeWritesUnavailable ErrorCode = "writes_unavailable"
+	// CodeWritesDisabled refuses planning or running an action on a source
+	// whose write permission is off.
+	CodeWritesDisabled ErrorCode = "writes_disabled"
+	// CodeNameTaken refuses a rename or a new folder whose name is already
+	// used in its folder.
+	CodeNameTaken ErrorCode = "name_taken"
+	// CodeActionExpired refuses running a planned action after it expired.
+	CodeActionExpired ErrorCode = "action_expired"
+	// CodeActionNotRunnable refuses running or cancelling an action whose
+	// state does not allow it, or that has nothing left to run.
+	CodeActionNotRunnable ErrorCode = "action_not_runnable"
+	// CodeActionNotUndoable refuses undoing an action that did not run or
+	// has nothing left to reverse.
+	CodeActionNotUndoable ErrorCode = "action_not_undoable"
+	// CodeRecoveryNeeded refuses changes on a source with a step the owner
+	// must check, or one still being recorded.
+	CodeRecoveryNeeded ErrorCode = "recovery_needed"
 	// CodeLoginFailed refuses a login without saying which check failed
 	// (wrong password, throttled, or no administrator).
 	CodeLoginFailed ErrorCode = "login_failed"

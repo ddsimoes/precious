@@ -95,6 +95,11 @@ allow_insecure_http = true
 # exist.
 # allowed_roots = []
 
+# Whether any source may be changed. false forbids writes on every source,
+# whatever its own write permission. Every source starts with writes off
+# either way; the owner turns them on per source on the Sources screen.
+# allow_writes = true
+
 [scan]
 # Most row changes one scan commits per write transaction (1 to 10000).
 # batch_size = 1000

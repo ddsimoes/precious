@@ -147,7 +147,7 @@ var DefaultNow = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Capabilities is the capabilities JSON of a created source (a local
 // POSIX filesystem).
-const Capabilities = `{"known":true,"read_only":false,"case_sensitive":true,"normalization_sensitive":true,"stable_identity":true,"local_time":false,"hard_links":true,"time_resolution_ns":1}`
+const Capabilities = `{"known":true,"read_only":false,"case_sensitive":true,"normalization_sensitive":true,"stable_identity":true,"local_time":false,"hard_links":true,"time_resolution_ns":1,"no_replace_rename":true}`
 
 // Seeded is the result of Seed.
 type Seeded struct {

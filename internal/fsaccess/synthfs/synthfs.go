@@ -32,6 +32,11 @@
 // panic on misuse; they may be called while handles are in use (for example
 // from an instrument hook), and an open file reads its content as it is at
 // the time of each read.
+//
+// Directories implement fsaccess.Writer with the Linux backend's semantics
+// and errors (see writer.go): a rename keeps the entry's node and identity
+// and never replaces a taken name, Mkdir gives the new folder its parent's
+// permission bits, Rmdir removes only empty folders, and Sync does nothing.
 package synthfs
 
 import (
@@ -551,13 +556,9 @@ func (n *Node) add(name string, kind domain.EntryKind) *Node {
 	if n.gen != nil && n.gen.has([]byte(name)) {
 		panic("synthfs: entry " + domain.DisplayName([]byte(name)) + " collides with a generated name")
 	}
-	c := &Node{fs: f, parent: n, name: []byte(name), kind: kind, ino: f.allocIno(1), failAfter: -1}
+	c := &Node{fs: f, name: []byte(name), kind: kind, ino: f.allocIno(1), failAfter: -1}
 	c.touch()
-	if n.index == nil {
-		n.index = make(map[string]*Node)
-	}
-	n.index[name] = c
-	n.children = append(n.children, c)
+	n.attach(c)
 	return c
 }
 
@@ -667,13 +668,7 @@ func (n *Node) Remove(name string) {
 	if !ok {
 		panic("synthfs: no entry " + domain.DisplayName([]byte(name)))
 	}
-	delete(n.index, name)
-	for i, x := range n.children {
-		if x == c {
-			n.children = append(n.children[:i], n.children[i+1:]...)
-			break
-		}
-	}
+	n.detach(c)
 }
 
 func (n *Node) modify(fn func()) *Node {

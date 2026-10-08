@@ -16,12 +16,13 @@ const (
 	CommandRenameSource      = "rename-source"
 	CommandRemoveSource      = "remove-source"
 	CommandSetSourceSchedule = "set-source-schedule"
+	CommandSetSourceWrites   = "set-source-writes"
 )
 
 // RegisterCommands registers add-source, rename-source, and remove-source
-// (design D5), and set-source-schedule (r2b design D6), with h. Each request
-// is decoded strictly: a field other than those listed, such as a path, is
-// invalid_request.
+// (design D5), set-source-schedule (r2b design D6), and set-source-writes
+// (r3 design D1), with h. Each request is decoded strictly: a field other
+// than those listed, such as a path, is invalid_request.
 //
 //   - add-source {"handle", "label"?}: 201 {"source": SourceJSON}.
 //   - rename-source {"source_id", "label"}: 200 {"source": SourceJSON}.
@@ -29,6 +30,9 @@ const (
 //   - set-source-schedule {"source_id", "schedule": Schedule|null}: 200
 //     {"source": SourceJSON}; null turns the schedule off, and a malformed
 //     schedule (a bad time, weekday, or zone) is invalid_request.
+//   - set-source-writes {"source_id", "enabled"}: 200 {"source": SourceJSON};
+//     turning writes on is writes_unavailable while they cannot be (see
+//     WritesUnavailable), and turning them off always succeeds.
 func RegisterCommands(h *commands.Handler, s *Service) {
 	h.Register(CommandAddSource, func(body []byte) (commands.Operation, error) {
 		var req addSourceRequest
@@ -89,6 +93,19 @@ func RegisterCommands(h *commands.Handler, s *Service) {
 		}
 		return op, nil
 	})
+	h.Register(CommandSetSourceWrites, func(body []byte) (commands.Operation, error) {
+		var req setWritesRequest
+		if err := commands.DecodeStrict(body, &req); err != nil {
+			return nil, err
+		}
+		if req.SourceID == "" {
+			return nil, domain.Errorf(domain.CodeInvalidRequest, "source_id is required")
+		}
+		if req.Enabled == nil {
+			return nil, domain.Errorf(domain.CodeInvalidRequest, "enabled is required")
+		}
+		return &setWritesOp{s: s, req: req}, nil
+	})
 }
 
 // canonical is the JSON of a decoded request, which always marshals.
@@ -125,7 +142,7 @@ func (o *addSourceOp) Apply(ctx context.Context, tx *jobs.Tx) (int, any, error) 
 	if err != nil {
 		return 0, nil, err
 	}
-	j, err := describe(ctx, tx.SQL(), src, o.s.displayMounts())
+	j, err := describe(ctx, tx.SQL(), src, o.s.displayMounts(), o.s.allowWrites)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -154,7 +171,7 @@ func (o *renameSourceOp) Apply(ctx context.Context, tx *jobs.Tx) (int, any, erro
 	if err != nil {
 		return 0, nil, err
 	}
-	j, err := describe(ctx, tx.SQL(), src, o.s.displayMounts())
+	j, err := describe(ctx, tx.SQL(), src, o.s.displayMounts(), o.s.allowWrites)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -211,7 +228,38 @@ func (o *setScheduleOp) Apply(ctx context.Context, tx *jobs.Tx) (int, any, error
 	if err != nil {
 		return 0, nil, err
 	}
-	j, err := describe(ctx, tx.SQL(), src, o.s.displayMounts())
+	j, err := describe(ctx, tx.SQL(), src, o.s.displayMounts(), o.s.allowWrites)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, sourceBody{Source: j}, nil
+}
+
+type setWritesRequest struct {
+	SourceID domain.SourceID `json:"source_id"`
+	// Enabled is required, so that a request that forgets it does not turn
+	// writes off.
+	Enabled *bool `json:"enabled"`
+}
+
+type setWritesOp struct {
+	s   *Service
+	req setWritesRequest
+}
+
+func (o *setWritesOp) Canonical() []byte { return canonical(o.req) }
+
+func (o *setWritesOp) Prepare(context.Context) error { return nil }
+
+func (o *setWritesOp) Apply(ctx context.Context, tx *jobs.Tx) (int, any, error) {
+	if err := o.s.SetWrites(ctx, tx.SQL(), o.req.SourceID, *o.req.Enabled); err != nil {
+		return 0, nil, err
+	}
+	src, err := getSource(ctx, tx.SQL(), o.req.SourceID)
+	if err != nil {
+		return 0, nil, err
+	}
+	j, err := describe(ctx, tx.SQL(), src, o.s.displayMounts(), o.s.allowWrites)
 	if err != nil {
 		return 0, nil, err
 	}

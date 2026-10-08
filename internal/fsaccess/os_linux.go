@@ -27,7 +27,9 @@ import (
 // components, symlinks are never resolved, and every directory opened below
 // the root is verified against the identity the caller observed. Special files
 // are recognised from the directory listing and lstat and are never opened.
-// The backend issues no call that creates, writes, renames, removes, or
+// Outside its Writer methods (renameat2 with RENAME_NOREPLACE, mkdirat then
+// fchmod, unlinkat of an empty folder, and fsync of a folder, r3 design D3)
+// the backend issues no call that creates, writes, renames, removes, or
 // changes metadata. It opens a regular file only in OpenFile, read-only and
 // with O_NOATIME where the kernel allows it, after an identity check that
 // opens nothing else (M4 design D5).
