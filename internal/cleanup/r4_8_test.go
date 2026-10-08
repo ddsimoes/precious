@@ -1,12 +1,16 @@
 package cleanup
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
 	"precious/internal/fsaccess/synthfs"
+	"precious/internal/jobs"
 )
 
 // staleAt is the time of every file of the R4.8 disks.
@@ -100,6 +104,58 @@ func TestR4_8ACopyDecidedAgainAfterTheCheck(t *testing.T) {
 	}
 	if q := w.quarantined("casa"); len(q.Items) != 1 || q.Items[0].Entry.ID != velho {
 		t.Errorf("quarantine: %+v", q)
+	}
+}
+
+// G9: a copy decided again while the check runs, before the record that
+// names it is written (so MarkStale finds nothing to mark), still makes the
+// check stale: the check reads Velho/praia.jpg and finds its twin, then,
+// while it reads Velho/z.txt, the owner discards the twin's folder.
+func TestR4_8ACopyDecidedAgainWhileTheCheckRuns(t *testing.T) {
+	for _, decide := range []bool{false, true} {
+		t.Run(fmt.Sprintf("decide=%v", decide), func(t *testing.T) {
+			w := newWorld(t)
+			w.disk("casa", "/casa", func(root *synthfs.Node) {
+				root.Dir("Fotos").File("praia.jpg", 100, staleAt).Seed(1)
+				v := root.Dir("Velho")
+				v.File("praia.jpg", 100, staleAt).Seed(1)
+				v.File("z.txt", 50, staleAt).Seed(2)
+			})
+			w.decide("casa", "Velho", "discard")
+			velho := staleQuarantineVelho(w)
+			ctx := context.Background()
+			var check int64
+			err := w.r.Write(ctx, func(tx *jobs.Tx) error {
+				if err := tx.SQL().QueryRow(`INSERT INTO purge_checks (source_id, state, created_at)
+					VALUES ('casa', 'running', 0) RETURNING id`).Scan(&check); err != nil {
+					return err
+				}
+				_, err := tx.SQL().Exec(`INSERT INTO purge_check_items (check_id, entry_id, path, readable)
+					VALUES (?, ?, ?, 1)`, check, velho, []byte(".precious-quarantine/1/1/Velho"))
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt := &checkRuntime{onYield: func(n int) {
+				if n == 2 && decide { // the twin is found; z.txt is next
+					w.decide("casa", "Fotos", "discard")
+				}
+			}}
+			payload, _ := json.Marshal(checkPayload{CheckID: strconv.FormatInt(check, 10)})
+			if err := (&checkHandler{s: w.svc}).Run(ctx, jobs.Job{Kind: KindPurgeCheck, PayloadVersion: 1,
+				Payload: payload, SourceID: "casa", Attempt: 1}, rt); err != nil {
+				t.Fatal(err)
+			}
+			id := strconv.FormatInt(check, 10)
+			staleSafeTwin(w, id)
+			if !decide {
+				staleCheckState(w, id, "ready", "", false) // z.txt has no copy
+				return
+			}
+			staleCheckState(w, id, "stale", "index_changed", false)
+			w.refuse(http.StatusConflict, "check_stale", "plan-purge", fmt.Sprintf(`{"check_id":%q}`, id))
+		})
 	}
 }
 
