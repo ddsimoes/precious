@@ -17,7 +17,7 @@ import (
 
 // itemStates are the states of an item, every one counted in an Action.
 var itemStates = []string{"planned", "refused", "conflict", "intent", "done", "not_permitted", "offline", "changed",
-	"failed", "no_safe_rename", "not_empty", "manual_recovery", "not_attempted", "resolved"}
+	"failed", "no_safe_rename", "not_empty", "manual_recovery", "not_attempted", "resolved", "blocked"}
 
 // Why an action cannot be undone (Action.undo.reason).
 const (

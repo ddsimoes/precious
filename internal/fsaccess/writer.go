@@ -22,7 +22,7 @@ import (
 //
 //   - when the filesystem refuses the step, an empty Outcome and an Err
 //     matching (errors.Is) one of ErrExist, ErrNoReplaceUnsupported,
-//     ErrCrossDevice, ErrNotEmpty, ErrReadOnly, ErrPermission, or
+//     ErrCrossDevice, ErrNotEmpty, ErrIsDir, ErrReadOnly, ErrPermission, or
 //     ErrIntoItself, and the operating system's error too;
 //   - the outcome absent when the name or a folder no longer exists;
 //   - the outcome unavailable for anything else (an I/O error, a closed
@@ -51,6 +51,21 @@ type Writer interface {
 	// Sync flushes this folder's entries to stable storage (fsync), so a
 	// step that changed it survives a power loss.
 	Sync() error
+	// CreateExclusive creates the regular file name holding data (r4 design
+	// D12). It never replaces an existing entry: when name is taken, by
+	// anything, even a dangling symlink, it fails with ErrExist and changes
+	// nothing. The file gets this folder's permission bits & 0666, whatever
+	// the process umask. Before it returns, every byte is written and the
+	// file is flushed to stable storage (fsync); Sync of this folder then
+	// makes its name durable. When a step after the creation fails, the
+	// partial file is removed again (best effort, and only while the name
+	// still holds the file this call created) before the error returns.
+	// The executor calls it only inside a source's quarantine.
+	CreateExclusive(name, data []byte) error
+	// Unlink removes the non-folder entry name (unlinkat without
+	// AT_REMOVEDIR); a folder fails with ErrIsDir and stays (r4 design D12).
+	// The executor calls it only inside a source's quarantine.
+	Unlink(name []byte) error
 }
 
 // AsWriter returns the write surface of d. ok is false for a Dir that has
@@ -64,7 +79,8 @@ func AsWriter(d Dir) (Writer, bool) {
 
 // Write refusals, matched with errors.Is on a Writer error (see Writer).
 var (
-	// ErrExist: the destination name of a rename or a new folder is taken.
+	// ErrExist: the destination name of a rename, a new folder, or a new
+	// file is taken.
 	ErrExist = errors.New("fsaccess: name already exists")
 	// ErrNoReplaceUnsupported: the filesystem or platform has no rename
 	// that refuses to replace (RENAME_NOREPLACE), so nothing was renamed.
@@ -74,6 +90,8 @@ var (
 	ErrCrossDevice = errors.New("fsaccess: rename across filesystems")
 	// ErrNotEmpty: the folder to remove is not empty.
 	ErrNotEmpty = errors.New("fsaccess: folder is not empty")
+	// ErrIsDir: the entry to unlink is a folder.
+	ErrIsDir = errors.New("fsaccess: entry is a folder")
 	// ErrReadOnly: the filesystem is read-only.
 	ErrReadOnly = errors.New("fsaccess: filesystem is read-only")
 	// ErrPermission: the operating system denied the step.
@@ -88,6 +106,8 @@ const (
 	opMkdir  = "Mkdir"
 	opRmdir  = "Rmdir"
 	opSync   = "Sync"
+	opCreate = "CreateExclusive"
+	opUnlink = "Unlink"
 )
 
 // errForeignDir refuses a rename whose destination Dir comes from another FS.
@@ -97,9 +117,9 @@ var errForeignDir = errors.New("fsaccess: destination folder is not from the sam
 // operating-system error err on name (see Writer): EEXIST, and ENOTEMPTY on
 // a rename, is ErrExist; EINVAL on a rename is ErrNoReplaceUnsupported;
 // EXDEV is ErrCrossDevice; ENOTEMPTY and EEXIST on Rmdir are ErrNotEmpty;
-// EROFS is ErrReadOnly; EACCES and EPERM are ErrPermission; ENOENT is the
-// outcome absent; anything else is unavailable. Backends and the test
-// filesystems share it, so they fail alike.
+// EISDIR on Unlink is ErrIsDir; EROFS is ErrReadOnly; EACCES and EPERM are
+// ErrPermission; ENOENT is the outcome absent; anything else is unavailable.
+// Backends and the test filesystems share it, so they fail alike.
 func WriteError(op string, name []byte, err error) error {
 	e := &Error{Op: op, Name: bytes.Clone(name), Err: err}
 	var refusal error
@@ -108,6 +128,8 @@ func WriteError(op string, name []byte, err error) error {
 		refusal = ErrNotEmpty
 	case errors.Is(err, syscall.EEXIST), errors.Is(err, syscall.ENOTEMPTY) && op == opRename:
 		refusal = ErrExist
+	case errors.Is(err, syscall.EISDIR) && op == opUnlink:
+		refusal = ErrIsDir
 	case errors.Is(err, syscall.EINVAL) && op == opRename:
 		refusal = ErrNoReplaceUnsupported
 	case errors.Is(err, syscall.EXDEV):
@@ -131,4 +153,10 @@ func WriteError(op string, name []byte, err error) error {
 // itself; err is the operating system's (EINVAL).
 func intoItselfError(name []byte, err error) error {
 	return &Error{Op: opRename, Name: bytes.Clone(name), Err: fmt.Errorf("%w (%w)", ErrIntoItself, err)}
+}
+
+// isDirError is the error of an Unlink of a folder the filesystem refused
+// with err other than EISDIR (EPERM, as POSIX allows).
+func isDirError(name []byte, err error) error {
+	return &Error{Op: opUnlink, Name: bytes.Clone(name), Err: fmt.Errorf("%w (%w)", ErrIsDir, err)}
 }

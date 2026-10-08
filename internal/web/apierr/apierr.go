@@ -54,7 +54,9 @@ func Status(code domain.ErrorCode) int {
 	case domain.CodeIdempotencyKeyReused, domain.CodeSourceExists, domain.CodeSourceOffline,
 		domain.CodeJobActive, domain.CodeTagExists, domain.CodeSelectionExpired, domain.CodeInvalidEntryState,
 		domain.CodeWritesUnavailable, domain.CodeWritesDisabled, domain.CodeNameTaken, domain.CodeActionExpired,
-		domain.CodeActionNotRunnable, domain.CodeActionNotUndoable, domain.CodeRecoveryNeeded:
+		domain.CodeActionNotRunnable, domain.CodeActionNotUndoable, domain.CodeRecoveryNeeded,
+		domain.CodeInQuarantine, domain.CodePurgeNotAllowed, domain.CodeCheckStale, domain.CodeCheckRunning,
+		domain.CodeQuarantineNotEmpty, domain.CodeQuarantineNameTaken:
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

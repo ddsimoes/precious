@@ -29,6 +29,8 @@ const (
 	stateNotEmpty       = "not_empty"
 	stateManualRecovery = "manual_recovery"
 	stateNotAttempted   = "not_attempted"
+	// stateBlocked ends a cleanup item whose subtree holds a keep (r4 D3).
+	stateBlocked = "blocked"
 )
 
 // Item reasons the executor records (the item JSON's reason).
@@ -42,11 +44,15 @@ const (
 	reasonAlreadyUndone      = "already_undone"
 )
 
-// Item ops.
+// Item ops: R3's, and R4's cleanup steps (r4 D3, D4, D10, D11).
 const (
 	opRename = "rename"
 	opMkdir  = "mkdir"
 	opRmdir  = "rmdir"
+	opRecord = "record"
+	opUnlink = "unlink"
+	opPurge  = "purge"
+	opVerify = "verify"
 )
 
 // Audit event written when the executor turns a source's writes off (D2):
@@ -187,8 +193,11 @@ func (r *run) item(it item) (verdict, error) {
 		return r.stepRename(it)
 	case opMkdir:
 		return r.stepMkdir(it)
-	default:
+	case opRmdir:
 		return r.stepRmdir(it)
+	default:
+		// An op this executor has no step for never reaches the disk.
+		return r.record(it, end{state: stateFailed, detail: "unknown step " + it.op})
 	}
 }
 

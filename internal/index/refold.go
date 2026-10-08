@@ -55,7 +55,8 @@ func NewRefolder(pol *rules.Policy) *Refolder { return &Refolder{pol: pol} }
 // mkdir, the new folder; for an rmdir, the folder that held it. Entries no
 // longer indexed are skipped. A folder that is unreadable or a mount
 // boundary keeps its stored row and dir_stats, as a scan keeps what it
-// cannot list.
+// cannot list. At a source's top, the entry at QuarantineName is left out
+// of the fold, as a scan leaves it out.
 func (rf *Refolder) Refold(ctx context.Context, tx *sql.Tx, src domain.SourceID, touched []domain.EntryID) error {
 	r := &refold{ctx: ctx, tx: tx, src: src, pol: rf.pol, codec: newCodec(), tokens: tokens{held: map[uint64]int32{}}}
 	folders := map[domain.EntryID]*place{}
@@ -168,9 +169,13 @@ func (r *refold) folder(p *place) error {
 	if err != nil {
 		return err
 	}
+	// At the top, the quarantine is left out of the fold, as a scan leaves
+	// it (ADR 0011): a file there is still classified, into a fold of its
+	// own.
+	top := !p.parent.Valid
 	stems := map[string]bool{}
 	for _, c := range children {
-		if c.row.kind == string(domain.EntryFile) {
+		if c.row.kind == string(domain.EntryFile) && !(top && isQuarantineName(c.name)) {
 			if stem, ok := r.pol.PairStem(c.name); ok {
 				stems[stem] = true
 			}
@@ -179,6 +184,15 @@ func (r *refold) folder(p *place) error {
 
 	a := newAgg()
 	for _, c := range children {
+		if top && isQuarantineName(c.name) {
+			if c.row.kind == string(domain.EntryFile) {
+				aside := newAgg()
+				if err := r.file(&aside, p.path, c, stems, owners); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		var indicator rules.SignalID
 		r.sigs, indicator = a.nameSignals(r.pol, r.sigs, c.name, entryKind(&c.row))
 		if indicator != "" && a.refFits(p.path, c.name) {
@@ -204,7 +218,7 @@ func (r *refold) folder(p *place) error {
 	}
 
 	name := self.name
-	if !p.parent.Valid {
+	if top {
 		if name, err = r.rootName(); err != nil {
 			return err
 		}

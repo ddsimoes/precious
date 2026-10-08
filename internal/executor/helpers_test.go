@@ -416,7 +416,8 @@ func (e *env) count(query string, args ...any) int {
 
 // writes counts the Writer calls that change something (not Sync).
 func (e *env) writes() int {
-	return e.rec.Count(instrument.OpRename) + e.rec.Count(instrument.OpMkdir) + e.rec.Count(instrument.OpRmdir)
+	return e.rec.Count(instrument.OpRename) + e.rec.Count(instrument.OpMkdir) + e.rec.Count(instrument.OpRmdir) +
+		e.rec.Count(instrument.OpCreate) + e.rec.Count(instrument.OpUnlink)
 }
 
 // fakeIndex applies the minimal row updates of a done step and records the
@@ -426,6 +427,8 @@ type fakeIndex struct {
 	renames    []index.Move
 	mkdirs     []index.NewFolder
 	rmdirs     []domain.EntryID
+	purges     []domain.EntryID // whole, or 0 for a partial purge
+	unlinks    [][]byte
 	actionDone int
 	// fail makes every Apply* fail.
 	fail error
@@ -523,6 +526,51 @@ func (f *fakeIndex) IntentBelow(ctx context.Context, q store.Queryer, src domain
 		AND e.path < ? AND (e.decision IS NOT NULL OR EXISTS (SELECT 1 FROM entry_tags t WHERE t.entry_id = e.id)
 		OR EXISTS (SELECT 1 FROM entry_overrides o WHERE o.entry_id = e.id)))`, string(src), lo, hi).Scan(&found)
 	return found, err
+}
+
+// ApplyPurge deletes whole with everything below it, or else each removed
+// entry with whatever is below it.
+func (f *fakeIndex) ApplyPurge(ctx context.Context, tx *sql.Tx, src domain.SourceID, removed []domain.EntryID,
+	whole domain.EntryID) error {
+	f.mu.Lock()
+	f.purges = append(f.purges, whole)
+	f.mu.Unlock()
+	if err := f.begin(); err != nil {
+		return err
+	}
+	ids := removed
+	if whole != 0 {
+		ids = []domain.EntryID{whole}
+	}
+	for _, id := range ids {
+		var path []byte
+		err := tx.QueryRowContext(ctx, `SELECT path FROM entries WHERE id = ? AND source_id = ?`, int64(id),
+			string(src)).Scan(&path)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		lo, hi := append(append([]byte{}, path...), '/'), append(append([]byte{}, path...), '0')
+		if _, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE source_id = ? AND (id = ? OR (path >= ? AND path < ?))`,
+			string(src), int64(id), lo, hi); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ApplyUnlink deletes the row at path, if any.
+func (f *fakeIndex) ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.SourceID, path []byte) error {
+	f.mu.Lock()
+	f.unlinks = append(f.unlinks, append([]byte(nil), path...))
+	f.mu.Unlock()
+	if err := f.begin(); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE source_id = ? AND path = ?`, string(src), path)
+	return err
 }
 
 func (f *fakeIndex) counts() (renames, mkdirs, rmdirs, done int) {

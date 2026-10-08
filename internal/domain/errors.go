@@ -58,6 +58,24 @@ const (
 	// CodeRecoveryNeeded refuses changes on a source with a step the owner
 	// must check, or one still being recorded.
 	CodeRecoveryNeeded ErrorCode = "recovery_needed"
+	// CodeInQuarantine refuses a change to a quarantined entry other than
+	// restore, purge, or an individual move out (r4 D13).
+	CodeInQuarantine ErrorCode = "in_quarantine"
+	// CodePurgeNotAllowed refuses planning or running a purge whose check
+	// still has files that need the owner's confirmation (r4 D8, D11).
+	CodePurgeNotAllowed ErrorCode = "purge_not_allowed"
+	// CodeCheckStale refuses acting on a pre-delete check that something
+	// it relied on has changed since (r4 D10).
+	CodeCheckStale ErrorCode = "check_stale"
+	// CodeCheckRunning refuses a request while a pre-delete check is still
+	// running (r4 D7).
+	CodeCheckRunning ErrorCode = "check_running"
+	// CodeQuarantineNotEmpty refuses removing a source whose quarantine
+	// still holds items (r4 D14).
+	CodeQuarantineNotEmpty ErrorCode = "quarantine_not_empty"
+	// CodeQuarantineNameTaken refuses a cleanup plan while the source's top
+	// folder holds a .precious-quarantine that Precious did not make (r4 D1).
+	CodeQuarantineNameTaken ErrorCode = "quarantine_name_taken"
 	// CodeLoginFailed refuses a login without saying which check failed
 	// (wrong password, throttled, or no administrator).
 	CodeLoginFailed ErrorCode = "login_failed"
