@@ -60,6 +60,8 @@ const (
 	reasonHardLink = "hard_link"
 	reasonNoChange = "no_change"
 	reasonNotOwner = "not_owner"
+	// r5 H1: a time the source's filesystem would clamp, or reads as unknown.
+	reasonDateOutOfRange = "date_out_of_range"
 )
 
 // Action kinds the executor treats apart (r4 D3, D6, D11); every other kind

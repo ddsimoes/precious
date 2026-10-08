@@ -87,6 +87,56 @@ func TestSetMtimeNoChangeOnALocalTimeDisk(t *testing.T) {
 	}
 }
 
+// r5 H1, intent: a time the source's filesystem would clamp without an
+// error (before 1980 on FAT), or one the index reads as unknown (the epoch's
+// first day on ext4), is refused date_out_of_range and never written; the
+// action goes on. An undo restores what the disk held, even such a time.
+func TestSetMtimeIntentRefusesATimeTheDiskCannotHold(t *testing.T) {
+	t.Run("FAT", func(t *testing.T) {
+		e := newEnv(t)
+		e.fsType = "vfat"
+		local := fsaccess.Capabilities{Known: true, TimeResolution: 2 * time.Second, LocalTime: true, NoReplaceRename: true}
+		e.disk("/card", local, func(r *synthfs.Node) {
+			r.File("x.jpg", 100, mtime2004)
+			r.File("y.jpg", 100, mtime2004)
+		})
+		action := e.mtimeAction("set_mtime", mtimeStep{Path: "x.jpg", To: time.Date(1975, 6, 1, 12, 0, 0, 0, time.UTC)},
+			mtimeStep{Path: "y.jpg", To: newTime})
+		e.run(action)
+		e.wantStates(action, actionDone, stateRefused, stateDone)
+		if r := e.item(action, 1); r.Reason != reasonDateOutOfRange {
+			t.Errorf("reason %q, want date_out_of_range", r.Reason)
+		}
+		if got := setTimes(e.rec.Calls()); len(got["x.jpg"]) != 0 || len(got["y.jpg"]) != 1 {
+			t.Errorf("SetModTime calls %v, want y.jpg's only", got)
+		}
+		if info, _ := e.lstat("/card", "x.jpg"); !info.ModTime.Equal(mtime2004) {
+			t.Errorf("x.jpg holds %v, want %v", info.ModTime, mtime2004)
+		}
+	})
+	t.Run("ext4", func(t *testing.T) {
+		e := newEnv(t)
+		epoch := time.Unix(0, 340_000_000)
+		e.disk("/src", posix, func(r *synthfs.Node) {
+			r.File("x.jpg", 100, mtime2004)
+			r.File("lost.jpg", 100, epoch)
+		})
+		action := e.mtimeAction("set_mtime", mtimeStep{Path: "lost.jpg", To: newTime},
+			mtimeStep{Path: "x.jpg", To: time.Date(1970, 1, 1, 12, 0, 0, 0, time.UTC)})
+		e.run(action)
+		e.wantStates(action, actionDone, stateDone, stateRefused)
+		if r := e.item(action, 2); r.Reason != reasonDateOutOfRange {
+			t.Errorf("reason %q, want date_out_of_range", r.Reason)
+		}
+		undo := e.undoOf(action)
+		e.run(undo)
+		e.wantStates(undo, actionDone, stateDone)
+		if info, _ := e.lstat("/src", "lost.jpg"); !info.ModTime.Equal(epoch) {
+			t.Errorf("lost.jpg holds %v after the undo, want %v", info.ModTime, epoch)
+		}
+	})
+}
+
 // r5 D13, errors: a refused ownership ends that item failed not_owner and
 // the action goes on; a read-only filesystem ends it failed and stops the
 // action; an absent name is changed; anything else is failed with the

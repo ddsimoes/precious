@@ -245,12 +245,21 @@ func abs(n int64) int64 {
 	return n
 }
 
+// writableTime reports whether a set_mtime may write ns on a filesystem of
+// type fsType (r5 H1): a time the filesystem stores as given, which Linux
+// would otherwise clamp without an error, and a known one, which the index
+// reads back as a date. The executor's set_mtime intent checks the same.
+func writableTime(fsType string, ns int64) bool {
+	return domain.KnownModTime(ns) && fsaccess.StoresModTime(fsType, ns)
+}
+
 // planSetMtime plans plan-set-mtime (r5 D14): its targets expanded and
 // re-derived, then one set_mtime item per media file to its effective
 // instant, truncated to the source's time resolution. A file already at
 // that time is counted in summary.unchanged, with no item. Refused:
-// not_dated_yet, date_too_coarse, hard_link, and not_media. It is a bulk
-// action, so it is always previewed.
+// not_dated_yet, date_too_coarse, hard_link, date_out_of_range (a time the
+// source's filesystem would clamp, or one that reads as unknown; r5 H1), and
+// not_media. It is a bulk action, so it is always previewed.
 func (s *Service) planSetMtime(ctx context.Context, tx *jobs.Tx, req planSetMtimeRequest) (int, any, error) {
 	q, now := tx.SQL(), tx.Now()
 	ex, err := dates.ExpandTargets(ctx, q, req.Targets, maxItems)
@@ -297,6 +306,10 @@ func (s *Service) planSetMtime(ctx context.Context, tx *jobs.Tx, req planSetMtim
 			err = p.refused(it, reasonHardLink)
 		default:
 			t := truncateTime(d.Instant.UnixNano(), p.caps.TimeResolution)
+			if !writableTime(p.fsType, t) {
+				err = p.refused(it, reasonDateOutOfRange)
+				break
+			}
 			if f.mtime.Valid && domain.KnownModTime(f.mtime.Int64) && sameTime(f.mtime.Int64, t, p.caps) {
 				sum.Unchanged++
 				continue
@@ -346,6 +359,9 @@ type organizer struct {
 	destOf map[int64]int64
 	// contents are the digests of the targets, by entry.
 	contents map[int64]int64
+	// compared counts the siblings siblings() looked at, which a test
+	// bounds.
+	compared int64
 }
 
 // planDateOrganize plans plan-date-organize (r5 D16, D17): the targets
@@ -686,17 +702,20 @@ func (o *organizer) sameContent(a, b int64) (bool, error) {
 // siblings writes, on each planned file that leaves a same-stem sibling in
 // its folder behind (one not planned into the same destination folder),
 // those siblings' names in its detail, comma-separated, and counts those
-// files (r5 D16).
+// files (r5 D16). Each folder's files are read once and grouped by stem,
+// under the source's case rule, so a file looks only at its own stem's
+// (r5 H3).
 func (o *organizer) siblings() (int64, error) {
 	p := o.p
-	inFolder := map[int64][]named{}
+	inFolder := map[int64]map[string][]named{}
 	var count int64
 	for _, it := range p.items {
 		if it.op != opRename || it.state != statePlanned {
 			continue
 		}
-		kids, ok := inFolder[it.fromParent]
+		byStem, ok := inFolder[it.fromParent]
 		if !ok {
+			byStem = map[string][]named{}
 			rows, err := p.tx.QueryContext(p.ctx, siblingsSQL, it.fromParent)
 			if err != nil {
 				return 0, fmt.Errorf("organize: siblings in folder %d: %w", it.fromParent, err)
@@ -707,22 +726,21 @@ func (o *organizer) siblings() (int64, error) {
 					rows.Close()
 					return 0, err
 				}
-				kids = append(kids, k)
+				ks, _ := splitExt(k.name)
+				key := nameKey(p.sensitive, ks)
+				byStem[key] = append(byStem[key], k)
 			}
 			rows.Close()
 			if err := rows.Err(); err != nil {
 				return 0, err
 			}
-			inFolder[it.fromParent] = kids
+			inFolder[it.fromParent] = byStem
 		}
 		stem, _ := splitExt(it.fromName)
 		var left []string
-		for _, k := range kids {
+		for _, k := range byStem[nameKey(p.sensitive, stem)] {
+			o.compared++
 			if k.id == it.entry {
-				continue
-			}
-			ks, _ := splitExt(k.name)
-			if !sameName(p.sensitive, ks, stem) {
 				continue
 			}
 			if to, ok := o.destOf[k.id]; ok && to == o.destOf[it.entry] {

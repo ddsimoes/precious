@@ -62,6 +62,8 @@ const (
 	reasonIdenticalCopy   = "identical_copy"
 	reasonInvalidName     = "invalid_name"
 	reasonIdentityChanged = "identity_changed"
+	// r5 H1: a time the source's filesystem would clamp, or reads as unknown.
+	reasonDateOutOfRange = "date_out_of_range"
 )
 
 const keep = string(domain.DecisionKeep)
@@ -294,8 +296,11 @@ type named struct {
 
 func newNames(sensitive bool) *names { return &names{sensitive: sensitive, m: map[string][]named{}} }
 
-func (s *names) key(name []byte) string {
-	if s.sensitive {
+func (s *names) key(name []byte) string { return nameKey(s.sensitive, name) }
+
+// nameKey is a key equal for names sameName finds equal.
+func nameKey(sensitive bool, name []byte) string {
+	if sensitive {
 		return string(name)
 	}
 	return foldKey(name)

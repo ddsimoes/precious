@@ -14,8 +14,8 @@ import (
 )
 
 // r5 task 1.6: the index adapter's ApplyModTime writes the file's new
-// times, then refolds its folders, so their by-year figures and newest and
-// oldest times follow the written time; a scan afterwards changes nothing.
+// times, and its folders' by-year figures and newest and oldest times
+// follow the written time; a scan afterwards changes nothing.
 func TestApplyModTimeRefolds(t *testing.T) {
 	w := newWorld(t)
 	t2004 := time.Date(2004, 7, 1, 9, 0, 0, 0, time.UTC)

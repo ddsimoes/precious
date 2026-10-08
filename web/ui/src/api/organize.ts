@@ -91,8 +91,8 @@ export type ItemReason =
   // file whose camera information is not read yet, a file with other names
   // (hard links), a time the disk cannot tell from the current one, a file
   // the service may not change the time of, an identical copy already at
-  // the name, a name the disk cannot hold, and a file that is not a photo
-  // or video.
+  // the name, a name the disk cannot hold, a file that is not a photo or
+  // video, and a date the disk cannot record.
   | 'date_too_coarse'
   | 'not_dated_yet'
   | 'hard_link'
@@ -101,6 +101,7 @@ export type ItemReason =
   | 'identical_copy'
   | 'invalid_name'
   | 'not_media'
+  | 'date_out_of_range'
 
 // Found is what was at one name when a step could not be confirmed: nothing,
 // the entry expected, or something else.

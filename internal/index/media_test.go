@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"precious/internal/domain"
-	"precious/internal/rules"
 )
 
 // r5 task 1.4: the index side of media dates (r5 design D3, D11, D15). A
@@ -250,9 +249,9 @@ func TestCorrectionKeepsAMissingEntry(t *testing.T) {
 // ApplyModTime writes a set_mtime's facts and the file's own newest and
 // oldest times (none for an unknown time), carries the file_content,
 // archives, and media_meta rows that describe the file as indexed, leaves
-// the others, and refuses anything but a present file of the source. With
-// the adapter's Refold, the folders' figures follow, a folder's own times do
-// not change, and a rescan right after finds nothing changed.
+// the others, and refuses anything but a present file of the source. The
+// folders' figures follow, a folder's own times do not change, and a rescan
+// right after finds nothing changed.
 func TestApplyModTime(t *testing.T) {
 	e := newEnv(t)
 	root := e.disk("disk", "/disk", writable)
@@ -294,13 +293,9 @@ func TestApplyModTime(t *testing.T) {
 	capture := time.Date(2010, 7, 17, 10, 0, 0, 0, time.UTC)
 	times := map[int64]time.Time{a: capture, b: capture.Add(time.Hour), c: time.Unix(0, 0)}
 	d := disk{t: t, e: e, root: "/disk"}
-	rf := NewRefolder(rules.Default())
 	apply := func(m ModTime) error {
 		return e.st.Write(context.Background(), func(tx *sql.Tx) error {
-			if err := ApplyModTime(context.Background(), tx, m); err != nil {
-				return err
-			}
-			return rf.Refold(context.Background(), tx, "disk", []domain.EntryID{m.Entry})
+			return ApplyModTime(context.Background(), tx, m)
 		})
 	}
 
