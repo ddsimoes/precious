@@ -3,6 +3,7 @@ package relations
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -190,10 +191,12 @@ func TestReadersNeverSeeTwoGenerations(t *testing.T) {
 	})
 }
 
-// A refresh requested during a run (EnqueueOnce coalesces into the running
-// job) makes it run another pass; no second job is created.
-func TestRefreshDuringARunRunsAgain(t *testing.T) {
-	t.Parallel()
+// refreshDuringFirstPass runs the relate job through a real runner, from
+// Startup on a new (dirty) database, and requests a refresh at the given
+// stage of the first pass. It waits until every job succeeded and returns
+// the store, the number of passes, and a runner-bound Startup.
+func refreshDuringFirstPass(t *testing.T, stage string) (st *store.Store, passes int64, startup func()) {
+	t.Helper()
 	w := newWorld(t)
 	w.file("x/a.txt", 100, "a")
 	w.file("y/a.txt", 100, "a")
@@ -203,41 +206,111 @@ func TestRefreshDuringARunRunsAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Register(r)
-	var passes atomic.Int64
+	var begun, refreshed atomic.Int64
 	h.stage = func(ctx context.Context, name string, gen int64) {
-		if name != "loaded" || passes.Add(1) != 1 {
+		if name == "begin" {
+			begun.Add(1)
+		}
+		if name != stage || refreshed.Add(1) != 1 {
 			return
 		}
 		if err := r.Write(ctx, RequestRefresh); err != nil {
 			t.Error(err)
 		}
 	}
-	// Startup does nothing until the relations are dirty (new databases are).
 	ctx := context.Background()
-	if err := h.Startup(ctx, r); err != nil {
-		t.Fatal(err)
+	startup = func() {
+		t.Helper()
+		if err := h.Startup(ctx, r); err != nil {
+			t.Fatal(err)
+		}
 	}
+	// Startup does nothing until the relations are dirty (new databases are).
+	startup()
 	if err := r.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = r.Stop(context.Background()) })
 	waitJobs(t, w.st)
-	if n := passes.Load(); n != 2 {
-		t.Errorf("%d passes, want 2", n)
+	return w.st, begun.Load(), startup
+}
+
+// A refresh requested during a run, before the flip reads dirty, makes the
+// running job run another pass. The follow-up job the refresh also enqueued
+// (the "relate" job was running) finds the relations clean and runs none.
+func TestRefreshDuringARunRunsAgain(t *testing.T) {
+	t.Parallel()
+	st, passes, startup := refreshDuringFirstPass(t, "loaded")
+	if passes != 2 {
+		t.Errorf("%d passes, want 2 (the follow-up runs none)", passes)
 	}
-	if n := count(t, w.st, `SELECT count(*) FROM jobs WHERE kind = 'relate'`); n != 1 {
-		t.Errorf("%d relate jobs, want 1 (coalesced)", n)
-	}
-	if gen, dirty, _ := reviewState(t, w.st); gen != 2 || dirty {
+	if gen, dirty, _ := reviewState(t, st); gen != 2 || dirty {
 		t.Errorf("review_state %d %v, want generation 2, clean", gen, dirty)
+	}
+	if n := count(t, st, `SELECT count(*) FROM jobs WHERE kind = 'relate' AND scope_key = 'relate:next'`); n != 1 {
+		t.Errorf("%d follow-up jobs, want 1", n)
 	}
 
 	// Clean: Startup enqueues nothing.
-	if err := h.Startup(ctx, r); err != nil {
+	jobsBefore := count(t, st, `SELECT count(*) FROM jobs WHERE kind = 'relate'`)
+	startup()
+	if n := count(t, st, `SELECT count(*) FROM jobs WHERE kind = 'relate'`); n != jobsBefore {
+		t.Errorf("Startup enqueued while clean")
+	}
+}
+
+// A refresh requested after the flip read dirty (while the job prunes or
+// ends) is not lost: the running job ends without another pass, and the
+// follow-up job the refresh enqueued runs one that shows a later
+// generation (design Addendum G1).
+func TestRefreshAfterTheFlipRunsAgain(t *testing.T) {
+	t.Parallel()
+	st, passes, _ := refreshDuringFirstPass(t, "flipped")
+	if passes != 2 {
+		t.Errorf("%d passes, want 2", passes)
+	}
+	if gen, dirty, _ := reviewState(t, st); gen != 2 || dirty {
+		t.Errorf("review_state %d %v, want generation 2, clean", gen, dirty)
+	}
+}
+
+// A job enqueued with if_dirty runs no pass on its first attempt while the
+// relations are clean; a retry, a dirty state, or a job without the flag
+// runs one.
+func TestIfDirtyJobRunsOnlyWhenDirty(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	w.file("x/a.txt", 100, "a")
+	w.file("y/a.txt", 100, "a")
+	h := w.handler(nil)
+	run := func(attempt int, payload json.RawMessage) int64 {
+		t.Helper()
+		if err := h.Run(context.Background(), jobs.Job{Kind: KindRelate, Attempt: attempt, Payload: payload}, &fakeRT{}); err != nil {
+			t.Fatal(err)
+		}
+		gen, dirty, _ := reviewState(t, w.st)
+		if dirty {
+			t.Fatalf("dirty after a run")
+		}
+		return gen
+	}
+	if gen := run(1, ifDirtyPayload); gen != 1 {
+		t.Fatalf("generation %d, want 1 (new databases are dirty)", gen)
+	}
+	if gen := run(1, ifDirtyPayload); gen != 1 {
+		t.Errorf("generation %d, want 1: a clean if_dirty job ran a pass", gen)
+	}
+	if gen := run(2, ifDirtyPayload); gen != 2 {
+		t.Errorf("generation %d, want 2: a retry runs a pass", gen)
+	}
+	if gen := run(1, json.RawMessage(`{}`)); gen != 3 {
+		t.Errorf("generation %d, want 3: a job without if_dirty runs a pass", gen)
+	}
+	if _, err := w.st.Writer().Exec(`UPDATE review_state SET dirty = 1`); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, w.st, `SELECT count(*) FROM jobs WHERE kind = 'relate'`); n != 1 {
-		t.Errorf("Startup enqueued while clean")
+	if gen := run(1, ifDirtyPayload); gen != 4 {
+		t.Errorf("generation %d, want 4: a dirty if_dirty job runs a pass", gen)
 	}
 }
 
@@ -314,8 +387,8 @@ func TestSourceRemovedMidRunLeavesNoOrphans(t *testing.T) {
 	}
 }
 
-// A failing after hook fails the pass: the generation is never shown, and
-// the next run replaces its rows.
+// A failing after hook fails the pass: the generation is never shown, the
+// relations are dirty again, and the next run replaces its rows.
 func TestFailingAfterHookShowsNothing(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)
@@ -326,8 +399,8 @@ func TestFailingAfterHookShowsNothing(t *testing.T) {
 	if err := h.Run(context.Background(), jobs.Job{Kind: KindRelate}, &fakeRT{}); !errors.Is(err, fail) {
 		t.Fatalf("Run = %v, want the hook's error", err)
 	}
-	if gen, _, _ := reviewState(t, w.st); gen != 0 {
-		t.Fatalf("generation %d shown", gen)
+	if gen, dirty, _ := reviewState(t, w.st); gen != 0 || !dirty {
+		t.Fatalf("review_state %d %v after a failed pass, want generation 0, dirty", gen, dirty)
 	}
 	h.after = nil
 	runJob(t, h)

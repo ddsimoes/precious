@@ -3,6 +3,8 @@ package relations
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"precious/internal/clock"
@@ -20,9 +22,11 @@ import (
 //  5. calls the after hook with g+1 (the review lists write their rows);
 //  6. flips review_state.gen to g+1 in one transaction, so readers never
 //     see two generations, and reads dirty: a refresh requested during the
-//     pass makes the job run another pass;
+//     pass up to here makes the job run another pass;
 //  7. deletes generation g (relations and review rows) and the contents
-//     no row references, in batches.
+//     no row references, in batches. A refresh requested from here until
+//     the job ends is left to the follow-up job RequestRefresh enqueues
+//     (design Addendum G1).
 
 // Batch sizes: rows per write transaction.
 const (
@@ -79,16 +83,45 @@ func (h *Handler) Startup(ctx context.Context, r *jobs.Runner) error {
 		if !dirty {
 			return nil
 		}
-		_, _, err := tx.EnqueueOnce(jobs.Spec{Kind: KindRelate, ScopeKey: relateScope})
-		return err
+		return enqueueRelate(tx)
 	})
 }
 
-// Run runs passes until no refresh was requested during the last one.
+// Run runs passes until no refresh was requested during the last one. A
+// first attempt whose payload has if_dirty (every job RequestRefresh and
+// Startup enqueue) runs none when the relations are clean: a pass that
+// began after the last refresh, in the job that ran before, covered it
+// (design Addendum G1). A retry after a lost worker, or a job without the
+// flag, always runs a pass. A pass that fails marks the relations dirty
+// again: it cleared the flag at its start, and its generation may never
+// show, so the follow-up job or the next Startup runs the pass again.
 func (h *Handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error {
+	if job.Attempt <= 1 && len(job.Payload) > 0 {
+		var p struct {
+			IfDirty bool `json:"if_dirty"`
+		}
+		if err := json.Unmarshal(job.Payload, &p); err != nil {
+			return fmt.Errorf("relations: relate payload: %w", err)
+		}
+		if p.IfDirty {
+			var dirty bool
+			err := h.st.Read(ctx, func(tx *sql.Tx) error {
+				return tx.QueryRowContext(ctx, `SELECT dirty FROM review_state WHERE id = 1`).Scan(&dirty)
+			})
+			if err != nil {
+				return fmt.Errorf("relations: read dirty: %w", err)
+			}
+			if !dirty {
+				return nil
+			}
+		}
+	}
 	for {
 		again, err := h.pass(ctx, rt)
 		if err != nil {
+			if derr := h.st.Write(context.WithoutCancel(ctx), setDirty); derr != nil {
+				return errors.Join(err, derr)
+			}
 			return err
 		}
 		if !again {
