@@ -79,8 +79,10 @@ export interface Check {
   confirmed: Amount
   unconfirmed: Amount
   junk_confirmed: boolean
-  // allowed is set when every file is safe or confirmed: the purge may be
-  // planned.
+  // allowed is set when the check is ready, every file is safe or confirmed,
+  // and an item that could be read is left: the purge may be planned. Ready
+  // with nothing unconfirmed but not allowed means only items that could not
+  // be read are left, which are never deleted.
   allowed: boolean
 }
 

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"precious/internal/fsaccess/synthfs"
@@ -239,5 +240,68 @@ func TestR4OrganizeRmdirLeavesTheQuarantine(t *testing.T) {
 	}
 	if e.state(srcID, tmp) != "present" {
 		t.Errorf("the quarantined folder is %q in the index", e.state(srcID, tmp))
+	}
+}
+
+// G16 (r4 D10): each purge item reads its records and the copies they rely
+// on by its path range of purge_check_files_path, not every row of the
+// check.
+func TestR4PurgeItemQueryPlans(t *testing.T) {
+	e := newEnv(t)
+	path := []byte(velho)
+	lo, hi := below(path)
+	for name, query := range map[string]string{"records": checkRecordsSQL, "copies": itemCopiesSQL} {
+		rows, err := e.st.Reader().Query(`EXPLAIN QUERY PLAN `+query, 1, path, lo, hi, 1)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var plan []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, detail)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		all := strings.Join(plan, "\n")
+		const want = "SEARCH purge_check_files USING INDEX purge_check_files_path (check_id=? AND path>? AND path<?)"
+		if !strings.Contains(all, want) {
+			t.Errorf("%s: the plan does not search the item's path range of purge_check_files_path:\n%s", name, all)
+		}
+		for _, line := range plan {
+			if strings.HasPrefix(line, "SCAN ") {
+				t.Errorf("%s: the plan scans a table:\n%s", name, all)
+			}
+		}
+	}
+}
+
+// G16 (r4 D10): the copy an archive member relies on, its row recorded at
+// its archive's path, is in its item's path range: the item's purge step
+// compares it and deletes nothing when it is gone.
+func TestR4PurgeRechecksAMembersCopy(t *testing.T) {
+	e := newEnv(t)
+	root := quarantined(e)
+	check := e.check(srcID, velho, zTxt)
+	e.exec(`INSERT INTO purge_check_files (check_id, item_id, entry_id, member_id, kind, path, size, verdict,
+			copy_source, copy_path, copy_entry, copy_size, copy_mtime_ns, copy_ctime_ns, copy_ino, copy_dev)
+		SELECT i.check_id, i.entry_id, i.entry_id, 1, 'file', i.path, c.size, 'safe', c.source_id, c.path, c.id, c.size,
+			c.mtime_ns, c.ctime_ns, c.ino, c.dev
+		FROM purge_check_items i JOIN entries c ON c.source_id = ? AND c.path = ?
+		WHERE i.check_id = ? AND i.path = ?`, string(srcID), []byte("Docs/x.txt"), check, []byte(zTxt))
+	action := e.purgeAction(srcID, check, false, velho, zTxt)
+	root.Child("Docs").Remove("x.txt")
+	e.run(action)
+	e.wantStates(action, actionStopped, stateDone, stateChanged)
+	if it := e.item(action, 2); it.Reason != reasonCopyChanged || it.Detail != "Docs/x.txt" {
+		t.Errorf("the archive's item %s %q, want copy_changed Docs/x.txt", it.Reason, it.Detail)
+	}
+	if _, ok := e.lstat("/src", zTxt); !ok {
+		t.Error("the archive whose member's copy is gone was deleted")
 	}
 }

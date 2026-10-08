@@ -47,12 +47,11 @@ func TestR4UndoLeavesAQuarantinedFolder(t *testing.T) {
 	}
 }
 
-// G6 (r4 D11, C3): the records of an item that is not readable gate no
-// purge. With one item holding an unreadable folder and one file whose twin
-// is verified, the check is allowed with nothing to confirm, plan-purge
-// answers 201 refusing the unreadable item, and the purge deletes the other.
-func TestR4UnreadableItemGatesNoPurge(t *testing.T) {
-	w := newWorld(t)
+// unreadableVelho quarantines casa's folder Velho, which holds a folder
+// made unreadable since, and solto.jpg, whose twin Fotos/praia.jpg is
+// verified, and returns their entry IDs.
+func unreadableVelho(w *world) (velho, solto string) {
+	w.t.Helper()
 	root := w.disk("casa", "/casa", func(root *synthfs.Node) {
 		root.Dir("Fotos").File("praia.jpg", 100, staleAt).Seed(1)
 		v := root.Dir("Velho")
@@ -62,10 +61,20 @@ func TestR4UnreadableItemGatesNoPurge(t *testing.T) {
 	})
 	w.decide("casa", "Velho", "discard")
 	w.decide("casa", "solto.jpg", "discard")
-	velho := staleQuarantineVelho(w)
-	solto := w.id("casa", ".precious-quarantine/1/2/solto.jpg")
+	velho = staleQuarantineVelho(w)
+	solto = w.id("casa", ".precious-quarantine/1/2/solto.jpg")
 	root.Child(".precious-quarantine").Child("1").Child("1").Child("Velho").Child("privado").Unreadable()
 	w.scan("casa")
+	return velho, solto
+}
+
+// G6 (r4 D11, C3): the records of an item that is not readable gate no
+// purge. With one item holding an unreadable folder and one file whose twin
+// is verified, the check is allowed with nothing to confirm, plan-purge
+// answers 201 refusing the unreadable item, and the purge deletes the other.
+func TestR4UnreadableItemGatesNoPurge(t *testing.T) {
+	w := newWorld(t)
+	velho, solto := unreadableVelho(w)
 
 	check, c := w.checkPurge(velho, solto)
 	if c.State != "ready" || !c.Allowed || c.Unconfirmed != (amount{}) {
@@ -97,5 +106,31 @@ func TestR4UnreadableItemGatesNoPurge(t *testing.T) {
 	}
 	if !w.exists("casa", ".precious-quarantine/1/1/Velho/a.txt") || !w.exists("casa", "Fotos/praia.jpg") {
 		t.Error("the unreadable item or the copy was deleted")
+	}
+}
+
+// G17: a check whose items left could not be read has nothing to delete:
+// after its readable item was deleted for good, or from the start, it is
+// ready but not allowed, and plan-purge answers 409 check_stale.
+func TestR4OnlyUnreadableItemsAreNotAllowed(t *testing.T) {
+	w := newWorld(t)
+	velho, solto := unreadableVelho(w)
+	check, _ := w.checkPurge(velho, solto)
+	body := fmt.Sprintf(`{"check_id":%q}`, check)
+	if a := w.run(w.plan("plan-purge", body).Action.ID); a.State != "done" || a.DeletedFiles != 1 {
+		t.Fatalf("purge %+v", a)
+	}
+	if c := staleCheckState(w, check, "ready", "", false); c.Items != 1 || c.Unconfirmed != (amount{}) {
+		t.Fatalf("check after the purge %+v; want the unreadable item left, nothing unconfirmed", c)
+	}
+	w.refuse(http.StatusConflict, "check_stale", "plan-purge", body)
+
+	only, c := w.checkPurge(velho)
+	if c.State != "ready" || c.Allowed || c.Items != 1 || c.Unconfirmed != (amount{}) {
+		t.Fatalf("check of the unreadable item %+v; want ready, not allowed, nothing unconfirmed", c)
+	}
+	w.refuse(http.StatusConflict, "check_stale", "plan-purge", fmt.Sprintf(`{"check_id":%q}`, only))
+	if !w.exists("casa", ".precious-quarantine/1/1/Velho/a.txt") {
+		t.Error("the unreadable item was deleted")
 	}
 }

@@ -188,22 +188,51 @@ func (r *run) verifyCheck(check int64) (reason, detail string, err error) {
 			return reasonFileChanged, domain.DisplayName(diff), nil
 		}
 	}
-	return r.verifyCopies(check, 0, tol)
+	return r.verifyCopies(check, 0, nil, tol)
 }
 
-// verifyCopies compares every copy the check relied on (a recorded copy of
-// a file that needs no confirmation of its own), of the set item item or,
-// when item is 0, of the whole set, with the disk: its index row present at
-// its path and outside the quarantine, its source online, and its lstat the
-// identity recorded. A change time is not compared on an inode of which
-// this purge removed a name (tol): a hard-link copy of a file purged before.
-func (r *run) verifyCopies(check, item int64, tol map[inode]bool) (reason, detail string, err error) {
+// reliedColumns are the identity of a copy the check relied on (a recorded
+// copy of a file that needs no confirmation of its own).
+const reliedColumns = `SELECT DISTINCT copy_source, copy_path, copy_entry, copy_size, copy_mtime_ns, copy_ctime_ns,
+		copy_ino, copy_dev FROM purge_check_files`
+
+// reliedOn is the filter of the copies the check relied on.
+const reliedOn = ` AND copy_path IS NOT NULL AND confirmed_at IS NULL AND verdict <> 'copy_offline'
+	ORDER BY copy_source, copy_path`
+
+// setCopiesSQL reads the copies the whole set relied on.
+const setCopiesSQL = reliedColumns + ` WHERE check_id = ?` + reliedOn
+
+// ofItem selects the check's rows of one set item, by the item's path range
+// of purge_check_files_path (r4 G16): the item's path and every path below
+// it (its members' rows carry its archive's path). The index searches
+// [path, path0) and the residual drops a sibling sorting before path/, such
+// as path.txt; a form with path = ? OR a range reads every row of the check.
+// Its parameters are check, path, lo, hi, item, with lo and hi from below.
+const ofItem = ` WHERE check_id = ?1 AND path >= ?2 AND path < ?4 AND (path = ?2 OR path >= ?3) AND item_id = ?5`
+
+// itemCopiesSQL reads the copies one set item relied on.
+const itemCopiesSQL = reliedColumns + ofItem + reliedOn
+
+// checkRecordsSQL reads the on-disk records of one set item.
+const checkRecordsSQL = `SELECT entry_id, kind, path, size, mtime_ns, ctime_ns, ino, dev, nlink, alloc
+	FROM purge_check_files` + ofItem + ` AND member_id IS NULL`
+
+// verifyCopies compares every copy the check relied on, of the set item
+// item at path or, when item is 0, of the whole set, with the disk: its
+// index row present at its path and outside the quarantine, its source
+// online, and its lstat the identity recorded. A change time is not compared
+// on an inode of which this purge removed a name (tol): a hard-link copy of
+// a file purged before.
+func (r *run) verifyCopies(check, item int64, path []byte, tol map[inode]bool) (reason, detail string, err error) {
 	rd := r.e.st.Reader()
-	rows, err := rd.QueryContext(r.bg, `SELECT DISTINCT copy_source, copy_path, copy_entry, copy_size, copy_mtime_ns,
-			copy_ctime_ns, copy_ino, copy_dev
-		FROM purge_check_files WHERE check_id = ?1 AND (?2 = 0 OR item_id = ?2) AND copy_path IS NOT NULL
-			AND confirmed_at IS NULL AND verdict <> 'copy_offline'
-		ORDER BY copy_source, copy_path`, check, item)
+	var rows *sql.Rows
+	if item == 0 {
+		rows, err = rd.QueryContext(r.bg, setCopiesSQL, check)
+	} else {
+		lo, hi := below(path)
+		rows, err = rd.QueryContext(r.bg, itemCopiesSQL, check, path, lo, hi, item)
+	}
 	if err != nil {
 		return "", "", err
 	}
@@ -321,10 +350,7 @@ type checkFile struct {
 // set item at path, by path.
 func (r *run) checkRecords(check, item int64, path []byte) (map[string]checkFile, error) {
 	lo, hi := below(path)
-	rows, err := r.e.st.Reader().QueryContext(r.bg, `SELECT entry_id, kind, path, size, mtime_ns, ctime_ns, ino, dev,
-			nlink, alloc
-		FROM purge_check_files WHERE check_id = ? AND (path = ? OR (path >= ? AND path < ?))
-			AND item_id = ? AND member_id IS NULL`, check, path, lo, hi, item)
+	rows, err := r.e.st.Reader().QueryContext(r.bg, checkRecordsSQL, check, path, lo, hi, item)
 	if err != nil {
 		return nil, err
 	}
@@ -736,7 +762,7 @@ func (r *run) stepPurge(it item, replay bool) (verdict, error) {
 	if tree != nil {
 		// The copies may have gone since verify: after a restart, a lost
 		// lease, or a crash, or while a scan of their source ran (r4 D10).
-		reason, detail, err := r.verifyCopies(check, it.entry, p.tol)
+		reason, detail, err := r.verifyCopies(check, it.entry, it.fromPath, p.tol)
 		if err != nil {
 			return halt, err
 		}

@@ -251,7 +251,11 @@ function CheckReport({ check }: { check: Check }) {
         <Card className="grid gap-2 p-4 text-sm">
           <Section title={t('cleanup.purge.title')}>
             <p>{t('cleanup.purge.help')}</p>
-            {!check.allowed && open && <p className="text-muted-foreground">{t('cleanup.purge.notAllowed')}</p>}
+            {!check.allowed && open && (
+              <p className="text-muted-foreground">
+                {t(check.unconfirmed.files === 0 ? 'cleanup.purge.nothingReadable' : 'cleanup.purge.notAllowed')}
+              </p>
+            )}
             <div>
               <Button
                 variant="destructive"

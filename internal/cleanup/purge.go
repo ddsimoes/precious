@@ -337,8 +337,10 @@ func (s *Service) planPurge(ctx context.Context, tx *jobs.Tx, req planPurgeReque
 		leaving[t.plan.id][t.seq.id] = true
 	}
 	if purged == 0 {
-		return 0, nil, domain.Errorf(domain.CodeInvalidRequest,
-			"nothing in check %d can be deleted: every item holds a folder that could not be read", id)
+		// Only items that could not be read are left, which are never
+		// deleted: nothing of the set can be deleted any more (G17).
+		return 0, nil, domain.Errorf(domain.CodeCheckStale,
+			"nothing of check %d can be deleted: every item left in the quarantine could not be read; restore them or check them again", id)
 	}
 	sweeps, err := sweepAll(ctx, q, tops, leaving)
 	if err != nil {
@@ -402,14 +404,15 @@ var (
 func readCheck(ctx context.Context, q store.Queryer, id int64) (checkJSON, error) {
 	var (
 		c                   checkJSON
-		created             int64
+		created, readable   int64
 		job, finished, junk sql.NullInt64
 		reason              sql.NullString
 	)
 	err := q.QueryRowContext(ctx, `SELECT source_id, state, job_id, created_at, finished_at, stale_reason,
-		junk_confirmed_at, (SELECT count(*) FROM purge_check_items WHERE check_id = purge_checks.id)
+		junk_confirmed_at, (SELECT count(*) FROM purge_check_items WHERE check_id = purge_checks.id),
+		(SELECT count(*) FROM purge_check_items WHERE check_id = purge_checks.id AND readable = 1)
 		FROM purge_checks WHERE id = ?`, id).Scan(&c.SourceID, &c.State, &job, &created, &finished, &reason, &junk,
-		&c.Items)
+		&c.Items, &readable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return checkJSON{}, notFound("check", strconv.FormatInt(id, 10))
 	}
@@ -477,7 +480,8 @@ func readCheck(ctx context.Context, q store.Queryer, id int64) (checkJSON, error
 		return checkJSON{}, err
 	}
 	// A check whose items were all deleted for good keeps its records but
-	// has nothing left to delete (G10).
-	c.Allowed = c.State == checkReady && c.Unconfirmed.Files == 0 && c.Items > 0
+	// has nothing left to delete (G10), and neither has one whose items
+	// left could not be read, which plan-purge never deletes (G17).
+	c.Allowed = c.State == checkReady && c.Unconfirmed.Files == 0 && readable > 0
 	return c, nil
 }
