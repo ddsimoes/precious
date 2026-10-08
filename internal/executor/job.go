@@ -80,6 +80,17 @@ type run struct {
 	// fsType is the source's filesystem type, as recorded when it was
 	// added.
 	fsType string
+
+	// The action's kind, its cleanup ground, and the check a purge acts on
+	// (r4 D3, D5, D11); empty and 0 for a reconcile job.
+	kind, ground string
+	checkID      int64
+	// copies are the staying copies each duplicate-ground cleanup rename
+	// item was verified against in this attempt (r4 D5), by item ID.
+	copies map[int64]*copyCheck
+	// unlinked are the inodes of which this attempt, or an earlier step of
+	// its purge, removed a name (r4 D10's hard-link tolerance), by check.
+	unlinked map[int64]map[inode]bool
 }
 
 // verdict is what follows an item.
@@ -174,9 +185,12 @@ func (r *run) start() (wait string, proceed bool, err error) {
 		var (
 			state, src string
 			bulk       bool
+			kind       string
+			ground     sql.NullString
+			check      sql.NullInt64
 		)
-		err = q.QueryRowContext(r.ctx, `SELECT state, source_id, bulk FROM actions WHERE id = ?`, r.action).
-			Scan(&state, &src, &bulk)
+		err = q.QueryRowContext(r.ctx, `SELECT state, source_id, bulk, kind, ground, check_id FROM actions WHERE id = ?`,
+			r.action).Scan(&state, &src, &bulk, &kind, &ground, &check)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -186,7 +200,7 @@ func (r *run) start() (wait string, proceed bool, err error) {
 		if domain.SourceID(src) != r.src || (state != actionQueued && state != actionRunning) {
 			return nil
 		}
-		r.bulk = bulk
+		r.bulk, r.kind, r.ground, r.checkID = bulk, kind, ground.String, check.Int64
 		var blocked bool
 		if err := q.QueryRowContext(r.ctx, `SELECT EXISTS (SELECT 1 FROM actions WHERE source_id = ?1 AND id < ?2
 				AND state IN ('queued', 'running'))

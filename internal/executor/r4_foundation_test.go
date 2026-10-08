@@ -1,14 +1,14 @@
 package executor
 
 import (
-	"strings"
 	"testing"
 )
 
-// r4 task 1.6: the cleanup ops exist in the schema before this executor
-// has steps for them. Until it does, such an item fails at intent, nothing
-// reaches the disk or the index, and the action goes on with its next item.
-func TestStepsWithoutAStepFailSafe(t *testing.T) {
+// r4 D12 (tasks 1.6, 2.3): the cleanup steps act only inside the
+// quarantine, for what they were planned for. A record with no done
+// rename, an unlink outside the quarantine, and a purge with no ready
+// check never reach the disk or the index; the purge stops the action.
+func TestCleanupStepsOutsideTheirPlace(t *testing.T) {
 	e := newEnv(t)
 	photos(e)
 	e.scan()
@@ -19,14 +19,13 @@ func TestStepsWithoutAStepFailSafe(t *testing.T) {
 		step{Op: opVerify, To: "Arquivo", Name: "x"},
 		step{Op: opMkdir, To: "Arquivo", Name: "Outro"})
 	e.run(action)
-	e.wantStates(action, actionDone, stateFailed, stateFailed, stateFailed, stateFailed, stateDone)
-	for seq, op := range []string{opRecord, opUnlink, opPurge, opVerify} {
-		if got := e.item(action, seq+1).Detail; !strings.Contains(got, "unknown step "+op) {
-			t.Errorf("%s item detail %q", op, got)
-		}
+	e.wantStates(action, actionStopped, stateNotAttempted, stateChanged, stateChanged, stateNotAttempted,
+		stateNotAttempted)
+	if r := e.item(action, 3).Reason; r != reasonCheckStale {
+		t.Errorf("purge reason %q, want check_stale", r)
 	}
-	if got := e.writes(); got != 1 {
-		t.Errorf("%d writes, want the one mkdir", got)
+	if got := e.writes(); got != 0 {
+		t.Errorf("%d writes, want none", got)
 	}
 	for _, p := range []string{"Fotos/2004/a.jpg", "Fotos/2004"} {
 		if _, ok := e.lstat("/src", p); !ok {
