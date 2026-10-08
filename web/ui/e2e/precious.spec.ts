@@ -1381,6 +1381,14 @@ test('R4.1: a cleanup plan lists the folder a kept file blocks, changes nothing 
   // document with no other copy, which the check will ask to confirm on its
   // own.
   expect((await discardedItems()).blocked).toEqual([])
+  // These tests take single files besides the backup. The review keys test
+  // discards the first row of the system junk list, which is a file or a
+  // folder depending on how the test's filesystem orders the rows of equal
+  // size: a folder discarded there is undecided again.
+  const isFolder = (path: string) => path !== backup && truth.find((e) => e.path === path)?.kind === 'directory'
+  for (const path of (await discardedItems()).planned.filter(isFolder)) {
+    expect((await command('set-decision', { entry_id: await entryId(path), decision: 'inherit' })).status).toBe(200)
+  }
   expect((await intentOf(thesis)).decision).toBeNull()
   expect((await intentOf(oldCv)).decision).toBeNull()
   expect((await command('set-decision', { entry_id: await entryId(thesis), decision: 'keep' })).status).toBe(200)
@@ -1388,6 +1396,7 @@ test('R4.1: a cleanup plan lists the folder a kept file blocks, changes nothing 
   const { planned, blocked } = await discardedItems()
   expect(blocked).toEqual([backup])
   expect(planned).toEqual(expect.arrayContaining([oldCv, restored, leftInQuarantine]))
+  expect(planned.filter(isFolder)).toEqual([])
   const ids = new Map<string, string>()
   for (const path of [...planned, backup]) {
     ids.set(path, await entryId(path))

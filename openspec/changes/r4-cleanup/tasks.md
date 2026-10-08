@@ -181,7 +181,7 @@
   - a rescan finds nothing new or missing.
 
   Then delete the script.
-- [ ] 4.4 Deploy on the reference server. The owner tries, on the corpus source only:
+- [x] 4.4 Deploy on the reference server. The owner tries, on the corpus source only:
   - a plan;
   - a restore;
   - a check;
