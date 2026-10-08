@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"syscall"
 	"time"
 
@@ -69,21 +70,24 @@ func (f *FS) readOnly(dev uint64) bool {
 }
 
 // storedModTime is the modification time dev stores when t is set, which
-// Lstat reports back as it is (see FS.present): for a device given
-// capabilities, t truncated to its TimeResolution, and with LocalTime, the
-// wall time of t in the zone dev is mounted with, written as a UTC reading.
-// A device without capabilities stores t exactly. Callers hold f.mu.
+// Lstat reports back as it is (see FS.present): first clamped to its
+// filesystem type's range, as Linux's timestamp_truncate does without an
+// error (see clampModTime); then, for a device given capabilities, with
+// LocalTime, the wall time of t in the zone dev is mounted with, written as
+// a UTC reading, and truncated to its TimeResolution. A device without
+// capabilities stores t exactly, but for the clamp. Callers hold f.mu.
 func (f *FS) storedModTime(dev uint64, t time.Time) time.Time {
 	t = t.Round(0)
 	d := f.devices[dev]
+	loc := time.UTC
+	if d != nil && d.zone != nil {
+		loc = d.zone
+	}
+	t = clampModTime(f.fsTypeOf(dev), loc, t)
 	if d == nil || d.caps == nil {
 		return t
 	}
 	if d.caps.LocalTime {
-		loc := d.zone
-		if loc == nil {
-			loc = time.UTC
-		}
 		w := t.In(loc)
 		t = time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), w.Nanosecond(), time.UTC)
 	}
@@ -91,6 +95,53 @@ func (f *FS) storedModTime(dev uint64, t time.Time) time.Time {
 		t = t.Truncate(r)
 	}
 	return t
+}
+
+// fsTypeOf is dev's filesystem type: its volume's, else its mount row's, else
+// "". Callers hold f.mu.
+func (f *FS) fsTypeOf(dev uint64) string {
+	if d := f.devices[dev]; d != nil && d.volume != nil && d.volume.FSType != "" {
+		return d.volume.FSType
+	}
+	if m := f.fsinfo[dev].Mount; m != nil {
+		return m.FSType
+	}
+	return ""
+}
+
+// clampModTime is t as Linux stores it on a filesystem of fsType mounted in
+// zone loc: clamped to its superblock's s_time_min and s_time_max. vfat's
+// range is 1980-01-01 00:00:00 to 2107-12-31 23:59:58 local time, exFAT's
+// 1980-01-01 00:00:00 to 2107-12-31 23:59:59 UTC, and ext2/3/4's and XFS's
+// starts at 1901-12-13T20:45:52Z (their large-inode ends lie past what a
+// nanosecond time holds). Any other type, or none, stores t as given.
+func clampModTime(fsType string, loc *time.Location, t time.Time) time.Time {
+	var lo, hi time.Time
+	switch fsType {
+	case "vfat":
+		lo, hi = time.Date(1980, 1, 1, 0, 0, 0, 0, loc), time.Date(2107, 12, 31, 23, 59, 58, 0, loc)
+	case "exfat":
+		lo, hi = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2107, 12, 31, 23, 59, 59, 0, time.UTC)
+	case "ext2", "ext3", "ext4", "xfs":
+		return maxTime(t, time.Unix(math.MinInt32, 0))
+	default:
+		return t
+	}
+	return minTime(maxTime(t, lo), hi)
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return b
+	}
+	return a
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return b
+	}
+	return a
 }
 
 // attached reports whether n is still reachable from its tree's root.

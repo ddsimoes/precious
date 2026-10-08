@@ -598,3 +598,59 @@ func TestSetModTimeOnFAT(t *testing.T) {
 		t.Errorf("exFAT modification time = %v, want %v", got, want)
 	}
 }
+
+// r5 H2: a set time outside its filesystem's range is stored as the nearer
+// end, with no error, as Linux's timestamp_truncate does: FAT's local
+// 1980-01-01 to 2107-12-31 23:59:58 in the zone it is mounted with, exFAT's
+// in UTC, and ext4's from 1901-12-13T20:45:52Z. A device of no known type
+// keeps any time.
+func TestSetModTimeClampsToTheFilesystemsRange(t *testing.T) {
+	fsys := synthfs.New()
+	fsys.Root("/card").File("a.jpg", 1, synthfs.DefaultModTime)
+	fsys.Root("/disk").File("a.jpg", 1, synthfs.DefaultModTime)
+	card, disk := open(t, fsys, "/card"), open(t, fsys, "/disk")
+	dev := card.Self().Dev
+	brt := time.FixedZone("BRT", -3*3600)
+	fsys.SetVolume(dev, usbVolume)
+	fsys.SetCapabilities(dev, fatCaps)
+	fsys.SetTimeZone(dev, brt)
+	set := func(d fsaccess.Dir, when time.Time) time.Time {
+		t.Helper()
+		must(t, writer(t, d).SetModTime([]byte("a.jpg"), when))
+		return lstat(t, d, "a.jpg").ModTime
+	}
+
+	for _, c := range []struct {
+		set, want time.Time
+	}{
+		{time.Date(1975, 6, 1, 12, 0, 0, 0, time.UTC), time.Date(1980, 1, 1, 0, 0, 0, 0, brt)},
+		{time.Date(1980, 1, 1, 1, 0, 0, 0, time.UTC), time.Date(1980, 1, 1, 0, 0, 0, 0, brt)},
+		{time.Date(1980, 1, 1, 3, 0, 2, 0, time.UTC), time.Date(1980, 1, 1, 0, 0, 2, 0, brt)},
+		{time.Date(2150, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2107, 12, 31, 23, 59, 58, 0, brt)},
+	} {
+		if got := set(card, c.set); !got.Equal(c.want) {
+			t.Errorf("FAT set to %v holds %v, want %v", c.set, got, c.want)
+		}
+	}
+	exfat := usbVolume
+	exfat.FSType = "exfat"
+	fsys.SetVolume(dev, exfat)
+	fsys.SetCapabilities(dev, exfatCaps)
+	if got, want := set(card, time.Date(1975, 6, 1, 12, 0, 0, 0, time.UTC)), time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("exFAT set to 1975 holds %v, want %v", got, want)
+	}
+
+	ancient := time.Date(1850, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := set(disk, ancient); !got.Equal(ancient) {
+		t.Errorf("a device of no known type set to %v holds %v", ancient, got)
+	}
+	early := time.Date(1965, 1, 2, 3, 4, 5, 0, time.UTC)
+	ddev := disk.Self().Dev
+	fsys.SetFSInfo(ddev, fsaccess.FSInfo{Mount: &fsaccess.MountInfo{MountPoint: "/disk", Root: "/", FSType: "ext4"}})
+	if got, want := set(disk, ancient), time.Unix(-1<<31, 0); !got.Equal(want) {
+		t.Errorf("ext4 set to 1850 holds %v, want %v", got, want)
+	}
+	if got := set(disk, early); !got.Equal(early) {
+		t.Errorf("ext4 set to %v holds %v", early, got)
+	}
+}

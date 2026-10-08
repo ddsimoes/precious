@@ -1343,6 +1343,7 @@ export const en = {
       identical_copy: 'An identical copy already takes that name',
       invalid_name: 'The disk cannot hold that name',
       not_media: 'Not a photo or video',
+      date_out_of_range: 'Its disk cannot record that date',
     },
     itemState: {
       planned: 'Waiting',
