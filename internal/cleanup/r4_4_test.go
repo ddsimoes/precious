@@ -1,7 +1,6 @@
 package cleanup
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -10,7 +9,6 @@ import (
 	"precious/internal/corpus"
 	"precious/internal/domain"
 	"precious/internal/fsaccess/synthfs"
-	"precious/internal/relations"
 )
 
 // R4.4: a plan drafted from the duplicates list never takes the last copy
@@ -32,19 +30,6 @@ type dupsRow struct {
 		Path     string `json:"path"`
 		HardLink bool   `json:"hard_link"`
 	} `json:"copies"`
-}
-
-// dupsRelate runs one more relate pass once hashing is over, and waits for
-// it. The after-scan relate pass can miss the last hashing results: a
-// refresh requested after the pass read review_state.dirty, while it still
-// prunes, coalesces into the running job and is lost (relations race,
-// reported to the service owner).
-func (w *world) dupsRelate() {
-	w.t.Helper()
-	if err := w.r.Write(context.Background(), relations.RequestRefresh); err != nil {
-		w.t.Fatal(err)
-	}
-	w.idle()
 }
 
 // dupsRows reads every page of the open rows of src's duplicates list.
@@ -155,7 +140,6 @@ func TestR4_4LastCopyOfAGroupStays(t *testing.T) {
 	w := newWorld(t)
 	root, _ := corpus.BuildSynth(w.sfs, "/casa", corpus.Corpus())
 	w.add("casa", "/casa", root, "ext4")
-	w.dupsRelate()
 
 	row, copies := w.dupsGroup("casa", "Documentos/curriculo.doc")
 	if row.Entry != nil || row.Relation != nil || len(copies) != 4 || row.Bytes != 73_728 {
@@ -263,7 +247,6 @@ func TestR4_4LastCopyOfAPairStays(t *testing.T) {
 		mine.File("notas.doc", 11_264, at).Seed(44)
 		root.File("outro.doc", 24_576, at).Seed(42)
 	})
-	w.dupsRelate()
 
 	const first, second = "Documentos/curriculo.doc", "Meus documentos/curriculo.doc"
 	rows := w.dupsRows("casa")
@@ -317,7 +300,6 @@ func TestR4_4BothSidesOfARelation(t *testing.T) {
 	w := newWorld(t)
 	root, _ := corpus.BuildSynth(w.sfs, "/casa", corpus.Corpus())
 	w.add("casa", "/casa", root, "ext4")
-	w.dupsRelate()
 
 	const (
 		earlier = "Backup_PC_2004/C/Arquivos de programas/Winamp"
@@ -410,7 +392,6 @@ func TestR4_4HardLinksAreOneCopy(t *testing.T) {
 			root.HardLink("a-link.doc", a)
 			root.File("b.doc", 26_112, at).Seed(51)
 		})
-		w.dupsRelate()
 		rows := w.dupsRows("casa")
 		_, copies := w.dupsGroup("casa", "b.doc")
 		if len(rows) != 1 || !slices.Equal(copies, []string{"a-link.doc", "a.doc", "b.doc"}) {

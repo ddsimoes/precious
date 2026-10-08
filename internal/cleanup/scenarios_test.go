@@ -2,7 +2,6 @@ package cleanup
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 
 	"precious/internal/domain"
 	"precious/internal/fsaccess/synthfs"
-	"precious/internal/relations"
 )
 
 // The spec scenarios of r4 (cleanup, organizing, review-lists, and
@@ -116,17 +114,6 @@ func (w *world) scenReadFile(src domain.SourceID, rel string) []byte {
 		w.t.Fatalf("read %s: %d bytes, %v", rel, n, err)
 	}
 	return buf
-}
-
-// scenRelate computes the relations and review rows once more and waits
-// for every job: a refresh requested while a relate pass runs can be
-// coalesced into it, leaving the review rows one pass behind.
-func (w *world) scenRelate() {
-	w.t.Helper()
-	if err := w.r.Write(context.Background(), relations.RequestRefresh); err != nil {
-		w.t.Fatal(err)
-	}
-	w.idle()
 }
 
 // scenCard reads a card of src from GET /api/opportunities.
@@ -608,7 +595,7 @@ func scenJunk(t *testing.T) *world {
 			} `json:"entry"`
 		} `json:"items"`
 	}
-	w.scenRelate()
+	w.idle()
 	w.get("/api/opportunities/system_junk?source=casa&limit=100", &list)
 	var rows []string
 	for _, it := range list.Items {
@@ -659,7 +646,7 @@ func TestScenarioDraftingFromTheSystemJunkList(t *testing.T) {
 	if a := w.run(p.Action.ID); a.State != "done" || scenCounts(a.Entries) != "done=3" || scenCounts(a.Counts) != "done=11" {
 		t.Fatalf("run %+v", a)
 	}
-	w.scenRelate()
+	w.idle()
 	if c := w.scenCard("system_junk", "casa"); c != (scenCardView{List: "system_junk", Bytes: 1024, Rows: 1}) {
 		t.Errorf("card after the run %+v", c)
 	}
