@@ -155,7 +155,7 @@
 
 ## 4. Integration
 
-- [ ] 4.1 Playwright tests after the last R3 test:
+- [x] 4.1 Playwright tests after the last R3 test:
   - drafting a plan for the corpus, with a blocked folder (R4.1), then approving;
   - the quarantine browser, and a restore (R4.3);
   - a check with its report, the junk-group and per-file confirmations (R4.6, R4.7), and the purge with its freed space (R4.5);
