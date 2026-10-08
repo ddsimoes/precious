@@ -2,7 +2,7 @@
 
 ## 1. Foundation (one slice, merged first)
 
-- [ ] 1.1 Migration `0007_cleanup.sql`, exactly as in design Interfaces: it rebuilds `actions` and `action_items` (items dropped first), and adds `purge_checks`, `purge_check_items`, and `purge_check_files`. Owns `migrations/` and `internal/store/*schema_test.go`. Verify with a store test:
+- [ ] 1.1 Migration `0007_cleanup.sql`, exactly as in design Interfaces: it rebuilds `actions` and `action_items` (items dropped first), adds their new columns, `sources.quarantine_entry_id`, `purge_checks`, `purge_check_items`, and `purge_check_files`. Owns `migrations/` and `internal/store/*schema_test.go`. Verify with a store test:
   - a version-6 database with actions and items migrates with every row kept;
   - the new checks reject bad values;
   - cascades hold, and the foreign keys into `entries` are indexed.
@@ -16,30 +16,36 @@
 
   Owns `internal/fsaccess/...`. Verify with unit tests on synthfs and `e2e && linux` tests on a tmpfs:
   - creating onto an existing name gives `ErrExist` and leaves it unchanged;
-  - a written file is complete and synced;
+  - a written file is complete, synced, and has the parent's mode bits;
   - unlinking a folder gives `ErrIsDir`;
   - a file on a read-only remount gives `ErrReadOnly`.
-- [ ] 1.4 Quarantine in `internal/index` (design D1, D2):
-  - `QuarantineName`, `NotQuarantined`, `InQuarantine`, `IsQuarantinePath`, and `DeleteSubtree`;
-  - the scan skips the reserved name at the top, marking its stored row seen;
-  - `Refold` skips it at the top;
-  - `validName` refuses it at the top.
+- [ ] 1.4 Quarantine in `internal/index` (design D1, D2, D13; ADR 0011):
+  - `QuarantineName`, `NotQuarantined` and `InQuarantine` (precomputed blob literals), `IsQuarantinePath`, `DeleteSubtree`, and `DeleteEntries`;
+  - the scan walks the quarantine, but the top folder's fold leaves it out;
+  - `Refold` leaves it out at the top too;
+  - `validName` stays name-agnostic.
 
-  Owns `internal/index` and the `docs/operator.md` paragraph on scans and the quarantine. Verify with a test of the scenario "A rescan after quarantining": entries moved into quarantine rows with `MoveEntry`, then a rescan, keep their IDs and state, nothing is added or missing, and the top folder's totals exclude them. Run `go test -race ./internal/index`.
-- [ ] 1.5 `content.HashEntry` and `(*content.Service).HashMember` (design D9). Owns those additions in `internal/content`. Verify with tests:
+  Owns `internal/index` and the `docs/operator.md` paragraph on scans and the quarantine. Verify with tests:
+  - the rendered predicate run against a nested quarantined row and a sibling `.precious-quarantine.x`: excluded and kept, respectively;
+  - the scenario "A rescan after quarantining": entries moved into quarantine rows with `MoveEntry`, then a rescan, keep their IDs and state, nothing is added or missing, the top folder's totals exclude them, and the quarantine folder's row folds them;
+  - a file added by hand under the quarantine is indexed by the next scan.
+
+  Run `go test -race ./internal/index`.
+- [ ] 1.5 `content.HashEntry`, `(*content.Service).HashArchive`, and `HashMember` (design D9). Owns those additions in `internal/content`. Verify with tests:
   - a full read of a 20 MiB file gives its SHA-256;
   - a changed file gives `invalid_entry_state`;
-  - a zip member and a tar member hash as their content;
+  - `HashArchive` yields every file member of a zip and of a tar.gz, reading each archive once (instrument);
+  - `HashMember` hashes one member;
   - nothing is written to the database.
 
   Run `go test -race ./internal/content`.
 - [ ] 1.6 Shared contracts for the slices:
-  - `executor.Index.ApplyPurge`, added to the interface and implemented in organize's adapter (`DeleteSubtree`, then a refold of the quarantine chain);
+  - `executor.Index.ApplyPurge` and `ApplyUnlink`, added to the interface and implemented in organize's adapter;
   - `executor.Options.Content`;
   - the new op and state constants;
-  - `internal/cleanup/stale.MarkStale`.
+  - `internal/cleanup/stale.MarkStale` (a path range over set items, recorded files, and recorded copies).
 
-  Verify with a test that `MarkStale` marks only the checks whose set or copies hold the IDs, and `go test -race ./...`.
+  Verify with a test that `MarkStale` marks a check when a recorded copy's folder path is passed, and leaves checks of other paths and sources alone. Run `go test -race ./...`.
 
 ## 2. Parallel slices (after group 1)
 
@@ -51,20 +57,24 @@
 
   Owns those read paths, and the docs on views and Home. Verify with a test of the scenario "Home after quarantining a folder" through the API (Map, Search with count and select-all, Home, sources) and the existing plan guards: `go test -race ./internal/search ./internal/web/api ./internal/decisions ./internal/sources`.
 - [ ] 2.2 Readers B (design Reader exclusion, slice 2.2): `content`, `review`, and `relations`. Owns those read paths, and the docs on copies and cards. Verify with tests of the scenario "Quarantining one of two copies" (content `Copies`, a review refresh, a relate pass), and of review cards leaving a quarantined row out, with the existing plan guards: `go test -race ./internal/content ./internal/review ./internal/relations`.
-- [ ] 2.3 Executor slice (design D3, D5, D10, D11, D12). Owns `internal/executor` and the `docs/operator.md` section on how Precious changes a disk:
-  - the ops `record`, `unlink`, and `purge`;
-  - quarantine-path guards on the new primitives;
-  - `blocked`/`holds_kept` and `no_verified_copy` at intent;
-  - purge identity comparisons with the check, `MarkStale`, and freed bytes;
-  - idempotent purge reconciliation.
+- [ ] 2.3 Executor slice (design D3–D5, D10–D13). Owns `internal/executor` and the `docs/operator.md` section on how Precious changes a disk:
+  - the ops `record`, `unlink`, `purge`, and `verify`;
+  - the cleanup order (mkdir, rename, record) and the whole-item re-check at the first step (draft identity, own decision, inclusive keeps, D5 copies verified outside transactions);
+  - the reserved-name refusal for renames into a source's top;
+  - the quarantine-path guards on the new primitives;
+  - purge (verify the whole tree, then delete), with per-file comparisons, hard-link tolerance, and freed bytes;
+  - `MarkStale` in every outcome;
+  - the D4 reconciliation rules, and purge replay only after its re-checks.
 
   Verify: `go test -race ./internal/executor`.
 - [ ] 2.4 Executor tests, driving actions by inserting `queued` rows:
-  - R4.2: a planned file modified after drafting ends `changed` and the rest run;
-  - R4.1 at run time: a keep set after drafting ends the item `blocked`/`holds_kept` with nothing moved;
-  - R4.4 at run time: a staying copy changed before the run ends the item `no_verified_copy`;
-  - R4.8 at purge: a file changed after the check, and a relied-on copy changed after the check, each stop with nothing more deleted and the check stale;
-  - a crash midway through a purge step, reconciled, deletes the rest once;
+  - R4.2: a planned file modified after drafting ends `changed`, also after a rescan between draft and run, and the rest run;
+  - R4.1 at run time: a keep set below the item, or on the item itself, ends it `blocked` or `changed` with nothing made on disk;
+  - R4.4 at run time: a staying copy changed before the run ends the item `no_verified_copy`; two duplicate-ground plans on two sources cannot both quarantine the last copies;
+  - R4.8 at purge: a file or a relied-on copy changed on disk after the check makes `verify` stop with nothing deleted and the check stale; an unrecorded file found late in an item's tree leaves the whole item untouched;
+  - two set files sharing an inode purge without a false `changed`;
+  - a crash midway through a purge step, reconciled, deletes the rest once; with writes turned off meanwhile, it deletes nothing more and records what was deleted;
+  - a crash after a rename into quarantine and before its outcome, resolved, is indexed by the scan at its quarantine path;
   - the scenarios "Deletion stays inside the quarantine" and "An origin record never replaces a file".
 
   Owns `internal/executor/r4_*_test.go`. Verify: `go test -race ./internal/executor`.
@@ -75,9 +85,10 @@
 
   Verify: `go test -race ./internal/cleanup/...`.
 - [ ] 2.6 Check tests:
-  - R4.6 (scenario "A purge set with copies and unique files", on the corpus with a duplicate, a unique photo, and a zip): every file and member is read once (instrument), and the exact counts and bytes are right;
+  - R4.6 (scenario "A purge set with copies and unique files", on the corpus with a duplicate, a unique photo, and a zip): every file and member is read exactly once (instrument), symlinks and empty folders are recorded `no_content`, and the exact counts and bytes are right;
   - the scenario "A copy on an offline disk";
-  - a check marked stale while running ends `stale`, not `ready`.
+  - an item holding an unreadable folder is reported `unreadable`;
+  - a check marked stale while running, or whose item was restored before it ended, ends `stale`, not `ready`.
 
   Owns `internal/cleanup/check_test.go`. Verify: `go test -race ./internal/cleanup/...`.
 - [ ] 2.7 Interface slice (design D16, Interfaces), built against the contract with stubs. Owns `web/ui/src` and the interface paragraphs of `docs/operator.md`:
@@ -105,12 +116,14 @@
 ## 3. Cleanup service (after group 2)
 
 - [ ] 3.1 `internal/cleanup` commands and reads, owning `internal/cleanup` (commands, reads, and plans), the small additions in `decisions`, `organize`, `content`, and `sources`, `cmd/precious/serve.go`, and the `docs/operator.md` Cleanup section with its commands, reads, and errors:
-  - `plan-cleanup`, with its scope, folding, refusals, light summary, duplicates rules, and the 30,000-step cap (design D3–D5);
-  - `plan-restore` (D6);
+  - `plan-cleanup`, with its scope, folding, refusals, draft-time identity, light summary, duplicates rules, `quarantine_name_taken`, and the 30,000-step cap (design D1, D3–D5);
+  - `plan-restore`, with the quarantine-parent and destination refusals (D6);
   - `check-purge`, `confirm-purge`, and `plan-purge` (D7, D8, D11);
-  - `run-action`'s purge gate, and `MarkStale` in `run-action` and `set-decision` (D10);
-  - `in_quarantine` refusals in `decisions`, `organize`, and `check-now` (D13);
+  - `run-action`'s purge gate, and `MarkStale` in `set-decision`, `set-category`, and `set-group` (D10);
+  - the D13 rules in `decisions`, `organize`, and `check-now`: `in_quarantine`, moving out, and the destination refusals;
+  - `plan-undo`'s refusal of cleanup kinds;
   - `remove-source`'s `quarantine_not_empty` (D14);
+  - `sources.quarantine_entry_id` and its `name_taken` flag;
   - the quarantine, checks, kept, and `export.csv` reads (D16);
   - the wiring.
 
@@ -119,14 +132,21 @@
 - [ ] 3.3 Test of R4.3: a restore to the free original path keeps the IDs and removes the record and item folder. A restore whose path was taken asks for a destination, moves the item there, and leaves the newcomer unchanged. Owns `internal/cleanup/r4_3_test.go`.
 - [ ] 3.4 Test of R4.4: a plan from the duplicates list with both copies of `curriculo.doc` discarded plans one and refuses `last_copy`, and running it leaves one copy outside quarantine. Both discarded sides of a relation give `both_sides`. Owns `internal/cleanup/r4_4_test.go`.
 - [ ] 3.5 Test of R4.5: a purge on a source whose filesystem type is `zfs`, through commands and the real executor on synthfs, deletes the files and reports `deleted_files`, `deleted_bytes`, and `freed_bytes`. The action JSON carries what the interface needs for the snapshot note. Owns `internal/cleanup/r4_5_test.go`.
-- [ ] 3.6 Test of R4.7: `plan-purge` answers `409 purge_not_allowed`, naming the unconfirmed photos, until the junk group and each photo are confirmed, or the photo's item is restored and the set checked again. Owns `internal/cleanup/r4_7_test.go`.
-- [ ] 3.7 Test of R4.8 through commands: a relied-on copy changed after the check makes `plan-purge` and `run-action` answer `409 check_stale`. A `set-decision` on a recorded copy, and a restore of an item of the set, each make the check stale. Owns `internal/cleanup/r4_8_test.go`.
+- [ ] 3.6 Test of R4.7: `plan-purge` answers `409 purge_not_allowed`, naming the unconfirmed photos, until the junk group and each photo are confirmed, or until the photo's item is restored, or the photo moved out, and the set checked again. Owns `internal/cleanup/r4_7_test.go`.
+- [ ] 3.7 Test of R4.8 through commands and the real executor:
+  - a `set-decision` on a relied-on copy's folder makes `plan-purge` and `run-action` answer `409 check_stale`;
+  - a restore of an item of the set, and a move out of one of its files, each make the check stale;
+  - a copy modified on disk only, with no rescan, stops the purge at `verify` with nothing deleted.
+
+  Owns `internal/cleanup/r4_8_test.go`.
 - [ ] 3.8 Test of R4.9: the export of a drafted plan with a blocked item has the header and one row per item, with `holds_kept`, and formula-like cells are neutralized. Owns `internal/cleanup/r4_9_test.go`.
 - [ ] 3.9 Tests of the remaining scenarios through the API:
   - "Drafting from the discards of a source";
   - "A keep set after drafting";
   - "A quarantined folder keeps its intent";
-  - "A quarantined file cannot be moved";
+  - "A quarantined file cannot be moved in bulk or into quarantine", and "Moving a file out of quarantine";
+  - `plan-undo` refusing a cleanup action;
+  - `plan-cleanup` refusing with `quarantine_name_taken` when the owner has such a folder;
   - "Drafting from the system junk list";
   - "From a review list to quarantine";
   - `remove-source` refusing with `quarantine_not_empty`.

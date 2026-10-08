@@ -2,8 +2,13 @@
 
 ## ADDED Requirements
 
-### Requirement: Scans skip the quarantine folder
-A scan SHALL neither list nor descend into `.precious-quarantine` at the top of a source, and SHALL neither mark its index rows missing nor change them. Folder totals and breakdowns SHALL leave the quarantine folder out, from the source's top folder up. Hashing SHALL neither enrol nor read files below it (§10.3, "excluded from scans").
+### Requirement: The quarantine is walked but never counted
+A scan SHALL walk `.precious-quarantine` at the top of a source like any folder, so its index rows stay true. It SHALL leave the folder out of everything it counts:
+- the totals and breakdowns of the source's top folder and above;
+- hashing, which SHALL neither enrol nor read its files;
+- size groups and coverage.
+
+The quarantine folder's own row SHALL still fold its bytes (§10.3, ADR 0011).
 
 #### Scenario: A rescan after quarantining
 - **WHEN** a folder is quarantined and the source is rescanned
