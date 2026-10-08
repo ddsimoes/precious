@@ -2,7 +2,7 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
-import type { Check, CheckFile } from '@/api/cleanup'
+import { checkQueryKey, type Check, type CheckFile } from '@/api/cleanup'
 import type { Action } from '@/api/organize'
 import type { Source } from '@/api/sources'
 import { MockEventSource } from '@/test/eventSource'
@@ -18,7 +18,7 @@ import {
   fotosSource,
   quarantined,
 } from '@/test/fixtures'
-import { jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
+import { errorResponse, jsonResponse, renderApp, signedIn, stubApi } from '@/test/renderApp'
 
 type Route = (request: Request) => Response | Promise<Response>
 
@@ -477,21 +477,58 @@ describe('The check report', () => {
     expect(await bodies(requests, 'plan-move')).toEqual([{ entry_id: 'e101', destination_id: '40' }])
   })
 
-  it('offers a new check of what is left of a stale check’s set', async () => {
+  it('names the file each row’s buttons act on', async () => {
+    stubApi(reportRoutes(() => check(), () => [photo, junk]))
+    renderApp('/cleanup/checks/9')
+    const actions = within(await screen.findByRole('group', { name: /a\.jpg/ }))
+    expect(actions.getByRole('button', { name: 'Confirm' })).toBeInTheDocument()
+    expect(actions.getByRole('button', { name: 'Move out…' })).toBeInTheDocument()
+    expect(actions.getByRole('button', { name: 'Restore its item' })).toBeInTheDocument()
+  })
+
+  it('offers no Confirm for a file whose item could not be read, which stays in quarantine', async () => {
+    const lost = checkFile('104', '.precious-quarantine/50/3/broken/b.raw', {
+      item: quarantined('64', 'Old/broken').entry,
+      verdict: 'unreadable',
+      class: null,
+      item_readable: false,
+    })
+    const damaged = checkFile('105', '.precious-quarantine/50/2/2004/d.raw', { verdict: 'unreadable', class: null })
+    stubApi(reportRoutes(() => check(), () => [lost, damaged]))
+    renderApp('/cleanup/checks/9')
+    const fileList = within(await screen.findByRole('list', { name: 'Files' }))
+
+    const lostRow = within(fileList.getByText('.precious-quarantine/50/3/broken/b.raw').closest('li')!)
+    expect(
+      lostRow.getByText('Stays in quarantine: its item could not be read, so it is never deleted.'),
+    ).toBeInTheDocument()
+    expect(lostRow.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+    expect(lostRow.getByRole('button', { name: 'Restore its item' })).toBeInTheDocument()
+
+    // A file that could not be read, in an item that could, still waits for
+    // its own confirmation.
+    const damagedRow = within(fileList.getByText('.precious-quarantine/50/2/2004/d.raw').closest('li')!)
+    expect(damagedRow.getByRole('button', { name: 'Confirm' })).toBeInTheDocument()
+    expect(damagedRow.queryByText(/Stays in quarantine/)).not.toBeInTheDocument()
+  })
+
+  it('offers nothing to confirm or delete once nothing of the set is left in quarantine', async () => {
+    stubApi(reportRoutes(() => check({ items: 0, allowed: true }), () => [photo]))
+    renderApp('/cleanup/checks/9')
+    expect(await screen.findByText('Nothing of this set is left in quarantine.')).toBeInTheDocument()
+    await screen.findByRole('list', { name: 'Files' })
+    expect(screen.queryByRole('button', { name: 'Delete for good…' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Confirm/ })).not.toBeInTheDocument()
+  })
+
+  it('checks again what is left of a stale check’s set, named by the check', async () => {
     const requests = stubApi(
       reportRoutes(
         () => check({ state: 'stale', stale_reason: 'copy_changed' }),
         () => [photo, junk],
         {
-          'GET /api/quarantine': () =>
-            jsonResponse(200, {
-              items: [
-                quarantined('61', 'Fotos/2004', { check: { id: '9', state: 'stale' } }),
-                quarantined('63', 'Old/x', { check: null }),
-              ],
-              next_cursor: null,
-              total: { files: 2, bytes: 6 * MiB },
-            }),
+          // The server finds what is left of the set: the quarantine is not read.
+          'GET /api/quarantine': () => errorResponse(500, 'internal'),
           'POST /api/commands/check-purge': () => jsonResponse(202, { check_id: '10', job_id: '32' }),
           'GET /api/checks/10': () => jsonResponse(200, check({ id: '10', state: 'running' })),
         },
@@ -504,13 +541,42 @@ describe('The check report', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Check again' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/cleanup/checks/10'))
-    const listing = requests.find((r) => new URL(r.url).pathname === '/api/quarantine')
-    expect(new URL(listing?.url ?? '').searchParams.get('source')).toBe('fotos')
-    expect(await bodies(requests, 'check-purge')).toEqual([{ entry_ids: ['61'] }])
+    expect(await bodies(requests, 'check-purge')).toEqual([{ check_id: '9' }])
+    expect(requests.some((r) => new URL(r.url).pathname === '/api/quarantine')).toBe(false)
     expectSigned(requests)
   })
 
-  function purgeRoutes(source: Source) {
+  it('says so when checking again finds nothing of the set left in quarantine', async () => {
+    const requests = stubApi(
+      reportRoutes(
+        () => check({ state: 'stale', stale_reason: 'copy_changed' }),
+        () => [photo],
+        {
+          'POST /api/commands/check-purge': () =>
+            errorResponse(404, 'not_found', 'no item of check 9 is in the quarantine any more'),
+        },
+      ),
+    )
+    const { router } = renderApp('/cleanup/checks/9')
+    await userEvent.click(await screen.findByRole('button', { name: 'Check again' }))
+    expect(await screen.findByText('Nothing of this set is left in quarantine.')).toBeInTheDocument()
+    expect(screen.queryByText(/no item of check 9/)).not.toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/cleanup/checks/9')
+    expect(await bodies(requests, 'check-purge')).toEqual([{ check_id: '9' }])
+  })
+
+  // purgeRoutes is a check 9 that allows its purge, and the purge it plans,
+  // which ends as ended says.
+  function purgeRoutes(
+    source: Source,
+    ended: Partial<Action> = {
+      state: 'done',
+      entries: entryCounts({ done: 2 }),
+      deleted_files: 3,
+      deleted_bytes: 3 * MiB,
+      freed_bytes: 2 * MiB,
+    },
+  ) {
     const plan = action({
       id: '70',
       kind: 'purge',
@@ -528,17 +594,70 @@ describe('The check report', () => {
       'POST /api/commands/plan-purge': () => jsonResponse(201, { action: plan, items: [], next_cursor: null }),
       'POST /api/commands/run-action': () =>
         jsonResponse(202, { action: { ...plan, state: 'queued' }, job_id: '8', state: 'queued' }),
-      'GET /api/history/70': () =>
-        jsonResponse(200, {
-          ...plan,
-          state: 'done',
-          entries: entryCounts({ done: 2 }),
-          deleted_files: 3,
-          deleted_bytes: 3 * MiB,
-          freed_bytes: 2 * MiB,
-        }),
+      'GET /api/history/70': () => jsonResponse(200, { ...plan, ...ended }),
     }
   }
+
+  async function runPurge() {
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete for good…' }))
+    await userEvent.click(
+      within(await screen.findByRole('alertdialog', { name: 'Delete for good?' })).getByRole('button', {
+        name: 'Delete for good',
+      }),
+    )
+  }
+
+  it('shows what changed on disk when a purge stops at its comparison', async () => {
+    const verify = actionItem('701', '', '', {
+      op: 'verify',
+      from: null,
+      to: null,
+      state: 'changed',
+      reason: 'copy_changed',
+      detail: 'Docs/x.txt',
+    })
+    stubApi({
+      ...purgeRoutes(writable, { state: 'stopped', entries: entryCounts({ not_attempted: 2 }) }),
+      'GET /api/history/70/items': (request) =>
+        new URL(request.url).searchParams.getAll('op').join() === 'verify'
+          ? jsonResponse(200, { items: [verify], next_cursor: null })
+          : errorResponse(400, 'invalid_request', 'op'),
+    })
+    renderApp('/cleanup/checks/9')
+    await runPurge()
+    expect(await screen.findByText('Stopped before the end.')).toBeInTheDocument()
+    const why = within(await screen.findByRole('list', { name: 'Why it stopped' }))
+    expect(why.getByText(/A copy it relied on changed since the check/)).toBeInTheDocument()
+    expect(why.getByText('Docs/x.txt')).toBeInTheDocument()
+  })
+
+  it('keeps nothing of one check’s purge on the report of another', async () => {
+    const ready = check({ allowed: true, junk_confirmed: true, unconfirmed: { files: 0, bytes: 0 } })
+    const other = check({ id: '10', state: 'stale', stale_reason: 'copy_changed' })
+    stubApi({
+      ...purgeRoutes(writable),
+      'GET /api/checks/10': () => jsonResponse(200, other),
+      'GET /api/checks/10/files': () => jsonResponse(200, { items: [], next_cursor: null }),
+    })
+    const { router, queryClient } = renderApp('/cleanup/checks/9')
+    // Both checks are known, so the report shows the other at once.
+    queryClient.setQueryData(checkQueryKey('9'), ready)
+    queryClient.setQueryData(checkQueryKey('10'), other)
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete for good…' }))
+    expect(await screen.findByRole('alertdialog', { name: 'Delete for good?' })).toBeInTheDocument()
+    await act(() => router.navigate('/cleanup/checks/10'))
+    expect(await screen.findByText(/This check is out of date/)).toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+
+    await act(() => router.navigate('/cleanup/checks/9'))
+    await runPurge()
+    expect(await screen.findByText('Deleted for good.')).toBeInTheDocument()
+    await act(() => router.navigate('/cleanup/checks/10'))
+    expect(await screen.findByText(/This check is out of date/)).toBeInTheDocument()
+    expect(screen.queryByText('Deleted for good.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Space freed: 2 MiB')).not.toBeInTheDocument()
+  })
 
   it('R4.5: deletes for good after a last confirmation, and shows the space freed and the ZFS note', async () => {
     const requests = stubApi(purgeRoutes(writable))

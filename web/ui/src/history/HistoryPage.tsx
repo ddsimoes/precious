@@ -194,8 +194,9 @@ function ActionCard({ action }: { action: Action }) {
 // states, or only those that need the owner's check, each with I fixed it.
 function ActionItems({ action, recovery }: { action: Action; recovery: boolean }) {
   const { t } = useTranslation()
-  // A cleanup, restore, or purge lists one step per entry; the steps that
-  // need a check are listed whatever they do.
+  // A cleanup, restore, or purge lists one step per entry, and a purge its
+  // comparison with the disk first; the steps that need a check are listed
+  // whatever they do.
   const filter = recovery
     ? { states: ['manual_recovery'] as const }
     : { ops: entryOps(action.kind) ?? undefined }

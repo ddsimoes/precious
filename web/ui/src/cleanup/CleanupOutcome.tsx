@@ -4,12 +4,21 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 
 import { refreshAfterCleanup } from '@/api/cleanup'
-import { actionQueryKey, fetchAction, isActive, type Action } from '@/api/organize'
+import {
+  actionItemsQueryKey,
+  actionQueryKey,
+  fetchAction,
+  fetchActionItems,
+  isActive,
+  type Action,
+  type ItemsFilter,
+} from '@/api/organize'
 import { useSources } from '@/api/sources'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { Button } from '@/components/ui/button'
 import { useFormat } from '@/lib/format'
 import { CleanupPreview } from '@/cleanup/CleanupPreview'
+import { ItemLine } from '@/organize/ItemLine'
 import type { Organize } from '@/organize/useOrganize'
 
 // CleanupOutcome shows what a cleanup or restore started with useOrganize is
@@ -43,7 +52,8 @@ export function CleanupOutcome({
 // CleanupStatus follows a cleanup, restore, or purge that was sent to run
 // until it ends, then refetches what it changed. A purge reports what it
 // deleted and the space it freed, and on ZFS that snapshots may keep that
-// space (R4 design D11).
+// space (R4 design D11); a purge that stopped shows its comparison with the
+// disk when that did not pass: what changed, and where.
 export function CleanupStatus({ ran, onClose }: { ran: Action; onClose: () => void }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -61,6 +71,17 @@ export function CleanupStatus({ ran, onClose }: { ran: Action; onClose: () => vo
       void refreshAfterCleanup(queryClient)
     }
   }, [active, queryClient])
+
+  // A purge whose comparison with the disk found a change stops with
+  // nothing deleted; its verify step says what changed.
+  const stopped = action.kind === 'purge' && action.state === 'stopped'
+  const verifyFilter: ItemsFilter = { ops: ['verify'] }
+  const verify = useQuery({
+    queryKey: actionItemsQueryKey(action.id, verifyFilter),
+    queryFn: ({ signal }) => fetchActionItems(action.id, verifyFilter, null, signal),
+    enabled: stopped,
+  })
+  const unverified = stopped ? (verify.data?.items.filter((item) => item.state !== 'done') ?? []) : []
 
   const c = action.entries ?? action.counts
   const notAll =
@@ -89,6 +110,13 @@ export function CleanupStatus({ ran, onClose }: { ran: Action; onClose: () => vo
           <p className="font-medium">{t('cleanup.purge.freed', { bytes: fmt.bytes(action.freed_bytes) })}</p>
           {zfs && <p>{t('cleanup.purge.zfs')}</p>}
         </>
+      )}
+      {unverified.length > 0 && (
+        <ul aria-label={t('cleanup.purge.stoppedAt')} className="grid gap-1">
+          {unverified.map((item) => (
+            <ItemLine key={item.id} item={item} showState />
+          ))}
+        </ul>
       )}
       {!active && notAll && <p>{t('organize.status.notAll')}</p>}
       <div className="flex flex-wrap items-center gap-2">

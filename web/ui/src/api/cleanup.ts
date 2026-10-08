@@ -99,6 +99,9 @@ export interface CheckFile {
   class: CheckClass | null
   copy: { source_id: string; path: string; path_b64: string; hard_link: boolean } | null
   confirmed: boolean
+  // item_readable is false when the file's set item could not be read:
+  // such an item is never deleted, and stays in quarantine (D11).
+  item_readable: boolean
 }
 
 export interface CheckFilesPage {
@@ -141,8 +144,12 @@ export interface KeptPage {
 // needsOwnConfirmation reports whether a file must be confirmed one by one
 // (D8): no copy and not likely junk (which its group confirms), a copy only
 // on a disk that is not connected, a member that could not be read, or an
-// archive not opened with no copy of its own.
+// archive not opened with no copy of its own. A file of an item that could
+// not be read needs none: its item is never deleted.
 export function needsOwnConfirmation(file: CheckFile): boolean {
+  if (!file.item_readable) {
+    return false
+  }
   switch (file.verdict) {
     case 'unique':
       return file.class !== 'likely_junk'
@@ -181,8 +188,12 @@ export interface CheckStarted {
   job_id: string
 }
 
-export function checkPurge(entryIds: string[], csrfToken: string): Promise<CheckStarted> {
-  return postCommand<CheckStarted>('check-purge', { entry_ids: entryIds }, csrfToken)
+// CheckTargets names what check-purge checks: quarantined items, or what
+// is left in the quarantine of an earlier check's set.
+export type CheckTargets = { entry_ids: string[] } | { check_id: string }
+
+export function checkPurge(targets: CheckTargets, csrfToken: string): Promise<CheckStarted> {
+  return postCommand<CheckStarted>('check-purge', targets, csrfToken)
 }
 
 // ConfirmTargets names what confirm-purge confirms: files one by one, or
@@ -230,41 +241,12 @@ export function keptQueryKey(actionId: string, itemId: string) {
   return [...historyQueryRoot, actionId, 'kept', itemId] as const
 }
 
-// quarantinePageSize is the most items one quarantine page holds.
-const quarantinePageSize = 500
-
-export function fetchQuarantine(
-  source: string,
-  cursor: string | null,
-  signal?: AbortSignal,
-  limit?: number,
-): Promise<QuarantinePage> {
+export function fetchQuarantine(source: string, cursor: string | null, signal?: AbortSignal): Promise<QuarantinePage> {
   const params = new URLSearchParams({ source })
   if (cursor !== null) {
     params.set('cursor', cursor)
   }
-  if (limit !== undefined) {
-    params.set('limit', String(limit))
-  }
   return apiGet<QuarantinePage>(`/api/quarantine?${params}`, signal)
-}
-
-// fetchCheckSet lists the items of a source's quarantine that a check
-// holds, reading every page: the set to check again once it went stale,
-// without the items restored since.
-export async function fetchCheckSet(source: string, checkId: string): Promise<string[]> {
-  const ids: string[] = []
-  let cursor: string | null = null
-  do {
-    const page: QuarantinePage = await fetchQuarantine(source, cursor, undefined, quarantinePageSize)
-    for (const item of page.items) {
-      if (item.check?.id === checkId) {
-        ids.push(item.entry.id)
-      }
-    }
-    cursor = page.next_cursor
-  } while (cursor !== null)
-  return ids
 }
 
 export function fetchCheck(id: string, signal?: AbortSignal): Promise<Check> {

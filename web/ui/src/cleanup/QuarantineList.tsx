@@ -40,7 +40,7 @@ export function QuarantineList({ source }: { source: Source }) {
   const chosen = items.filter((item) => selected.has(item.entry.id)).map((item) => item.entry.id)
 
   const check = useMutation({
-    mutationFn: () => checkPurge(chosen, csrfToken),
+    mutationFn: () => checkPurge({ entry_ids: chosen }, csrfToken),
     onSuccess: (started) => void navigate(`/cleanup/checks/${encodeURIComponent(started.check_id)}`),
   })
 

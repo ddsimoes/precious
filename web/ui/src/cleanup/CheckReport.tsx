@@ -14,7 +14,6 @@ import {
   confirmPurge,
   fetchCheck,
   fetchCheckFiles,
-  fetchCheckSet,
   needsOwnConfirmation,
   planPurge,
   verdicts,
@@ -27,6 +26,7 @@ import {
 } from '@/api/cleanup'
 import type { Progress } from '@/api/jobs'
 import { historyQueryRoot, planMove, runAction, type Action, type PlanResult } from '@/api/organize'
+import { ApiError } from '@/app/api'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { PageTitle } from '@/app/PageTitle'
 import { useCsrfToken } from '@/app/session'
@@ -60,7 +60,7 @@ export function CheckReportPage() {
         </p>
       )}
       {check.isError && <ErrorBanner error={check.error} onRetry={() => void check.refetch()} />}
-      {check.data !== undefined && <CheckReport check={check.data} />}
+      {check.data !== undefined && <CheckReport key={check.data.id} check={check.data} />}
     </div>
   )
 }
@@ -81,7 +81,12 @@ function CheckReport({ check }: { check: Check }) {
   const moveOut = useOrganize()
   const [purgePlan, setPurgePlan] = useState<PlanResult | null>(null)
   const [purged, setPurged] = useState<Action | null>(null)
-  const open = check.state === 'ready'
+  // A set none of whose items is left in quarantine (restored, moved out,
+  // or deleted for good) has nothing to confirm or delete; checking again
+  // finds that too.
+  const [setGone, setSetGone] = useState(false)
+  const gone = check.items === 0 || setGone
+  const open = check.state === 'ready' && !gone
 
   const confirm = useMutation({
     mutationFn: (targets: ConfirmTargets) => confirmPurge(check.id, targets, csrfToken),
@@ -92,11 +97,16 @@ function CheckReport({ check }: { check: Check }) {
   })
   // Checking again checks what is left of the set in quarantine; nothing
   // left says so.
-  const [setGone, setSetGone] = useState(false)
   const again = useMutation({
     mutationFn: async () => {
-      const ids = await fetchCheckSet(check.source_id, check.id)
-      return ids.length === 0 ? null : checkPurge(ids, csrfToken)
+      try {
+        return await checkPurge({ check_id: check.id }, csrfToken)
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'not_found') {
+          return null
+        }
+        throw error
+      }
     },
     onSuccess: (started) => {
       if (started === null) {
@@ -146,14 +156,21 @@ function CheckReport({ check }: { check: Check }) {
       {(check.state === 'stale' || check.state === 'failed') && (
         <div role="alert" className="grid gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
           <p className="font-medium">{t(`cleanup.check.${check.state}`)}</p>
-          <div>
-            <Button size="sm" disabled={again.isPending} onClick={() => again.mutate()}>
-              {again.isPending ? t('cleanup.quarantine.checking') : t('cleanup.check.again')}
-            </Button>
-          </div>
-          {setGone && <p>{t('cleanup.check.setGone')}</p>}
+          {!gone && (
+            <div>
+              <Button size="sm" disabled={again.isPending} onClick={() => again.mutate()}>
+                {again.isPending ? t('cleanup.quarantine.checking') : t('cleanup.check.again')}
+              </Button>
+            </div>
+          )}
+          {gone && <p>{t('cleanup.check.setGone')}</p>}
           {again.isError && <ErrorBanner error={again.error} onDismiss={() => again.reset()} />}
         </div>
+      )}
+      {check.state === 'ready' && gone && (
+        <p role="status" className="rounded-md border bg-card p-3 text-sm">
+          {t('cleanup.check.setGone')}
+        </p>
       )}
 
       <Card className="grid gap-3 p-4">
@@ -194,6 +211,7 @@ function CheckReport({ check }: { check: Check }) {
               })}
             </p>
             {junk.files > 0 &&
+              (check.junk_confirmed || !gone) &&
               (check.junk_confirmed ? (
                 <p>{t('cleanup.check.junkConfirmed')}</p>
               ) : (
@@ -229,7 +247,7 @@ function CheckReport({ check }: { check: Check }) {
         />
       )}
 
-      {check.state !== 'running' && purged === null && (
+      {check.state !== 'running' && purged === null && !gone && (
         <Card className="grid gap-2 p-4 text-sm">
           <Section title={t('cleanup.purge.title')}>
             <p>{t('cleanup.purge.help')}</p>
@@ -324,7 +342,9 @@ const confirmedChoices = { all: null, yes: true, no: false } as const
 // CheckFiles lists a check's files, filtered by verdict, class, and
 // confirmation, paged. A file that must be confirmed on its own offers
 // Confirm, Move out… (not for a file inside an archive), and Restore of its
-// item, while the check is ready.
+// item, while the check is ready, grouped under the file's name. A file of
+// an item that could not be read stays in quarantine with its item, and
+// offers no Confirm.
 function CheckFiles({
   check,
   open,
@@ -446,7 +466,7 @@ function CheckFiles({
                       t(`cleanup.verdict.${file.verdict}`),
                       ...(file.class === null ? [] : [t(`cleanup.class.${file.class}`)]),
                       ...(file.confirmed ? [t('cleanup.files.isConfirmed')] : []),
-                      ...(!own && file.verdict === 'unique' && file.class === 'likely_junk'
+                      ...(file.item_readable && !own && file.verdict === 'unique' && file.class === 'likely_junk'
                         ? [check.junk_confirmed ? t('cleanup.files.junkConfirmed') : t('cleanup.files.junkGroup')]
                         : []),
                     ].join(' · ')}
@@ -459,11 +479,18 @@ function CheckFiles({
                       })}
                     </p>
                   )}
-                  {own && !file.confirmed && open && (
-                    <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" disabled={confirming} onClick={() => onConfirm(file)}>
-                        {t('cleanup.files.confirm')}
-                      </Button>
+                  {!file.item_readable && <p>{t('cleanup.files.itemUnreadable')}</p>}
+                  {open && ((own && !file.confirmed) || !file.item_readable) && (
+                    <div
+                      role="group"
+                      aria-label={t('cleanup.files.actionsFor', { name: label })}
+                      className="flex flex-wrap gap-2"
+                    >
+                      {own && (
+                        <Button size="sm" variant="outline" disabled={confirming} onClick={() => onConfirm(file)}>
+                          {t('cleanup.files.confirm')}
+                        </Button>
+                      )}
                       {file.entry_id !== null && (
                         <Button size="sm" variant="outline" disabled={moveOut.pending} onClick={() => setMoving(file)}>
                           {t('cleanup.files.moveOut')}
