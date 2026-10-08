@@ -13,7 +13,8 @@ import (
 
 // Copy is one other copy of a file's or member's content (design D8,
 // Interfaces): a present file on any source, offline ones included, or a
-// file member of a complete archive. Path is the copy's raw source-relative
+// file member of a complete archive, outside every quarantine (r4 design
+// D2). Path is the copy's raw source-relative
 // path in display form, a member's as its archive's path, '!', and its
 // path inside the archive (domain.MemberDisplayName); PathB64 holds the
 // raw bytes. ArchiveID is set for a member, HardLink for another name of
@@ -70,26 +71,12 @@ func Copies(ctx context.Context, q store.Queryer, ref domain.Ref, cursor string,
 	if !content.Valid {
 		return []Copy{}, 0, "", nil
 	}
-	const entries = `SELECT 0 AS member, e.id AS id, e.source_id, e.path, NULL, NULL, 0, s.state <> 'online', e.decision,
-			e.eff_decision,
-			e.nlink > 1 AND coalesce(json_extract(s.capabilities, '$.stable_identity'), 0) AND s.volume_id = ?2
-				AND e.dev IS ?3 AND e.ino IS ?4 AND ?5
-		FROM file_content f JOIN entries e ON e.id = f.entry_id JOIN sources s ON s.id = e.source_id
-		WHERE f.content_id = ?1 AND e.state = 'present' AND e.id <> ?6`
-	const members = `SELECT 1, m.id, e.source_id, e.path, m.path, e.id, a.format = 'zip', s.state <> 'online', NULL,
-			e.eff_decision,
-			coalesce(m.link_member, m.id) = ?7
-		FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id JOIN entries e ON e.id = a.entry_id
-			JOIN sources s ON s.id = e.source_id
-		WHERE m.content_id = ?1 AND m.kind = 'file' AND a.state = 'complete' AND e.state = 'present' AND m.id <> ?8`
 	self := []any{content.Int64, vol, dev, ino, stable, int64(ref.Entry), link.Int64, int64(ref.Member)}
 	var total int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (`+entries+` UNION ALL `+members+`)`, self...).
-		Scan(&total); err != nil {
+	if err := q.QueryRowContext(ctx, copiesCountSQL, self...).Scan(&total); err != nil {
 		return nil, 0, "", fmt.Errorf("content: count the copies of %s: %w", ref, err)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT * FROM (`+entries+` UNION ALL `+members+`)
-		WHERE (member, id) > (?9, ?10) ORDER BY member, id LIMIT ?11`, append(self, afterMember, afterID, limit+1)...)
+	rows, err := q.QueryContext(ctx, copiesPageSQL, append(self, afterMember, afterID, limit+1)...)
 	if err != nil {
 		return nil, 0, "", fmt.Errorf("content: list the copies of %s: %w", ref, err)
 	}
@@ -133,6 +120,30 @@ func Copies(ctx context.Context, q store.Queryer, ref domain.Ref, cursor string,
 	}
 	return out, total, next, nil
 }
+
+// The two arms of Copies: present files, and file members of complete
+// archives whose file is present, never in a quarantine (r4 design D2), the
+// copy itself left out (?6, ?8). ?1 is the content, ?2–?5 the volume, dev,
+// ino, and whether the copy's inode may have other names, ?7 a member's
+// hard-link target.
+var (
+	copiesEntriesSQL = `SELECT 0 AS member, e.id AS id, e.source_id, e.path, NULL, NULL, 0, s.state <> 'online', e.decision,
+			e.eff_decision,
+			e.nlink > 1 AND coalesce(json_extract(s.capabilities, '$.stable_identity'), 0) AND s.volume_id = ?2
+				AND e.dev IS ?3 AND e.ino IS ?4 AND ?5
+		FROM file_content f JOIN entries e ON e.id = f.entry_id JOIN sources s ON s.id = e.source_id
+		WHERE f.content_id = ?1 AND e.state = 'present' AND e.id <> ?6 AND ` + notQuarantinedE
+	copiesMembersSQL = `SELECT 1, m.id, e.source_id, e.path, m.path, e.id, a.format = 'zip', s.state <> 'online', NULL,
+			e.eff_decision,
+			coalesce(m.link_member, m.id) = ?7
+		FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id JOIN entries e ON e.id = a.entry_id
+			JOIN sources s ON s.id = e.source_id
+		WHERE m.content_id = ?1 AND m.kind = 'file' AND a.state = 'complete' AND e.state = 'present' AND m.id <> ?8
+			AND ` + notQuarantinedE
+	copiesCountSQL = `SELECT count(*) FROM (` + copiesEntriesSQL + ` UNION ALL ` + copiesMembersSQL + `)`
+	copiesPageSQL  = `SELECT * FROM (` + copiesEntriesSQL + ` UNION ALL ` + copiesMembersSQL + `)
+		WHERE (member, id) > (?9, ?10) ORDER BY member, id LIMIT ?11`
+)
 
 // copyCursor is the opaque cursor after ref: "e<id>" or "m<id>".
 func copyCursor(ref domain.Ref) string {

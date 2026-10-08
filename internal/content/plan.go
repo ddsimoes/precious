@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/jobs"
 	"precious/internal/store"
 )
@@ -47,13 +48,14 @@ func CoverageOf(ctx context.Context, q store.Queryer, src domain.SourceID) (Cove
 }
 
 // coverageRows are the rows coverage counts: present files and the file
-// members of complete archives whose file is present, by source.
-const coverageRows = `SELECT f.source_id AS source_id, f.state AS state, f.size AS size FROM file_content f
-		JOIN entries e ON e.id = f.entry_id WHERE e.state = 'present'
+// members of complete archives whose file is present, by source, none of
+// them in a quarantine (r4 design D2).
+var coverageRows = `SELECT f.source_id AS source_id, f.state AS state, f.size AS size FROM file_content f
+		JOIN entries e ON e.id = f.entry_id WHERE e.state = 'present' AND ` + notQuarantinedE + `
 	UNION ALL
 	SELECT e.source_id, m.state, m.size FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id
 		JOIN entries e ON e.id = a.entry_id
-		WHERE a.state = 'complete' AND m.kind = 'file' AND e.state = 'present'`
+		WHERE a.state = 'complete' AND m.kind = 'file' AND e.state = 'present' AND ` + notQuarantinedE
 
 // recomputeCoverage rewrites content_coverage for every source from its
 // rows, which repairs any drift (design D8).
@@ -163,17 +165,23 @@ type copyRow struct {
 
 // groupColumns select the copies of size groups: size, id, member, source,
 // state, sample, dev, ino, nlink, volume, stable identity, link target.
-// filesWhere and membersWhere narrow them.
+// filesWhere and membersWhere narrow them. A quarantined file, or a member
+// of a quarantined archive, is in no group (r4 design D2).
 func groupQuery(filesWhere, membersWhere, order string) string {
 	return `SELECT f.size, f.entry_id, 0, f.source_id, f.state, f.sample, e.dev, e.ino, e.nlink, s.volume_id,
 			coalesce(json_extract(s.capabilities, '$.stable_identity'), 0), 0
 		FROM file_content f JOIN entries e ON e.id = f.entry_id JOIN sources s ON s.id = f.source_id
-		WHERE e.state = 'present'` + filesWhere + `
+		WHERE e.state = 'present' AND ` + notQuarantinedE + filesWhere + `
 	UNION ALL
 	SELECT m.size, m.id, 1, e.source_id, m.state, NULL, NULL, NULL, NULL, NULL, 0, coalesce(m.link_member, m.id)
 		FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id JOIN entries e ON e.id = a.entry_id
-		WHERE m.kind = 'file' AND m.size > 0 AND a.state = 'complete' AND e.state = 'present'` + membersWhere + order
+		WHERE m.kind = 'file' AND m.size > 0 AND a.state = 'complete' AND e.state = 'present' AND ` + notQuarantinedE +
+		membersWhere + order
 }
+
+// notQuarantinedE is index.NotQuarantined("e"), rendered once: the residual
+// every content reader adds on its entries row e (r4 design D2).
+var notQuarantinedE = index.NotQuarantined("e")
 
 func scanCopy(rows *sql.Rows) (copyRow, error) {
 	var (
@@ -335,7 +343,8 @@ func (s *Service) plan(ctx context.Context, rt jobs.Runtime, self domain.SourceI
 }
 
 // insertRows creates a pending file_content row for every present
-// non-empty file without one, planSpan entry IDs per transaction.
+// non-empty file without one, planSpan entry IDs per transaction. A file in
+// a quarantine is never enrolled (r4 design D2).
 func (s *Service) insertRows(ctx context.Context, rt jobs.Runtime) error {
 	var top int64
 	if err := s.st.Reader().QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM entries`).Scan(&top); err != nil {
@@ -347,6 +356,7 @@ func (s *Service) insertRows(ctx context.Context, rt jobs.Runtime) error {
 			res, err := tx.ExecContext(ctx, `INSERT INTO file_content (entry_id, source_id, state, size)
 				SELECT e.id, e.source_id, 'pending', e.size FROM entries e
 				WHERE e.id > ? AND e.id <= ? AND e.kind = 'file' AND e.state = 'present' AND e.size > 0
+					AND `+notQuarantinedE+`
 					AND NOT EXISTS (SELECT 1 FROM file_content f WHERE f.entry_id = e.id)`, from, from+planSpan)
 			if err != nil {
 				return err
