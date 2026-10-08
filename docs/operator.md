@@ -1,8 +1,8 @@
 # Precious operator guide
 
-Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks: it never writes to, moves, or deletes anything on them. This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
+Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks, except where you allow changes on one: there it moves, renames, and creates folders when you ask, and it never deletes, overwrites, or writes into a file (see [Changing disks](#changing-disks)). This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
 
-This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, and opportunity cards with review lists, among them your own files found inside programs. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing files into new folders and cleanup (quarantine and deletion) come in later releases. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
+This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, and opportunity cards with review lists, among them your own files found inside programs. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing (moving, renaming, and creating folders on the sources where you allow it) comes with R3 (see [Changing disks](#changing-disks)); cleanup (quarantine and deletion) comes in a later release. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
 
 ## Installation
 
@@ -54,7 +54,7 @@ GOTOOLCHAIN=local GOPROXY=off CGO_ENABLED=0 \
 | `User=precious`, `Group=precious` | dedicated system account, no login shell |
 | `StateDirectory=precious`, `StateDirectoryMode=0700`, `UMask=0077` | `/var/lib/precious` owned by `precious` with mode `0700`; every file the service creates is owner-only |
 | `ProtectSystem=strict`, `ProtectHome=read-only` | the whole filesystem, `/home` included, is read-only to the service; only the state directory is writable |
-| `ReadOnlyPaths=` | the disks to index, listed explicitly in a drop-in (below) |
+| `ReadOnlyPaths=` | the disks to index, listed explicitly in a drop-in (below); a disk you allow Precious to change goes in `ReadWritePaths=` instead (see [Allowing changes in the deployment](#allowing-changes-in-the-deployment)) |
 | `NoNewPrivileges=yes`, `CapabilityBoundingSet=` | no capabilities and no way to gain privileges |
 | `PrivateTmp=yes`, `PrivateDevices=yes` | private `/tmp`; no device nodes |
 | `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` | local and IP sockets only |
@@ -130,11 +130,11 @@ Then open <http://127.0.0.1:8080>. `PRECIOUS_VERSION=v0.1.0` in the environment 
 
 ### Read-only disk mounts (recommended)
 
-Precious never writes to the disks it indexes, but present every disk read-only at the operating-system level as well:
+Precious writes to a disk only when you allow changes on that source and organize it (see [Changing disks](#changing-disks)); scanning, hashing, and viewing never write. Present every disk read-only at the operating-system level as well, unless you allow changes on it (see [Allowing changes in the deployment](#allowing-changes-in-the-deployment)):
 
 - Mount the filesystems read-only on the host, for example `mount -o ro,nosuid,nodev,noexec /dev/sdb1 /srv/old-disk` or `ro,nosuid,nodev,noexec` in `/etc/fstab`. A read-only mount also prevents the access-time updates that reading directories and files would otherwise write.
 - For an original disk that must not change at all, set the block device read-only first (`blockdev --setro /dev/sdb`): an `ro` mount of ext3/ext4 with a dirty journal still replays the journal unless you add `noload`.
-- Under systemd, list each disk in `ReadOnlyPaths=`; under Compose, bind each disk read-only.
+- Under systemd, list each disk in `ReadOnlyPaths=`; under Compose, bind each disk read-only. Only a disk whose source you allow Precious to change needs `ReadWritePaths=` or a writable bind.
 - systemd's read-only settings do not extend to mounts created after the service started, and a container bind mount does not see filesystems mounted beneath it later. Restart Precious after attaching a disk it should see.
 
 ## First run
@@ -417,7 +417,7 @@ Precious builds for Linux, macOS, and Windows, each on amd64 and arm64 (`make cr
 | Linux, amd64 and arm64 | Complete and tested. Precious reads the system's mount table, identifies each volume so a disk is recognized wherever it is mounted, and detects each filesystem's capabilities from its type. |
 | macOS and Windows, amd64 and arm64 | Precious builds and runs, and sources can be added, scanned, browsed, searched, and viewed. Every source is recognized only at its current location, and every filesystem gets the conservative capabilities described below. Native volume recognition and filesystem detection for these systems are planned for a later release (R8 in the product specification). |
 
-The API and the interface are the same on every system; only the reported volume and capabilities differ. On every system Precious only reads: it never follows a symlink, never opens a FIFO, socket, or device, and never enters another filesystem mounted inside a source.
+The API and the interface are the same on every system; only the reported volume and capabilities differ. On every system Precious reads a source without changing it, unless you allow changes on it, which needs the no-replace rename only Linux offers in this release (see [Changing disks](#changing-disks)). It never follows a symlink, never opens a FIFO, socket, or device, and never enters another filesystem mounted inside a source.
 
 ### Volume identity
 
@@ -1186,6 +1186,48 @@ Decisions and tags change through the command API, `POST /api/commands/{name}` w
 A request naming both one entry and several, or neither, or more than 1,000 IDs, is refused with `invalid_request`. A request naming any unknown entry, tag, or selection is refused whole with `not_found`, and a duplicate tag name with `tag_exists`. A refused request changes nothing.
 
 Each accepted request writes one audit event (`decision_set`, `tags_set`, `tag_created`, `tag_renamed`, or `tag_deleted`) with the time, the client address, the entries or selection it named with the counts of changed and skipped entries, and the old and new values.
+
+## Changing disks
+
+Precious changes a disk only to organize it, when you ask: it moves and renames files and folders, creates folders, and removes an empty folder that one of its own changes created, when you undo that change. It never deletes a file, never writes into one, and never changes a file's times or permissions. Every change is listed in [History](#history). How the index follows a move, without a rescan, is described under [Scanning and the index](#scanning-and-the-index).
+
+### How Precious changes a disk
+
+- **Only on sources you allowed.** A source changes only while its **Changes by Precious** is on (off for every new source), the configuration allows it (`sources.allow_writes`), the disk is online and mounted writable, and its filesystem has the no-replace rename (see [Filesystem capabilities](#filesystem-capabilities)). Precious checks all of these again just before each step, in the same database transaction that records the step, so turning changes off stops a change before its next step: that item ends `not_permitted` (`offline` when the disk went away), and the rest of the change is not attempted.
+- **Never replaces a file.** Every move and rename uses the filesystem's no-replace rename (`renameat2` with `RENAME_NOREPLACE` on Linux). When the new name is taken, even by something that appeared after the preview, the item ends `conflict` (Name taken), nothing is replaced, and the change goes on with its next item. Should the filesystem refuse the flag at run time (old OpenZFS releases do), the item ends `no_safe_rename`, nothing moves, the rest is not attempted, and Precious turns that source's **Changes by Precious** off, with a `source_writes_set` audit event whose actor is `system` and whose reason is `no_replace_rename`.
+- **Checked before each step.** Precious goes down from the source's top folder one name at a time, never by path: it never follows a link and never crosses into another mounted filesystem, and each folder must still be the one the index holds. The item itself must still be what the last scan saw: the same kind, the same size and modification time for anything but a folder (within the filesystem's time resolution), and the same device and inode where the filesystem keeps them stable. Anything else ends the item `changed` (Changed on disk since the last scan). An item that is itself a mount point, or the two folders on different filesystems, ends `refused` with `other_filesystem`, and a folder with a mount point inside it with `contains_mount`.
+- **Recorded first, then done, flushed, and confirmed.** Before each step Precious records what it is about to do: both folders and names, and the identity it expects. Only then does it rename, create, or remove. Afterwards it flushes every folder the step changed to the disk (`fsync`), looks at both names again, and records the result together with the index update in one transaction. When the index cannot be updated, the item ends `manual_recovery` (Needs your check) instead of staying half recorded, and the change stops. When a flush fails, the item stays recorded as started, the change stops, and a check like the one after an interruption (below) decides it.
+- **Errors.** Permission denied ends the item `failed` with the system's message, and the change goes on; a filesystem that became read-only ends it `failed` and stops the change; a folder to remove that is not empty ends it `not_empty`. Any other error (an I/O error, for example) is looked at as after an interruption: `failed` when the step clearly did not happen, done when it clearly did, `manual_recovery` otherwise, which stops the change.
+- **One at a time.** The changes of one source run one at a time, oldest first, each in the order of its items, as an `organize` job whose progress counts `items` and `done`.
+- **Changes wait for scans, and scans for changes.** A change waits while a scan of its source is running, deferring by one second, and runs when the scan ends. A scan waits while a change of its source is waiting or running, or one of its steps is recorded as started and not yet confirmed. Hashing goes on meanwhile: a result it read through a path that has since moved is dropped, and the file is read again.
+- **Cancel.** Cancelling a change in History, or cancelling its job, stops a waiting change at once, and a running one after the step in progress, which is confirmed and recorded. The rest of the change is not attempted and never runs later.
+
+### Recovery after an interruption
+
+When Precious stops between recording a step and recording its result (a crash, a power cut, or the service stopped at the wrong moment), the step is checked before anything else changes on that source. At the next start Precious queues that check for every source that needs it, without touching a disk; every change of the source also checks first. The check runs only while no scan of the source is running, and it only looks at the two names:
+
+- the item still at its old name with the identity recorded, and the new name free: the step did not happen, and it runs once (or ends `not_attempted` when its change was stopped meanwhile);
+- the item at its new name with that identity, and the old name free: the step happened, and Precious records it and updates the index without renaming again;
+- anything else, such as both names taken or neither: the item ends `manual_recovery`, **Needs your check**, with what was found at each name (`absent`, `same`, or `other`).
+
+While a source has an item that needs your check, no change can be planned or run on it. Put things right on the disk, then choose **I fixed it** in History: Precious marks the item resolved and scans the source again. A source that is offline keeps its unchecked step until it is back, and its scans wait until then.
+
+### Allowing changes in the deployment
+
+The shipped deployments keep every disk read-only at the operating-system level: the systemd unit lists the disks in `ReadOnlyPaths=`, and the Compose file binds them read-only. Precious sees that as a read-only mount, so **Changes by Precious** on those sources reads that the disk is mounted read-only. To allow changes on one source only:
+
+- **systemd:** in the drop-in, move that disk from `ReadOnlyPaths=` to `ReadWritePaths=`; `ProtectSystem=strict` keeps everything else read-only. Give the `precious` account write permission on the folders to organize, through its group, and restart the service:
+
+  ```ini
+  [Service]
+  ReadOnlyPaths=/media/backup-2003
+  ReadWritePaths=/srv/old-disk
+  ```
+
+- **Compose:** make only that disk's bind writable (`read_only: false` in its long form), keep the others read-only, and recreate the container. UID 65532 needs write permission on the folders to organize.
+- **Host:** mount that filesystem read-write (without `ro`), and leave the block device writable.
+
+Then turn **Changes by Precious** on for that source in Sources. The service's `UMask=0077` does not make new folders private: a folder Precious creates gets its parent's permission bits.
 
 ## Interface
 
