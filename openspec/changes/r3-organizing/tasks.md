@@ -165,7 +165,7 @@
   - History.
 
   Verify: `npx playwright test` passes headless.
-- [ ] 4.2 Full verification:
+- [x] 4.2 Full verification:
   - gofmt, `go vet ./...`, and `go vet -tags e2e,slow ./...`;
   - `go test -race ./...`;
   - `make test-slow`, with `TestMoveAtScale`;
