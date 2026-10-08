@@ -48,7 +48,7 @@ func (s *Service) planMerge(ctx context.Context, tx *jobs.Tx, req planMergeReque
 	if err := s.checkSource(ctx, q, to.source); err != nil {
 		return 0, nil, err
 	}
-	if err := prune(ctx, q, now); err != nil {
+	if err := Prune(ctx, q, now); err != nil {
 		return 0, nil, err
 	}
 	p, err := newPlan(ctx, q, to.source, true)
@@ -144,6 +144,9 @@ func mergeSide(ctx context.Context, tx *sql.Tx, field, s string) (*node, error) 
 	if !n.presentFolder() {
 		return nil, domain.Errorf(domain.CodeInvalidRequest,
 			"%s %s is not a folder present on its disk (an archive's files cannot move)", field, s)
+	}
+	if err := frozen(field, s, n); err != nil {
+		return nil, err
 	}
 	return n, nil
 }

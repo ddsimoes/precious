@@ -34,25 +34,31 @@ const gateSQL = `SELECT c.source_id, c.state, EXISTS (SELECT 1 FROM purge_check_
 			OR (f.verdict = 'unique' AND (f.class IS NOT 'likely_junk' OR c.junk_confirmed_at IS NULL))))
 	FROM purge_checks c WHERE c.id = ?`
 
+// PurgeGate reads a pre-delete check by its ID: its source, its state, and
+// whether a file it recorded still needs the owner's confirmation (gateSQL;
+// r4 D8, U10). found is false when there is no such check. run-action and
+// the cleanup commands gate a purge with it, as each purge intent does.
+func PurgeGate(ctx context.Context, q store.Queryer, check int64) (src domain.SourceID, state string,
+	unconfirmed, found bool, err error) {
+	err = q.QueryRowContext(ctx, gateSQL, check).Scan(&src, &state, &unconfirmed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, false, nil
+	}
+	return src, state, unconfirmed, err == nil, err
+}
+
 // checkUsable ends a purge item whose check is no longer ready for this
 // source, or whose gate is not satisfied (r4 D11): changed check_stale.
 func (r *run) checkUsable(ctx context.Context, q store.Queryer, check int64) (*end, error) {
 	if check == 0 {
 		return &end{state: stateChanged, reason: reasonCheckStale}, nil
 	}
-	var (
-		src, state  string
-		unconfirmed bool
-	)
-	err := q.QueryRowContext(ctx, gateSQL, check).Scan(&src, &state, &unconfirmed)
-	if errors.Is(err, sql.ErrNoRows) {
-		return &end{state: stateChanged, reason: reasonCheckStale}, nil
-	}
+	src, state, unconfirmed, found, err := PurgeGate(ctx, q, check)
 	if err != nil {
 		return nil, err
 	}
 	switch {
-	case domain.SourceID(src) != r.src || state != "ready":
+	case !found, src != r.src || state != "ready":
 		return &end{state: stateChanged, reason: reasonCheckStale}, nil
 	case unconfirmed:
 		return &end{state: stateChanged, reason: reasonCheckStale, detail: "the check has unconfirmed files"}, nil

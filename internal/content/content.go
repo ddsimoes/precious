@@ -33,6 +33,8 @@ package content
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -198,6 +200,24 @@ func (s *Service) enqueueOnline(ctx context.Context) error {
 // hashSpec is the hash job of src.
 func hashSpec(src domain.SourceID) jobs.Spec {
 	return jobs.Spec{Kind: KindHash, SourceID: src, ScopeKey: "hash:" + string(src)}
+}
+
+// EnqueueHashing enqueues, in tx, the hashing job of src when src is
+// online, once: its plan pass rewrites the source's coverage and size
+// groups. organize's index adapter calls it when an action ends, since a
+// cleanup or a restore moves files into or out of the quarantine, which
+// coverage leaves out (r4 B5).
+func EnqueueHashing(ctx context.Context, tx *jobs.Tx, src domain.SourceID) error {
+	var state string
+	err := tx.SQL().QueryRowContext(ctx, `SELECT state FROM sources WHERE id = ?`, string(src)).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && state != string(sources.StateOnline) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, _, err = tx.EnqueueOnce(hashSpec(src))
+	return err
 }
 
 func (s *Service) now() int64 { return clock.Millis(s.clk.Now()) }

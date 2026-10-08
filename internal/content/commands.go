@@ -11,6 +11,7 @@ import (
 	"precious/internal/archive"
 	"precious/internal/commands"
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/jobs"
 	"precious/internal/sources"
 )
@@ -192,15 +193,20 @@ func resolveFolder(ctx context.Context, tx *sql.Tx, ref domain.Ref) (domain.Sour
 	}
 	var (
 		src, kind, state string
-		name             []byte
+		name, path       []byte
 	)
-	err := tx.QueryRowContext(ctx, `SELECT source_id, kind, state, name FROM entries WHERE id = ?`, int64(id)).
-		Scan(&src, &kind, &state, &name)
+	err := tx.QueryRowContext(ctx, `SELECT source_id, kind, state, name, path FROM entries WHERE id = ?`, int64(id)).
+		Scan(&src, &kind, &state, &name, &path)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && state == "missing" {
 		return "", 0, domain.Errorf(domain.CodeNotFound, "entry %s not found", ref)
 	}
 	if err != nil {
 		return "", 0, err
+	}
+	if index.IsQuarantinePath(path) {
+		// A quarantined entry is checked only by the pre-delete check (r4
+		// D13).
+		return "", 0, domain.Errorf(domain.CodeInQuarantine, "entry %s is in the quarantine", ref)
 	}
 	switch {
 	case kind == string(domain.EntryDirectory):

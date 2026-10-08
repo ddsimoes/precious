@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"precious/internal/content"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/executor"
@@ -63,9 +64,14 @@ func (a indexAdapter) ApplyRmdir(ctx context.Context, tx *sql.Tx, src domain.Sou
 	return a.rf.Refold(ctx, tx, src, []domain.EntryID{parent})
 }
 
-// ActionDone marks relations and review rows dirty once per action.
-func (indexAdapter) ActionDone(_ context.Context, tx *jobs.Tx, _ domain.SourceID) error {
-	return relations.RequestRefresh(tx)
+// ActionDone marks relations and review rows dirty once per action, and
+// enqueues the source's hashing, whose plan recomputes its coverage once
+// files moved into or out of the quarantine (r4 B5).
+func (indexAdapter) ActionDone(ctx context.Context, tx *jobs.Tx, src domain.SourceID) error {
+	if err := relations.RequestRefresh(tx); err != nil {
+		return err
+	}
+	return content.EnqueueHashing(ctx, tx, src)
 }
 
 func (indexAdapter) MissingIntentAt(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error) {
