@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/search"
 )
 
@@ -188,7 +189,9 @@ func (o childOrder) segments(c *childCursor) []segment {
 }
 
 // sql is the statement reading up to limit children of a parent in seg, of
-// the order's kind when it has one.
+// the order's kind when it has one, outside the quarantine (r4 design D2):
+// the residual hides the quarantine folder among the top's children, and
+// whatever lies below it.
 func (o childOrder) sql(seg segment) string {
 	dir := " ASC"
 	if o.desc {
@@ -199,7 +202,8 @@ func (o childOrder) sql(seg segment) string {
 	b.WriteString(search.Columns)
 	b.WriteString(` FROM `)
 	b.WriteString(search.From)
-	b.WriteString(` WHERE e.parent_id = ?`)
+	b.WriteString(` WHERE e.parent_id = ? AND `)
+	b.WriteString(index.NotQuarantined("e"))
 	if o.kind != "" {
 		// The kind is one of the validated constants, never the request's text.
 		b.WriteString(` AND e.kind = '` + string(o.kind) + `'`)
@@ -374,13 +378,15 @@ type otherArea struct {
 }
 
 // treemapSQL lists the largest children taking space: missing entries no
-// longer count in their folder's total, so they get no area.
+// longer count in their folder's total, so they get no area, and neither
+// does the quarantine, which no fold counts (r4 design D2).
 var treemapSQL = `SELECT ` + search.Columns + ` FROM ` + search.From + `
-	WHERE e.parent_id = ? AND e.state <> 'missing' ORDER BY e.total_bytes DESC, e.id DESC LIMIT ?`
+	WHERE e.parent_id = ? AND e.state <> 'missing' AND ` + index.NotQuarantined("e") + `
+	ORDER BY e.total_bytes DESC, e.id DESC LIMIT ?`
 
 // treemapRestSQL counts and sums every child taking space.
-const treemapRestSQL = `SELECT count(*), ifnull(sum(e.total_bytes), 0) FROM entries e
-	WHERE e.parent_id = ? AND e.state <> 'missing'`
+var treemapRestSQL = `SELECT count(*), ifnull(sum(e.total_bytes), 0) FROM entries e
+	WHERE e.parent_id = ? AND e.state <> 'missing' AND ` + index.NotQuarantined("e")
 
 // treemap serves GET /api/entries/{ref}/treemap: the entry's EntryRow, its
 // 300 largest children by total bytes (ties by descending ID, as the bytes

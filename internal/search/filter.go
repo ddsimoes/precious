@@ -160,6 +160,14 @@ func buildFilter(ctx context.Context, q store.Queryer, query Query, ranged bool)
 		// index, which reads the whole source for its few unreadable entries.
 		f.from = `entries e INDEXED BY entries_unreadable`
 	}
+	// The quarantine is left out of every search (r4 design D2), as a
+	// residual on the row each shape already fetches; InQuarantine searches
+	// it alone instead.
+	if query.InQuarantine {
+		b.add(inQuarantine("e"))
+	} else {
+		b.add(notQuarantined("e"))
+	}
 	if query.Source != "" {
 		b.add(source+`e.source_id = ?`, string(query.Source))
 	} else if (drive == driveColumns && len(query.Decisions) > 0) || drive == driveUnreadable {

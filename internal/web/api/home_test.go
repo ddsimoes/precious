@@ -44,17 +44,17 @@ func TestHome(t *testing.T) {
 			`"by_family":[{"family":"personal","bytes":256,"files":5},{"family":"programs","bytes":5060,"files":2},{"family":"disposable","bytes":0,"files":0},{"family":"containers","bytes":0,"files":0}],`+
 			`"by_kind":[{"kind":"image","bytes":210,"files":2},{"kind":"document","bytes":106,"files":4},{"kind":"executable","bytes":5000,"files":1}],`+
 			`"by_year":[{"year":2003,"bytes":5000,"files":1},{"year":2004,"bytes":10,"files":1},{"year":2006,"bytes":240,"files":3},{"year":2009,"bytes":60,"files":1},{"year":2012,"bytes":6,"files":1}],`+
-			`"decisions":{"undecided":{"bytes":5076,"files":4},"keep":{"bytes":30,"files":1},"discard":{"bytes":210,"files":2},"later":{"bytes":0,"files":0}},`+
+			`"decisions":{"undecided":{"bytes":5076,"files":4},"keep":{"bytes":30,"files":1},"discard":{"bytes":210,"files":2},"later":{"bytes":0,"files":0},"quarantine":{"bytes":0,"files":0}},`+
 			`"partial":true,"scans":[{"source_id":"pen","job_id":"%d","state":"running","progress":{"phase":1,"files":3}}],`+homeR2Empty+`}`, scanJob)},
 		{"/api/home?source=pen", fmt.Sprintf(`{"totals":{"bytes":10,"files":1,"dirs":1},`+
 			`"by_family":[{"family":"personal","bytes":10,"files":1},{"family":"programs","bytes":0,"files":0},{"family":"disposable","bytes":0,"files":0},{"family":"containers","bytes":0,"files":0}],`+
 			`"by_kind":[{"kind":"image","bytes":10,"files":1}],"by_year":[{"year":2006,"bytes":10,"files":1}],`+
-			`"decisions":{"undecided":{"bytes":10,"files":1},"keep":{"bytes":0,"files":0},"discard":{"bytes":0,"files":0},"later":{"bytes":0,"files":0}},`+
+			`"decisions":{"undecided":{"bytes":10,"files":1},"keep":{"bytes":0,"files":0},"discard":{"bytes":0,"files":0},"later":{"bytes":0,"files":0},"quarantine":{"bytes":0,"files":0}},`+
 			`"partial":false,"scans":[{"source_id":"pen","job_id":"%d","state":"running","progress":{"phase":1,"files":3}}],`+homeR2Empty+`}`, scanJob)},
 		{"/api/home?source=novo", `{"totals":{"bytes":0,"files":0,"dirs":0},` +
 			`"by_family":[{"family":"personal","bytes":0,"files":0},{"family":"programs","bytes":0,"files":0},{"family":"disposable","bytes":0,"files":0},{"family":"containers","bytes":0,"files":0}],` +
 			`"by_kind":[],"by_year":[],` +
-			`"decisions":{"undecided":{"bytes":0,"files":0},"keep":{"bytes":0,"files":0},"discard":{"bytes":0,"files":0},"later":{"bytes":0,"files":0}},` +
+			`"decisions":{"undecided":{"bytes":0,"files":0},"keep":{"bytes":0,"files":0},"discard":{"bytes":0,"files":0},"later":{"bytes":0,"files":0},"quarantine":{"bytes":0,"files":0}},` +
 			`"partial":false,"scans":[],` + homeR2Empty + `}`},
 	}
 	for _, c := range cases {

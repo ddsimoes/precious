@@ -597,7 +597,8 @@ func Effective(ctx context.Context, q store.Queryer, id domain.EntryID) (Intent,
 type Total struct{ Files, Bytes int64 }
 
 // Totals sums the present files of source src by effective decision, with
-// every decision present (design D10, Home).
+// every decision present (design D10, Home). The quarantine is left out
+// (r4 design D2, D15): Home shows its bytes apart.
 func Totals(ctx context.Context, q store.Queryer, src domain.SourceID) (map[domain.Decision]Total, error) {
 	rows, err := q.QueryContext(ctx, totalsSQL, string(src))
 	if err != nil {
@@ -624,8 +625,9 @@ func Totals(ctx context.Context, q store.Queryer, src domain.SourceID) (map[doma
 	return out, nil
 }
 
-const totalsSQL = `SELECT eff_decision, count(*), coalesce(sum(size), 0) FROM entries
-	WHERE source_id = ? AND kind = 'file' AND state = 'present' GROUP BY eff_decision`
+var totalsSQL = `SELECT e.eff_decision, count(*), coalesce(sum(e.size), 0) FROM entries e
+	WHERE e.source_id = ? AND e.kind = 'file' AND e.state = 'present' AND ` + notQuarantined("e") + `
+	GROUP BY e.eff_decision`
 
 // targets is the set of entries a request names: sub is a subquery with one
 // column, id, over args, naming n distinct existing entries.

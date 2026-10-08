@@ -142,7 +142,27 @@ type sourceJSON struct {
 	// ran.
 	ScheduleSkipped *scheduleSkipJSON `json:"schedule_skipped"`
 	Writes          writesJSON        `json:"writes"`
+	// Quarantine is what the source's quarantine holds (r4 design D1,
+	// D15).
+	Quarantine quarantineJSON `json:"quarantine"`
 }
+
+// quarantineJSON is the files and bytes in a source's quarantine, its
+// folder row's totals (zero without one), and whether an entry of the
+// owner's own takes its name at the top: a present top-level entry named
+// quarantineName that sources.quarantine_entry_id does not record (r4
+// design D1).
+type quarantineJSON struct {
+	Files     int64 `json:"files"`
+	Bytes     int64 `json:"bytes"`
+	NameTaken bool  `json:"name_taken"`
+}
+
+// quarantineName is index.QuarantineName, the folder at a source's top that
+// holds its quarantine (r4 design D1). It is spelled out here because index
+// imports this package; the read API's quarantine test (web/api) checks
+// that a folder made at index.QuarantineName is the one found here.
+const quarantineName = ".precious-quarantine"
 
 // writesJSON is the owner's write permission and, when writes cannot be
 // turned on, why (r3 design D1): forbidden_by_config, read_only, or
@@ -179,8 +199,8 @@ type activeJobJSON struct {
 }
 
 // describe returns src's SourceJSON: its row, its root folder's path through
-// mounts, the totals of its root entry, its queued, running, or paused scan,
-// and its writes under allowWrites.
+// mounts, the totals of its root entry, its quarantine, its queued,
+// running, or paused scan, and its writes under allowWrites.
 func describe(ctx context.Context, q store.Queryer, src Source, mounts []fsaccess.Mount, allowWrites bool) (sourceJSON, error) {
 	j := sourceJSON{
 		ID: src.ID, Label: src.Label, State: src.State,
@@ -221,6 +241,9 @@ func describe(ctx context.Context, q store.Queryer, src Source, mounts []fsacces
 			return sourceJSON{}, fmt.Errorf("sources: totals of %s: %w", src.ID, err)
 		}
 	}
+	if err := readQuarantine(ctx, q, src.ID, &j.Quarantine); err != nil {
+		return sourceJSON{}, err
+	}
 	var (
 		job       int64
 		state     string
@@ -246,6 +269,23 @@ func describe(ctx context.Context, q store.Queryer, src Source, mounts []fsacces
 	}
 	j.ActiveJob = a
 	return j, nil
+}
+
+// readQuarantine reads the quarantine of source id into qj: the top-level
+// entry at quarantineName, by the (source_id, path) index, counts when it
+// is a present folder, and takes the name when it is present and is not
+// the folder sources.quarantine_entry_id records.
+func readQuarantine(ctx context.Context, q store.Queryer, id domain.SourceID, qj *quarantineJSON) error {
+	err := q.QueryRowContext(ctx, `SELECT
+			ifnull(CASE WHEN e.kind = 'directory' AND e.state <> 'missing' THEN e.total_files END, 0),
+			ifnull(CASE WHEN e.kind = 'directory' AND e.state <> 'missing' THEN e.total_bytes END, 0),
+			ifnull(e.state <> 'missing' AND s.quarantine_entry_id IS NOT e.id, 0)
+		FROM sources s LEFT JOIN entries e ON e.source_id = s.id AND e.path = ?
+		WHERE s.id = ?`, []byte(quarantineName), string(id)).Scan(&qj.Files, &qj.Bytes, &qj.NameTaken)
+	if err != nil {
+		return fmt.Errorf("sources: quarantine of %s: %w", id, err)
+	}
+	return nil
 }
 
 // displayMounts reads the mount table for SourceJSON's path. A table that
