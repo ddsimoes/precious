@@ -21,10 +21,15 @@ import (
 )
 
 // Item operations and the states and reasons a plan writes (Interfaces).
+// record, unlink, purge, and verify are cleanup steps (r4 D3, D4, D10, D11).
 const (
 	opRename = "rename"
 	opMkdir  = "mkdir"
 	opRmdir  = "rmdir"
+	opRecord = "record"
+	opUnlink = "unlink"
+	opPurge  = "purge"
+	opVerify = "verify"
 
 	statePlanned  = "planned"
 	stateRefused  = "refused"

@@ -138,7 +138,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 	org := organize.New(organize.Options{Store: st, Policy: pol, AllowWrites: cfg.Sources.AllowWrites,
 		Clock: d.Clock, Logger: log})
 	exec := executor.New(executor.Options{Store: st, Sources: srcs, Index: org.Index(),
-		AllowWrites: cfg.Sources.AllowWrites, Clock: d.Clock, Logger: log})
+		AllowWrites: cfg.Sources.AllowWrites, Clock: d.Clock, Logger: log, Content: hashing})
 	exec.Register(runner)
 	scanner.DeferWhile(executor.OrganizeActive)
 	scanner.Register(runner)
