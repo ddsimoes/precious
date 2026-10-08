@@ -188,6 +188,28 @@ func TestExpandTargets(t *testing.T) {
 		CameraKey: sonyKey}); len(got.Media) != 0 {
 		t.Errorf("the Sony in Ouro Preto: %v", got.Media)
 	}
+	// As set-date-correction expands it (G2): the photos detection flagged.
+	// The Sony's 12 are flagged as the cameras pass flags them; the Canon's
+	// 8 are not, and one holds a set correction, which is skipped.
+	e.setCameraBitsB(corpusSource, sony)
+	e.exec(`INSERT INTO date_corrections (entry_id, kind, set_local, batch_id, created_at)
+		VALUES (?, 'set', '2010-07-17', 'b', 0)`, int64(canon[1]))
+	flagged := func(key string) Expanded {
+		t.Helper()
+		out, err := e.expandAs(Targets{FolderIDs: events, CameraKey: key}, max, true)
+		if err != nil {
+			t.Fatalf("%s flagged: %v", key, err)
+		}
+		return out
+	}
+	if got := flagged(sonyKey); !slices.Equal(got.Media, sony) || len(got.Skipped) != 0 {
+		t.Errorf("the Sony flagged: %v, skipped %v; want %v", got.Media, got.Skipped, sony)
+	}
+	if got := flagged(canonKey); len(got.Media) != 0 ||
+		!slices.Equal(got.Skipped, []Skip{{Entry: domain.Ref{Entry: canon[1]}, Reason: "has_correction"}}) {
+		t.Errorf("the Canon flagged: %v, skipped %v; want none, and %d skipped has_correction", got.Media, got.Skipped,
+			canon[1])
+	}
 
 	// Refusals.
 	quarantined := index.QuarantineName + "/7/1/IMG_0901.JPG"

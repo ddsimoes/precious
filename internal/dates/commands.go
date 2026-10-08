@@ -207,8 +207,9 @@ type clearCorrectionResponse struct {
 	BatchID string `json:"batch_id"`
 }
 
-// setCorrection applies req in tx (D11): the targets are expanded (a
-// quarantined target fails the request), each media file is tried with the
+// setCorrection applies req in tx (D11): the targets are expanded, a
+// camera target to the photos detection flagged (G2; a quarantined target
+// fails the request), each media file is tried with the
 // correction, and those it cannot apply to are skipped (a single target
 // fails 409 invalid_entry_state instead); the rest get their correction row,
 // replacing any earlier one, and are re-derived; the source's media job is
@@ -227,7 +228,7 @@ func (s *Service) setCorrection(ctx context.Context, tx *jobs.Tx, req setCorrect
 		}
 	}
 	single := req.EntryID != ""
-	exp, err := ExpandTargets(ctx, q, req.Targets, maxCorrectionMedia)
+	exp, err := expandTargets(ctx, q, req.Targets, maxCorrectionMedia, true)
 	if err != nil {
 		return 0, nil, err
 	}

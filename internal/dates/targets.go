@@ -20,7 +20,13 @@ const (
 )
 
 // Skip reasons ExpandTargets gives (D11).
-const reasonNotMedia = "not_media"
+const (
+	reasonNotMedia = "not_media"
+	// reasonHasCorrection is a photo of a camera target that holds a
+	// correction other than a shift, which detection never flags and the
+	// camera's shift does not replace (Addendum G2).
+	reasonHasCorrection = "has_correction"
+)
 
 // Targets are the entries a correction command or a date plan acts on
 // (D11). Exactly one of EntryID, EntryIDs, and FolderIDs is set; IDs are
@@ -35,7 +41,7 @@ type Targets struct {
 // Skip is a target left out of a bulk request, with its reason.
 type Skip struct {
 	Entry  domain.Ref
-	Reason string // "not_media": a member ref, or an entry that is not a media file
+	Reason string // "not_media": a member ref, or an entry that is not a media file; "has_correction" (camera targets)
 }
 
 // Expanded is what targets name: their source, the media files in path
@@ -134,8 +140,9 @@ func (t Targets) parse() (parsed, error) {
 //     is skipped not_media;
 //   - folder_ids expand to the media files at or below them, or, with
 //     camera_key, to the photos directly in them whose camera key
-//     (media.CameraKey of their read metadata) is camera_key, as D8's events
-//     count them; nothing in the quarantine.
+//     (media.CameraKey of their read metadata) is camera_key; nothing in
+//     the quarantine. set-date-correction narrows a camera target to the
+//     photos detection flagged (expandTargets).
 //
 // Refusals, as domain errors: an unknown ID, or a folder that is not
 // present, is not_found; a target that is itself quarantined (the
@@ -143,6 +150,15 @@ func (t Targets) parse() (parsed, error) {
 // targets on two sources, and more than max media are invalid_request. t
 // is validated as Validate(true) does.
 func ExpandTargets(ctx context.Context, tx *sql.Tx, t Targets, max int) (Expanded, error) {
+	return expandTargets(ctx, tx, t, max, false)
+}
+
+// expandTargets is ExpandTargets; with flagged, a camera target takes the
+// photos detection flagged camera_offset directly in its folders whose
+// stored camera key is camera_key and that hold no correction or a shift
+// (D8: a suggested shift targets exactly them), and skips that camera's
+// photos there holding another correction has_correction (Addendum G2).
+func expandTargets(ctx context.Context, tx *sql.Tx, t Targets, max int, flagged bool) (Expanded, error) {
 	p, err := t.parse()
 	if err != nil {
 		return Expanded{}, err
@@ -154,7 +170,7 @@ func ExpandTargets(ctx context.Context, tx *sql.Tx, t Targets, max int) (Expande
 	case p.entries != nil:
 		out, err = expandEntries(ctx, tx, p.entries)
 	default:
-		out, err = expandFolders(ctx, tx, p.folders, p.camera, max)
+		out, err = expandFolders(ctx, tx, p.folders, p.camera, flagged, max)
 	}
 	if err != nil {
 		return Expanded{}, err
@@ -274,7 +290,8 @@ func expandEntries(ctx context.Context, tx *sql.Tx, refs []domain.Ref) (Expanded
 	return out, nil
 }
 
-func expandFolders(ctx context.Context, tx *sql.Tx, ids []domain.EntryID, camera string, max int) (Expanded, error) {
+func expandFolders(ctx context.Context, tx *sql.Tx, ids []domain.EntryID, camera string, flagged bool,
+	max int) (Expanded, error) {
 	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
 	tgs, err := loadTargets(ctx, tx, ids)
 	if err != nil {
@@ -293,7 +310,11 @@ func expandFolders(ctx context.Context, tx *sql.Tx, ids []domain.EntryID, camera
 		return Expanded{}, err
 	}
 	out := Expanded{Source: src}
-	if camera != "" {
+	switch {
+	case camera != "" && flagged:
+		out.Media, out.Skipped, err = flaggedPhotos(ctx, tx, tgs, camera)
+		return out, err
+	case camera != "":
 		out.Media, err = cameraPhotos(ctx, tx, tgs, camera)
 		return out, err
 	}
@@ -401,6 +422,69 @@ func cameraPhotos(ctx context.Context, tx *sql.Tx, folders []target, camera stri
 		out[i] = p.id
 	}
 	return out, nil
+}
+
+// flaggedPhotos returns the photos a camera target of set-date-correction
+// takes, directly in folders, in path order: those whose media_dates row
+// has the camera key camera and the camera_offset flag, and no correction
+// or a shift. That camera's photos there holding another correction are
+// skipped has_correction, in path order; its other photos are not named.
+func flaggedPhotos(ctx context.Context, tx *sql.Tx, folders []target, camera string) ([]domain.EntryID, []Skip, error) {
+	type photo struct {
+		id      domain.EntryID
+		path    []byte
+		skipped bool
+	}
+	var found []photo
+	for chunk := range slices.Chunk(folders, 500) {
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, camera)
+		for _, f := range chunk {
+			args = append(args, int64(f.id))
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT e.id, e.path, d.flags, c.kind FROM entries e
+			JOIN media_dates d ON d.entry_id = e.id AND d.camera_key = ?
+			LEFT JOIN date_corrections c ON c.entry_id = e.id
+			WHERE e.parent_id IN (`+placeholders(len(chunk))+`) AND `+MediaCond("e"), args...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dates: expand the camera's photos: %w", err)
+		}
+		for rows.Next() {
+			var (
+				p     photo
+				flags media.Flags
+				kind  sql.NullString
+			)
+			if err := rows.Scan(&p.id, &p.path, &flags, &kind); err != nil {
+				rows.Close()
+				return nil, nil, fmt.Errorf("dates: expand the camera's photos: %w", err)
+			}
+			switch {
+			case kind.Valid && kind.String != media.CorrectionShift:
+				p.skipped = true
+			case flags&media.FlagCameraOffset == 0:
+				continue
+			}
+			found = append(found, p)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, nil, fmt.Errorf("dates: expand the camera's photos: %w", err)
+		}
+	}
+	slices.SortFunc(found, func(a, b photo) int { return bytes.Compare(a.path, b.path) })
+	var (
+		out     []domain.EntryID
+		skipped []Skip
+	)
+	for _, p := range found {
+		if p.skipped {
+			skipped = append(skipped, Skip{Entry: domain.Ref{Entry: p.id}, Reason: reasonHasCorrection})
+		} else {
+			out = append(out, p.id)
+		}
+	}
+	return out, skipped, nil
 }
 
 // placeholders returns n comma-separated SQL placeholders.
