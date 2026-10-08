@@ -13,6 +13,7 @@ package relations
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"precious/internal/domain"
@@ -20,11 +21,23 @@ import (
 )
 
 // KindRelate is the relate job's kind (design D5): pool "relate",
-// capacity 1, single flight by scope "relate".
+// capacity 1, single flight by scope "relate", plus at most one follow-up
+// by scope "relate:next" queued while a "relate" job runs (design Addendum
+// G1). A job enqueued by RequestRefresh or Startup runs a pass only while
+// review_state.dirty is set.
 const KindRelate jobs.Kind = "relate"
 
-// relateScope is the EnqueueOnce scope of the relate job.
-const relateScope = "relate"
+// relateScope is the EnqueueOnce scope of the relate job, and
+// relateNextScope the scope of its follow-up, enqueued when the "relate"
+// job is already running.
+const (
+	relateScope     = "relate"
+	relateNextScope = "relate:next"
+)
+
+// ifDirtyPayload is the payload of the relate jobs that RequestRefresh and
+// Startup enqueue: the job runs a pass only while the relations are dirty.
+var ifDirtyPayload = json.RawMessage(`{"if_dirty":true}`)
 
 // relatePool is the runner pool of the relate job.
 const relatePool = "relate"
@@ -75,14 +88,32 @@ func itself(src domain.SourceID, p []byte) Range {
 
 // RequestRefresh marks the relations dirty and enqueues the relate job
 // once, inside the caller's transaction (design D5). A run already going
-// sees the flag when it ends and runs again, so a refresh requested during
-// a run is never lost.
+// sees the flag at its flip and runs again. A refresh arriving after that
+// read, while the run prunes or ends, finds the "relate" job running, so a
+// follow-up job is enqueued too (scope "relate:next", design Addendum G1);
+// it runs a pass if the flag is still set when it starts. A refresh is
+// never lost.
 func RequestRefresh(tx *jobs.Tx) error {
 	if err := setDirty(tx.SQL()); err != nil {
 		return err
 	}
-	if _, _, err := tx.EnqueueOnce(jobs.Spec{Kind: KindRelate, ScopeKey: relateScope}); err != nil {
+	return enqueueRelate(tx)
+}
+
+// enqueueRelate enqueues the relate job once by scope "relate" and, when
+// that job is already running, its follow-up once by scope "relate:next".
+// The pool runs one relate job at a time, so the two scopes cover a
+// running job and the one that must run after it.
+func enqueueRelate(tx *jobs.Tx) error {
+	rec, _, err := tx.EnqueueOnce(jobs.Spec{Kind: KindRelate, ScopeKey: relateScope, Payload: ifDirtyPayload})
+	if err != nil {
 		return fmt.Errorf("relations: enqueue relate: %w", err)
+	}
+	if rec.State != domain.JobRunning {
+		return nil
+	}
+	if _, _, err := tx.EnqueueOnce(jobs.Spec{Kind: KindRelate, ScopeKey: relateNextScope, Payload: ifDirtyPayload}); err != nil {
+		return fmt.Errorf("relations: enqueue relate follow-up: %w", err)
 	}
 	return nil
 }
