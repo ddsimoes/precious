@@ -28,9 +28,9 @@ import (
 
 var (
 	ext4Caps = fsaccess.Capabilities{Known: true, CaseSensitive: true, NormalizationSensitive: true,
-		StableIdentity: true, HardLinks: true, TimeResolution: time.Nanosecond}
-	ext4CapsJSON = `{"known":true,"read_only":false,"case_sensitive":true,"normalization_sensitive":true,"stable_identity":true,"local_time":false,"hard_links":true,"time_resolution_ns":1}`
-	fatCaps      = fsaccess.Capabilities{Known: true, NormalizationSensitive: true, LocalTime: true, TimeResolution: 2 * time.Second}
+		StableIdentity: true, HardLinks: true, TimeResolution: time.Nanosecond, NoReplaceRename: true}
+	ext4CapsJSON = `{"known":true,"read_only":false,"case_sensitive":true,"normalization_sensitive":true,"stable_identity":true,"local_time":false,"hard_links":true,"time_resolution_ns":1,"no_replace_rename":true}`
+	fatCaps      = fsaccess.Capabilities{Known: true, NormalizationSensitive: true, LocalTime: true, TimeResolution: 2 * time.Second, NoReplaceRename: true}
 )
 
 func uuidVolume(id, label string) fsaccess.Volume {

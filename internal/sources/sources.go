@@ -94,6 +94,10 @@ type Source struct {
 	// the source's state then. Both are unset when the last due time ran.
 	SkippedAt  *time.Time
 	SkipReason string
+	// WriteEnabled is the owner's write permission (r3 design D1), off
+	// until the owner turns it on. Writes also need WritesUnavailable to be
+	// empty; CheckWrites checks both.
+	WriteEnabled bool
 }
 
 // Opened is an online source with its root folder open. The caller closes
@@ -161,7 +165,7 @@ func (s *Service) AllowedRoots() []string { return append([]string(nil), s.roots
 const sourceColumns = `s.id, s.label, s.volume_kind, s.volume_id, s.volume_label, s.fs_type, s.strong,
 	s.rel_root, s.device_key, s.capabilities, s.state, s.state_reason, s.mount_point, s.scan_gen,
 	s.last_scan_at, (SELECT e.id FROM entries e WHERE e.source_id = s.id AND e.path = X''),
-	s.scan_schedule, s.next_scan_at, s.schedule_skipped_at, s.schedule_skip_reason`
+	s.scan_schedule, s.next_scan_at, s.schedule_skipped_at, s.schedule_skip_reason, s.write_enabled`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -180,7 +184,7 @@ func scanSource(r rowScanner) (Source, error) {
 	)
 	err := r.Scan(&src.ID, &src.Label, &kind, &src.Volume.ID, &volumeLabel, &src.Volume.FSType, &strong,
 		&src.RelRoot, &deviceKey, &caps, &state, &reason, &mountPoint, &src.ScanGen, &lastScanAt, &rootEntry,
-		&schedule, &nextScanAt, &skippedAt, &skipReason)
+		&schedule, &nextScanAt, &skippedAt, &skipReason, &src.WriteEnabled)
 	if err != nil {
 		return Source{}, err
 	}

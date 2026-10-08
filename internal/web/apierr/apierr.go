@@ -52,7 +52,9 @@ func Status(code domain.ErrorCode) int {
 	case domain.CodeInvalidRequest:
 		return http.StatusBadRequest
 	case domain.CodeIdempotencyKeyReused, domain.CodeSourceExists, domain.CodeSourceOffline,
-		domain.CodeJobActive, domain.CodeTagExists, domain.CodeSelectionExpired, domain.CodeInvalidEntryState:
+		domain.CodeJobActive, domain.CodeTagExists, domain.CodeSelectionExpired, domain.CodeInvalidEntryState,
+		domain.CodeWritesUnavailable, domain.CodeWritesDisabled, domain.CodeNameTaken, domain.CodeActionExpired,
+		domain.CodeActionNotRunnable, domain.CodeActionNotUndoable, domain.CodeRecoveryNeeded:
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

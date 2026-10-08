@@ -34,7 +34,9 @@ import (
 //     terminal) before it is refused; access times may be updated;
 //   - FSInfo reports only the directory's device: there is no statfs;
 //   - Mounts lists one weak path volume per root opened, and Capabilities is
-//     always the unknown set.
+//     always the unknown set;
+//   - it has no rename that refuses to replace, so every Writer method fails
+//     with ErrNoReplaceUnsupported and nothing is written.
 //
 // A Dir may be used from several goroutines; ReadBatch and FSInfo calls on one
 // Dir are serialised. A File may be used from the goroutine that opened it.

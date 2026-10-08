@@ -72,7 +72,7 @@ func TestCapabilitiesJSONWritten(t *testing.T) {
 	ro.ReadOnly = true
 	e.fs.SetCapabilities(dev, ro)
 	e.refresh()
-	want := `{"known":true,"read_only":true,"case_sensitive":false,"normalization_sensitive":true,"stable_identity":false,"local_time":true,"hard_links":false,"time_resolution_ns":2000000000}`
+	want := `{"known":true,"read_only":true,"case_sensitive":false,"normalization_sensitive":true,"stable_identity":false,"local_time":true,"hard_links":false,"time_resolution_ns":2000000000,"no_replace_rename":true}`
 	if got := e.column(src.ID, "capabilities").String; got != want {
 		t.Fatalf("capabilities after refresh = %s, want %s", got, want)
 	}

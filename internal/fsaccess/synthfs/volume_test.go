@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	fatCaps   = fsaccess.Capabilities{Known: true, NormalizationSensitive: true, LocalTime: true, TimeResolution: 2 * time.Second}
-	exfatCaps = fsaccess.Capabilities{Known: true, NormalizationSensitive: true, TimeResolution: 10 * time.Millisecond}
-	ext4Caps  = fsaccess.Capabilities{Known: true, CaseSensitive: true, NormalizationSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: time.Nanosecond}
+	fatCaps   = fsaccess.Capabilities{Known: true, NormalizationSensitive: true, LocalTime: true, TimeResolution: 2 * time.Second, NoReplaceRename: true}
+	exfatCaps = fsaccess.Capabilities{Known: true, NormalizationSensitive: true, TimeResolution: 10 * time.Millisecond, NoReplaceRename: true}
+	ext4Caps  = fsaccess.Capabilities{Known: true, CaseSensitive: true, NormalizationSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: time.Nanosecond, NoReplaceRename: true}
 	usbVolume = fsaccess.Volume{Kind: fsaccess.VolumeUUID, ID: "2658-C1FD", Label: "CARTAO", FSType: "vfat", DeviceKey: "dev:8:17", Strong: true}
 )
 

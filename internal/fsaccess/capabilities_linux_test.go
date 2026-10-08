@@ -11,10 +11,11 @@ import (
 )
 
 var (
-	posixCaps = Capabilities{Known: true, CaseSensitive: true, NormalizationSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: time.Nanosecond}
-	fatCaps   = Capabilities{Known: true, NormalizationSensitive: true, LocalTime: true, TimeResolution: 2 * time.Second}
-	exfatCaps = Capabilities{Known: true, NormalizationSensitive: true, TimeResolution: 10 * time.Millisecond}
+	posixCaps = Capabilities{Known: true, CaseSensitive: true, NormalizationSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: time.Nanosecond, NoReplaceRename: true}
+	fatCaps   = Capabilities{Known: true, NormalizationSensitive: true, LocalTime: true, TimeResolution: 2 * time.Second, NoReplaceRename: true}
+	exfatCaps = Capabilities{Known: true, NormalizationSensitive: true, TimeResolution: 10 * time.Millisecond, NoReplaceRename: true}
 	ntfsCaps  = Capabilities{Known: true, NormalizationSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: 100 * time.Nanosecond}
+	ntfs3Caps = Capabilities{Known: true, NormalizationSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: 100 * time.Nanosecond, NoReplaceRename: true}
 	opticCaps = Capabilities{Known: true, ReadOnly: true, CaseSensitive: true, NormalizationSensitive: true, StableIdentity: true, HardLinks: true, TimeResolution: time.Second}
 )
 
@@ -43,7 +44,7 @@ func TestLinuxCapabilityTable(t *testing.T) {
 		{"vfat", "0:1", fatCaps, readOnlyCaps(fatCaps)},
 		{"exfat", "0:1", exfatCaps, readOnlyCaps(exfatCaps)},
 		{"ntfs", "0:1", ntfsCaps, readOnlyCaps(ntfsCaps)},
-		{"ntfs3", "0:1", ntfsCaps, readOnlyCaps(ntfsCaps)},
+		{"ntfs3", "0:1", ntfs3Caps, readOnlyCaps(ntfs3Caps)},
 		{"fuseblk.ntfs-3g", "0:1", ntfsCaps, readOnlyCaps(ntfsCaps)},
 		{"fuseblk.lowntfs-3g", "0:1", ntfsCaps, readOnlyCaps(ntfsCaps)},
 		{"fuseblk", "8:49", ntfsCaps, readOnlyCaps(ntfsCaps)},
@@ -81,8 +82,35 @@ func TestLinuxCapabilityTable(t *testing.T) {
 		}
 	}
 	if u := UnknownCapabilities(false); u.Known || u.CaseSensitive || u.NormalizationSensitive || u.StableIdentity ||
-		u.LocalTime || u.HardLinks || u.TimeResolution != 2*time.Second {
+		u.LocalTime || u.HardLinks || u.TimeResolution != 2*time.Second || u.NoReplaceRename {
 		t.Errorf("unknown set %+v is not the conservative one", u)
+	}
+}
+
+// filesystem-boundary "Which filesystems have a no-replace rename": true for
+// the local types whose Linux drivers honour RENAME_NOREPLACE, read-only or
+// not, and false for ntfs and fuseblk (also NTFS through ntfs-3g), optical
+// discs, and unknown types.
+func TestNoReplaceRenameByType(t *testing.T) {
+	for _, tc := range []struct {
+		fsType string
+		want   bool
+	}{
+		{"ext2", true}, {"ext3", true}, {"ext4", true}, {"xfs", true}, {"btrfs", true}, {"zfs", true},
+		{"f2fs", true}, {"tmpfs", true}, {"vfat", true}, {"exfat", true}, {"ntfs3", true},
+		{"ntfs", false}, {"fuseblk", false}, {"fuseblk.ntfs-3g", false}, {"iso9660", false}, {"udf", false},
+		{"nfs4", false}, {"overlay", false},
+	} {
+		o := fixtureFS(t, "1 0 0:1 / / rw - "+tc.fsType+" src rw\n2 1 0:1 / /ro ro - "+tc.fsType+" src rw\n", nil, nil)
+		for _, path := range []string{"/x", "/ro/x"} {
+			got, err := o.Capabilities(path)
+			if err != nil {
+				t.Fatalf("Capabilities(%s) on %q: %v", path, tc.fsType, err)
+			}
+			if got.NoReplaceRename != tc.want {
+				t.Errorf("no_replace_rename on %q at %s = %v, want %v", tc.fsType, path, got.NoReplaceRename, tc.want)
+			}
+		}
 	}
 }
 

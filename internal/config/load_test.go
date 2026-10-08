@@ -200,8 +200,8 @@ batch_size = 0
 }
 
 // server-config "Scan defaults" and "Defaults when absent": with no [sources]
-// and no [scan] section, the allowed roots are empty (the platform defaults)
-// and the batch sizes are 1000 and 256.
+// and no [scan] section, the allowed roots are empty (the platform defaults),
+// writes are allowed, and the batch sizes are 1000 and 256.
 func TestLoadSourcesAndScanDefaults(t *testing.T) {
 	cfg, err := Load(writeConfig(t, `
 state_dir = "/var/lib/precious"
@@ -211,7 +211,33 @@ external_origin = "https://precious.example.net"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Sources.AllowedRoots != nil || cfg.Scan != (Scan{BatchSize: 1000, ListBatch: 256}) {
-		t.Fatalf("sources %+v scan %+v, want no roots and batches 1000/256", cfg.Sources, cfg.Scan)
+	if cfg.Sources.AllowedRoots != nil || !cfg.Sources.AllowWrites || cfg.Scan != (Scan{BatchSize: 1000, ListBatch: 256}) {
+		t.Fatalf("sources %+v scan %+v, want no roots, writes allowed, and batches 1000/256", cfg.Sources, cfg.Scan)
+	}
+}
+
+// server-config "Writes can be forbidden by the configuration": allow_writes
+// is a boolean, true unless the file says false, also when [sources] sets
+// only other keys.
+func TestLoadAllowWrites(t *testing.T) {
+	const head = "state_dir = \"/var/lib/precious\"\n[server]\nexternal_origin = \"https://precious.example.net\"\n"
+	for _, tc := range []struct {
+		sources string
+		want    bool
+	}{
+		{"[sources]\nallowed_roots = []\n", true},
+		{"[sources]\nallow_writes = true\n", true},
+		{"[sources]\nallow_writes = false\n", false},
+	} {
+		cfg, err := Load(writeConfig(t, head+tc.sources))
+		if err != nil {
+			t.Fatalf("%q: %v", tc.sources, err)
+		}
+		if cfg.Sources.AllowWrites != tc.want {
+			t.Errorf("%q: allow_writes = %v, want %v", tc.sources, cfg.Sources.AllowWrites, tc.want)
+		}
+	}
+	if _, err := Load(writeConfig(t, head+"[sources]\nallow_writes = \"no\"\n")); err == nil {
+		t.Error("allow_writes = \"no\" loaded, want a type error")
 	}
 }

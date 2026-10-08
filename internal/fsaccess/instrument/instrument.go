@@ -1,7 +1,10 @@
 // Package instrument wraps an fsaccess.FS to count and log every filesystem
 // call, so tests can prove scalability and safety invariants by counting calls
 // and bytes rather than by timing (§13.1, design D3). It also offers hooks to
-// interleave test actions with calls and to inject failures.
+// interleave test actions with calls and to inject failures. Its directories
+// implement fsaccess.Writer, so writes are counted and logged too (OpRename,
+// OpMkdir, OpRmdir, OpSync); a wrapped directory without a Writer fails them
+// with fsaccess.ErrNoReplaceUnsupported.
 package instrument
 
 import (
@@ -33,6 +36,12 @@ const (
 	// a source tree.
 	OpMounts       Op = "Mounts"
 	OpCapabilities Op = "Capabilities"
+	// OpRename, OpMkdir, OpRmdir, and OpSync are the fsaccess.Writer
+	// methods RenameNoReplace, Mkdir, Rmdir, and Sync.
+	OpRename Op = "RenameNoReplace"
+	OpMkdir  Op = "Mkdir"
+	OpRmdir  Op = "Rmdir"
+	OpSync   Op = "Sync"
 )
 
 // Call is one logged call.
@@ -42,11 +51,16 @@ type Call struct {
 	// for Capabilities, and empty for Mounts.
 	Root string
 	// Path holds the raw components below Root that the call addresses: the
-	// directory itself for ReadBatch, FSInfo, and a directory's Close; the
-	// directory plus the name for Lstat, OpenDir, Readlink, and OpenFile; the
-	// file's path for ReadAt, FileStat, and a file's Close; nil for OpenRoot,
+	// directory itself for ReadBatch, FSInfo, Sync, and a directory's Close;
+	// the directory plus the name for Lstat, OpenDir, Readlink, OpenFile,
+	// Mkdir, and Rmdir, and the old name of a RenameNoReplace; the file's
+	// path for ReadAt, FileStat, and a file's Close; nil for OpenRoot,
 	// Mounts, and Capabilities.
 	Path [][]byte
+	// To is the FullPath of a RenameNoReplace's new name (its destination
+	// directory plus the new name), empty when the destination directory
+	// was not opened through this Recorder.
+	To string
 	// N is the batch size requested by ReadBatch, or len(p) of a ReadAt.
 	N int
 	// Off is the offset requested by ReadAt.
@@ -406,6 +420,53 @@ func (d *dir) Close() error {
 	c.Err = err
 	d.r.record(c)
 	return err
+}
+
+var _ fsaccess.Writer = (*dir)(nil)
+
+// write runs a Writer call c through the hooks, delegates it to the wrapped
+// directory's Writer with fn, and records it.
+func (d *dir) write(c Call, name []byte, fn func(w fsaccess.Writer) error) error {
+	if err := d.r.before(c); err != nil {
+		c.Err = err
+		d.r.record(c)
+		return err
+	}
+	var err error
+	if w, ok := fsaccess.AsWriter(d.inner); ok {
+		err = fn(w)
+	} else {
+		err = &fsaccess.Error{Op: string(c.Op), Name: bytes.Clone(name), Err: fsaccess.ErrNoReplaceUnsupported}
+	}
+	c.Err = err
+	d.r.record(c)
+	return err
+}
+
+// RenameNoReplace is logged with Path = the old name and To = the new one.
+// A destination directory of this Recorder is unwrapped before delegating.
+func (d *dir) RenameNoReplace(name []byte, to fsaccess.Dir, newName []byte) error {
+	c := Call{Op: OpRename, Root: d.root, Path: d.child(name)}
+	target := to
+	if t, ok := to.(*dir); ok {
+		target, c.To = t.inner, joinPath(t.root, t.child(newName))
+	}
+	return d.write(c, name, func(w fsaccess.Writer) error { return w.RenameNoReplace(name, target, newName) })
+}
+
+func (d *dir) Mkdir(name []byte) error {
+	c := Call{Op: OpMkdir, Root: d.root, Path: d.child(name)}
+	return d.write(c, name, func(w fsaccess.Writer) error { return w.Mkdir(name) })
+}
+
+func (d *dir) Rmdir(name []byte) error {
+	c := Call{Op: OpRmdir, Root: d.root, Path: d.child(name)}
+	return d.write(c, name, func(w fsaccess.Writer) error { return w.Rmdir(name) })
+}
+
+func (d *dir) Sync() error {
+	c := Call{Op: OpSync, Root: d.root, Path: d.path}
+	return d.write(c, d.inner.Self().Name, func(w fsaccess.Writer) error { return w.Sync() })
 }
 
 type file struct {

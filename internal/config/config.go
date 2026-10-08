@@ -59,13 +59,18 @@ type Jobs struct {
 	EventRetentionAge  Duration `toml:"event_retention_age"`  // default 24h
 }
 
-// Sources holds where sources may be added (§6.1, design D5). Sources
-// themselves live in the database.
+// Sources holds where sources may be added (§6.1, design D5) and whether
+// any of them may be changed (r3 design D1). Sources themselves, and each
+// source's own write permission, live in the database.
 type Sources struct {
 	// AllowedRoots are the folders the picker offers and below which a source
 	// may be added: absolute paths of existing directories, cleaned by
 	// Validate. Empty selects the platform default roots.
 	AllowedRoots []string `toml:"allowed_roots"`
+	// AllowWrites false forbids writes on every source, whatever its own
+	// write permission (reason forbidden_by_config). Default true: each
+	// source still starts with writes off until the owner turns them on.
+	AllowWrites bool `toml:"allow_writes"`
 }
 
 // Scan holds the scanner's batch sizes (§7, design D7).
@@ -140,6 +145,9 @@ func Defaults() Config {
 			CallWatchdog:       Duration{30 * time.Second},
 			EventRetentionRows: 10_000,
 			EventRetentionAge:  Duration{24 * time.Hour},
+		},
+		Sources: Sources{
+			AllowWrites: true,
 		},
 		Scan: Scan{
 			BatchSize: 1000,
