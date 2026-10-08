@@ -44,6 +44,15 @@
 // checked item per step, compared whole before its first deletion. Files
 // are created and unlinked only through folders inside the quarantine, and
 // every outcome marks stale the pre-delete checks relying on its paths.
+//
+// R5 sets a file's modification time (r5 D13): a set_mtime item re-checks at
+// intent that the file is present, outside the quarantine, has one link, and
+// would change, and records the index's identity with its change time. The
+// step lstats the name through its folder, journals the time it found, and
+// calls SetModTime, with no folder sync; the outcome carries the index and
+// its content rows to the new time. A file the service does not own ends
+// failed (not_owner) and the action goes on; a set_mtime never turns writes
+// off.
 package executor
 
 import (
