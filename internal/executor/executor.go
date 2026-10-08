@@ -92,6 +92,10 @@ type Index interface {
 	// ApplyUnlink drops the row at path, a record a scan indexed, after an
 	// unlink (r4 D4, D6); a path not indexed is nothing to drop.
 	ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.SourceID, path []byte) error
+	// ApplyModTime follows a done set_mtime (r5 D13, D15): index.ApplyModTime,
+	// then a refold of the entry, so its folders' newest, oldest, and
+	// by-year figures follow.
+	ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTime) error
 }
 
 // Options configures New.

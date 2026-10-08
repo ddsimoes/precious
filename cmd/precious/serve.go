@@ -21,6 +21,7 @@ import (
 	commandapi "precious/internal/commands"
 	"precious/internal/config"
 	"precious/internal/content"
+	"precious/internal/dates"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/executor"
@@ -135,12 +136,20 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 			log.Error("relate refresh after a scan", "source", src, "err", err)
 		}
 	})
+	// Media dates (r5 design D2–D11): derived in the zone [dates] time_zone
+	// resolves to; organize's date plans re-derive their targets with it.
+	zone, err := cfg.Dates.Location()
+	if err != nil {
+		return err
+	}
+	mediaDates := dates.New(dates.Options{Store: st, Runner: runner, Sources: srcs, Zone: zone, Clock: d.Clock,
+		Logger: log})
 	// Organizing (r3 design D3–D14): the executor follows each done step in
 	// the index through organize's adapter, and a scan waits while a change
 	// of its source is queued, running, or has a step recorded as started
 	// (D10).
 	org := organize.New(organize.Options{Store: st, Policy: pol, AllowWrites: cfg.Sources.AllowWrites,
-		Clock: d.Clock, Logger: log})
+		Clock: d.Clock, Logger: log, Dates: mediaDates})
 	exec := executor.New(executor.Options{Store: st, Sources: srcs, Index: org.Index(),
 		AllowWrites: cfg.Sources.AllowWrites, Clock: d.Clock, Logger: log, Content: hashing})
 	exec.Register(runner)

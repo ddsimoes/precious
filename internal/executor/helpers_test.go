@@ -429,6 +429,7 @@ type fakeIndex struct {
 	rmdirs     []domain.EntryID
 	purges     []domain.EntryID // whole, or 0 for a partial purge
 	unlinks    [][]byte
+	modTimes   []index.ModTime
 	actionDone int
 	// fail makes every Apply* fail.
 	fail error
@@ -570,6 +571,20 @@ func (f *fakeIndex) ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.Sour
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE source_id = ? AND path = ?`, string(src), path)
+	return err
+}
+
+// ApplyModTime writes the entry's new facts.
+func (f *fakeIndex) ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTime) error {
+	f.mu.Lock()
+	f.modTimes = append(f.modTimes, m)
+	f.mu.Unlock()
+	if err := f.begin(); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE entries SET mtime_ns = ?, ctime_ns = ?, dev = ?, ino = ? WHERE id = ?
+		AND source_id = ?`, m.Facts.MtimeNs, m.Facts.CtimeNs, int64(m.Facts.Dev), int64(m.Facts.Ino), int64(m.Entry),
+		string(m.Source))
 	return err
 }
 
