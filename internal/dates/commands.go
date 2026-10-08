@@ -395,7 +395,7 @@ func refusalText(reason string) string {
 	case reasonInFuture:
 		return "the shift would move it past tomorrow"
 	}
-	return "it has no date to shift"
+	return "it has no date to shift, or the shift would move it outside the years 1700 to 2200"
 }
 
 // skippedList lists what a correction skipped, the first
