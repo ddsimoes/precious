@@ -34,8 +34,9 @@
 // ancestors partial. A cancelled scan keeps the rows it wrote and marks the
 // folders it had not finished partial; the next scan starts again at the
 // root. An update of a file whose own facts changed also deletes its
-// file_content and archives rows in the same batch (R2 D4), and a scan that
-// finishes successfully runs the OnScanDone hook.
+// file_content, archives, and media_meta rows in the same batch (R2 D4, r5
+// D3), keeping its date correction, and a scan that finishes successfully
+// runs the OnScanDone hook.
 //
 // The owner's overrides (entry_overrides, r2b design D3) are read when a
 // scan starts and applied through rules.ApplyOwner right after the rules

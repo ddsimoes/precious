@@ -9,7 +9,7 @@ import (
 
 // fullScan matches a plan step that reads every row of a table, through the
 // table or a whole index.
-var fullScan = regexp.MustCompile(`\bSCAN (entries|e|dir_stats|d|entry_tags|t|entry_overrides|o)\b`)
+var fullScan = regexp.MustCompile(`\bSCAN (entries|e|dir_stats|d|entry_tags|t|entry_overrides|o|date_corrections|dc)\b`)
 
 // plan returns the EXPLAIN QUERY PLAN of a statement, one step per line.
 func plan(t *testing.T, tx *sql.Tx, query string, args []any) string {
