@@ -7,6 +7,7 @@ import { homeQueryRoot } from '@/api/home'
 import {
   removeSource,
   renameSource,
+  setSourceWrites,
   sourcesQueryKey,
   startScan,
   updateSource,
@@ -33,8 +34,8 @@ const stateStyles: Record<Source['state'], string> = {
 }
 
 // SourceCard shows one source with its state, volume, file system, totals,
-// scan, and rescan schedule, and its commands: Scan now, change the
-// schedule, rename, and remove.
+// scan, rescan schedule, and whether Precious may change it, and its
+// commands: Scan now, change the schedule, rename, and remove.
 export function SourceCard({ source }: { source: Source }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -114,6 +115,8 @@ export function SourceCard({ source }: { source: Source }) {
 
         <CapabilityList capabilities={source.capabilities} />
 
+        <WritesRow source={source} />
+
         {source.active_job !== null && (
           <section className="grid gap-1 rounded-md border p-3">
             <h3 className="text-sm font-semibold">{t('sources.activeScan')}</h3>
@@ -180,6 +183,83 @@ function CapabilityList({ capabilities: c }: { capabilities: Capabilities }) {
         <li key={line}>{line}</li>
       ))}
     </ul>
+  )
+}
+
+// WritesRow shows whether Precious may change the source (R3 design D1):
+// allowing it asks first, turning it off does not, and where it cannot be
+// allowed the reason replaces the control.
+function WritesRow({ source }: { source: Source }) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const csrfToken = useCsrfToken()
+  const headingId = useId()
+  const [confirming, setConfirming] = useState(false)
+  const { enabled, unavailable } = source.writes
+
+  const turnOff = useMutation({
+    mutationFn: () => setSourceWrites(source.id, false, csrfToken),
+    onSuccess: (result) => updateSource(queryClient, source.id, () => result.source),
+  })
+
+  return (
+    <section aria-labelledby={headingId} className="grid gap-2 rounded-md border p-3 text-sm">
+      <h3 id={headingId} className="font-semibold">
+        {t('sources.writes.label')}
+      </h3>
+      {enabled ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <p>{t('sources.writes.on')}</p>
+          <Button size="sm" variant="outline" disabled={turnOff.isPending} onClick={() => turnOff.mutate()}>
+            {turnOff.isPending ? t('sources.writes.turningOff') : t('sources.writes.turnOff')}
+          </Button>
+        </div>
+      ) : unavailable !== null ? (
+        <p>{t(`sources.writes.unavailable.${unavailable}`)}</p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <p>{t('sources.writes.off')}</p>
+          <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>
+            {t('sources.writes.allow')}
+          </Button>
+        </div>
+      )}
+      {turnOff.isError && <ErrorBanner error={turnOff.error} onDismiss={() => turnOff.reset()} />}
+      {confirming && <AllowWritesDialog source={source} onClose={() => setConfirming(false)} />}
+    </section>
+  )
+}
+
+function AllowWritesDialog({ source, onClose }: { source: Source; onClose: () => void }) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const csrfToken = useCsrfToken()
+
+  const allow = useMutation({
+    mutationFn: () => setSourceWrites(source.id, true, csrfToken),
+    onSuccess: (result) => {
+      updateSource(queryClient, source.id, () => result.source)
+      onClose()
+    },
+  })
+
+  return (
+    <Dialog
+      alert
+      title={t('sources.writes.confirmTitle', { label: source.label })}
+      description={t('sources.writes.confirmBody')}
+      onClose={onClose}
+    >
+      {allow.isError && <ErrorBanner error={allow.error} />}
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" onClick={onClose}>
+          {t('sources.cancel')}
+        </Button>
+        <Button disabled={allow.isPending} onClick={() => allow.mutate()}>
+          {allow.isPending ? t('sources.writes.confirming') : t('sources.writes.confirm')}
+        </Button>
+      </div>
+    </Dialog>
   )
 }
 

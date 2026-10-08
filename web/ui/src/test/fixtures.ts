@@ -3,6 +3,7 @@ import type { EntryDetail, EntryRow } from '@/api/entries'
 import type { Home } from '@/api/home'
 import type { JobEvent } from '@/api/jobs'
 import type { Card, ReviewRow } from '@/api/opportunities'
+import type { Action, Item } from '@/api/organize'
 import type { Capabilities, PickerItem, Source } from '@/api/sources'
 
 // API responses in the shapes of the design's Interfaces section.
@@ -16,6 +17,7 @@ export const ext4Capabilities: Capabilities = {
   local_time: false,
   hard_links: true,
   time_resolution_ns: 1,
+  no_replace_rename: true,
 }
 
 export const portableCapabilities: Capabilities = {
@@ -27,6 +29,7 @@ export const portableCapabilities: Capabilities = {
   local_time: false,
   hard_links: false,
   time_resolution_ns: 2_000_000_000,
+  no_replace_rename: false,
 }
 
 const GiB = 1024 ** 3
@@ -49,6 +52,7 @@ export function fotosSource(overrides: Partial<Source> = {}): Source {
     schedule: null,
     next_scan_at: null,
     schedule_skipped: null,
+    writes: { enabled: false, unavailable: null },
     ...overrides,
   }
 }
@@ -71,6 +75,7 @@ export function usbSource(overrides: Partial<Source> = {}): Source {
     schedule: null,
     next_scan_at: null,
     schedule_skipped: null,
+    writes: { enabled: false, unavailable: 'no_replace_rename' },
     ...overrides,
   }
 }
@@ -300,6 +305,69 @@ export function entryDetail(row: EntryRow, overrides: Partial<EntryDetail> = {})
     coverage: coverage(),
     only_folder: null,
     archive_note: null,
+    ...overrides,
+  }
+}
+
+// action is an Action of the history; by default a planned single move of
+// one 3 MiB file on fotos, with nothing in conflict.
+export function action(overrides: Partial<Action> = {}, counts: Partial<Action['counts']> = {}): Action {
+  return {
+    id: '77',
+    kind: 'move',
+    source_id: 'fotos',
+    state: 'planned',
+    created_at: '2026-10-07T10:00:00Z',
+    expires_at: '2026-10-07T11:00:00Z',
+    started_at: null,
+    finished_at: null,
+    destination: null,
+    job_id: null,
+    undo_of: null,
+    bulk: false,
+    counts: {
+      planned: 0,
+      refused: 0,
+      conflict: 0,
+      intent: 0,
+      done: 0,
+      not_permitted: 0,
+      offline: 0,
+      changed: 0,
+      failed: 0,
+      no_safe_rename: 0,
+      not_empty: 0,
+      manual_recovery: 0,
+      not_attempted: 0,
+      resolved: 0,
+      ...counts,
+    },
+    bytes: 3 * 1024 ** 2,
+    files: 1,
+    kept_lost: 0,
+    reversed: 0,
+    undo: { possible: false, reason: 'not_done' },
+    ...overrides,
+  }
+}
+
+// actionItem is an Item renaming from into to, planned.
+export function actionItem(id: string, from: string, to: string, overrides: Partial<Item> = {}): Item {
+  return {
+    id,
+    seq: Number(id),
+    op: 'rename',
+    entry: null,
+    from: { path: from, path_b64: btoa(from) },
+    to: { path: to, path_b64: btoa(to) },
+    state: 'planned',
+    reason: null,
+    decision_after: null,
+    detail: null,
+    found: null,
+    reversed: false,
+    bytes: 1024,
+    files: 1,
     ...overrides,
   }
 }
