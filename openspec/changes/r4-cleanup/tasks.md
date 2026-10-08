@@ -57,7 +57,7 @@
 
   Owns those read paths, and the docs on views and Home. Verify with a test of the scenario "Home after quarantining a folder" through the API (Map, Search with count and select-all, Home, sources) and the existing plan guards: `go test -race ./internal/search ./internal/web/api ./internal/decisions ./internal/sources`.
 - [x] 2.2 Readers B (design Reader exclusion, slice 2.2): `content`, `review`, and `relations`. Owns those read paths, and the docs on copies and cards. Verify with tests of the scenario "Quarantining one of two copies" (content `Copies`, a review refresh, a relate pass), and of review cards leaving a quarantined row out, with the existing plan guards: `go test -race ./internal/content ./internal/review ./internal/relations`.
-- [ ] 2.3 Executor slice (design D3–D5, D10–D13). Owns `internal/executor` and the `docs/operator.md` section on how Precious changes a disk:
+- [x] 2.3 Executor slice (design D3–D5, D10–D13). Owns `internal/executor` and the `docs/operator.md` section on how Precious changes a disk:
   - the ops `record`, `unlink`, `purge`, and `verify`;
   - the cleanup order (mkdir, rename, record) and the whole-item re-check at the first step (draft identity, own decision, inclusive keeps, D5 copies verified outside transactions);
   - the reserved-name refusal for renames into a source's top;
@@ -67,7 +67,7 @@
   - the D4 reconciliation rules, and purge replay only after its re-checks.
 
   Verify: `go test -race ./internal/executor`.
-- [ ] 2.4 Executor tests, driving actions by inserting `queued` rows:
+- [x] 2.4 Executor tests, driving actions by inserting `queued` rows:
   - R4.2: a planned file modified after drafting ends `changed`, also after a rescan between draft and run, and the rest run;
   - R4.1 at run time: a keep set below the item, or on the item itself, ends it `blocked` or `changed` with nothing made on disk;
   - R4.4 at run time: a staying copy changed before the run ends the item `no_verified_copy`; two duplicate-ground plans on two sources cannot both quarantine the last copies;
