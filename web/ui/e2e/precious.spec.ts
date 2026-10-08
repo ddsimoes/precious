@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { devices, expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test'
 
 import { en } from '../src/i18n/en'
@@ -1188,6 +1191,179 @@ test('r2b D1–D5: a category and a group mark set in the panel change the folde
   await awaitDuplicates(page.request, startHash)
 })
 
+// The R3 tests change the corpus on disk, so they run last: allowing
+// changes, a rename and its undo, Compare's merge (before the rescue takes
+// Thumbs.db out of Fotos), a bulk move from Search, a rescue, and History.
+test('R3.7: allowing changes on the corpus asks first, and cancelling changes nothing', async () => {
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Sources' }).click()
+  const card = page.getByRole('article', { name: sourceLabel })
+  const writes = card.getByRole('region', { name: en.sources.writes.label })
+  await expect(writes).toContainText(en.sources.writes.off)
+  const sent: string[] = []
+  const record = (r: { url: () => string }) => {
+    if (new URL(r.url()).pathname === '/api/commands/set-source-writes') {
+      sent.push(r.url())
+    }
+  }
+  page.on('request', record)
+  const dialog = page.getByRole('alertdialog', { name: `Allow changes on “${sourceLabel}”?` })
+  await writes.getByRole('button', { name: en.sources.writes.allow }).click()
+  await expect(dialog).toContainText(en.sources.writes.confirmBody)
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(writes).toContainText(en.sources.writes.off)
+  expect(sent).toEqual([])
+  expect((await sourceWrites()).enabled).toBe(false)
+
+  await writes.getByRole('button', { name: en.sources.writes.allow }).click()
+  await dialog.getByRole('button', { name: en.sources.writes.confirm, exact: true }).click()
+  await expect(writes).toContainText(en.sources.writes.on)
+  page.off('request', record)
+  expect(sent).toHaveLength(1)
+  expect(await sourceWrites()).toEqual({ enabled: true, unavailable: null })
+})
+
+test('R3.1, R3.3: a rename in the detail panel runs at once, and Undo puts the name back', async () => {
+  const before = 'Documentos/curriculo.doc'
+  const after = 'Documentos/curriculo 2005.doc'
+  const id = await entryId(before)
+  const kept = await intentOf(before)
+  await openFolder('Documentos')
+  await page.getByRole('table', { name: 'Contents of Documentos' }).getByRole('link', { name: 'curriculo.doc', exact: true }).click()
+  // The panel is named after the entry, so it follows the rename.
+  const panel = page.getByRole('complementary', { name: /^curriculo( 2005)?\.doc$/ })
+  await panel.getByRole('button', { name: en.organize.rename, exact: true }).click()
+  // A sibling's name is refused before anything changes (R3.1). The
+  // browser logs the refusal as a failed request: expected here.
+  const refused = (p: string) => p.includes('409 (Conflict)') && p.includes('/api/commands/plan-rename')
+  await panel.getByRole('textbox', { name: en.organize.renameLabel }).fill('curriculo_final.doc')
+  await panel.getByRole('button', { name: en.organize.save, exact: true }).click()
+  await expect(panel.getByRole('alert')).toContainText(en.errors.codes.name_taken)
+  await expect.poll(() => problems.some(refused)).toBe(true)
+  problems = problems.filter((p) => !refused(p))
+  expect(onDisk(before) && onDisk('Documentos/curriculo_final.doc')).toBe(true)
+
+  await panel.getByRole('textbox', { name: en.organize.renameLabel }).fill('curriculo 2005.doc')
+  await panel.getByRole('button', { name: en.organize.save, exact: true }).click()
+  await expect(panel.getByText(en.organize.status.done.rename)).toBeVisible()
+  expect([onDisk(before), onDisk(after)]).toEqual([false, true])
+  const moved: { entry: { id: string; path: string } } = await (await page.request.get(`/api/entries/${id}`)).json()
+  expect(moved.entry).toMatchObject({ id, path: after })
+  expect(await intentOf(after)).toEqual(kept)
+
+  await panel.getByRole('button', { name: en.organize.status.undo, exact: true }).click()
+  await expect(panel.getByText(en.organize.status.done.undo)).toBeVisible()
+  expect([onDisk(before), onDisk(after)]).toEqual([true, false])
+  expect(await entryId(before)).toBe(id)
+})
+
+test('R3.6: moving the files only in Fotos - Copia into Fotos leaves the copy with nothing of its own', async () => {
+  const relation = corpus.relations.find((r) => r.kind === 'overlap' && r.a.path === 'Fotos - Copia' && r.b.path === 'Fotos')
+  if (relation === undefined) {
+    throw new Error('the ground truth has no overlap of Fotos - Copia with Fotos')
+  }
+  const only = relation.a_only.map((p) => p.path.slice('Fotos - Copia/'.length))
+  expect(only).toEqual(['2006/Praia/DSC_editada.JPG'])
+  const left = await entryId('Fotos')
+  const right = await entryId('Fotos - Copia')
+  await page.goto(`/compare?left=${left}&right=${right}&bucket=only_right`)
+  expect(await compareGroup('Only on the right')).toEqual(only)
+  // The merge is offered on the groups of files only on one side.
+  await page.getByRole('button', { name: 'Move these files into “Fotos”' }).click()
+  const preview = page.getByRole('alertdialog', { name: /Move the files only on one side into “Fotos”/ })
+  const planned = preview.getByRole('list', { name: en.organize.preview.groups.planned }).getByRole('listitem')
+  await expect(planned).toHaveCount(1)
+  await expect(planned).toContainText('Fotos - Copia/2006/Praia/DSC_editada.JPG')
+  await expect(planned).toContainText('Fotos/2006/Praia/DSC_editada.JPG')
+  await preview.getByRole('button', { name: en.organize.preview.confirm, exact: true }).click()
+  await expect(page.getByText(en.organize.status.done.merge)).toBeVisible()
+  expect([onDisk('Fotos - Copia/2006/Praia/DSC_editada.JPG'), onDisk('Fotos/2006/Praia/DSC_editada.JPG')]).toEqual([
+    false,
+    true,
+  ])
+
+  // Once relations are computed again, the copy holds nothing of its own.
+  await awaitDuplicates(page.request, startHash)
+  const compared: { summary: Record<string, { files: number }> } = await (
+    await page.request.get(`/api/compare?left=${left}&right=${right}`)
+  ).json()
+  expect(compared.summary.only_right?.files).toBe(0)
+  await page.goto(`/compare?left=${left}&right=${right}`)
+  await expectGroupFigures('Only on the right', 0, 0)
+})
+
+test('R3.4: a bulk move from Search shows every item before it runs, and moves only those', async () => {
+  const setups = ['Downloads/Setup.exe', 'Downloads/Setup(1).exe']
+  const ids = await Promise.all(setups.map((p) => entryId(p)))
+  await search({ name: 'Setup' })
+  const results = page.getByRole('region', { name: 'Results' })
+  await expect(results.getByRole('status').first()).toHaveText('2 results')
+  await results.getByRole('button', { name: 'Select all results' }).click()
+  await page.getByRole('alertdialog', { name: en.search.confirmTitle }).getByRole('button', { name: en.search.confirm }).click()
+  await page.getByRole('region', { name: 'Change the selected items' }).getByRole('button', { name: en.search.moveTo }).click()
+  const chooser = page.getByRole('dialog', { name: 'Move 2 items to…' })
+  await chooser.getByRole('list', { name: en.organize.chooser.folders }).getByRole('button', { name: 'Documentos', exact: true }).click()
+  await chooser.getByRole('button', { name: en.organize.chooser.here }).click()
+  const preview = page.getByRole('alertdialog', { name: 'Move into “Documentos”' })
+  const planned = preview.getByRole('list', { name: en.organize.preview.groups.planned }).getByRole('listitem')
+  await expect(planned).toHaveCount(2)
+  for (const path of setups) {
+    await expect(planned.filter({ hasText: path })).toHaveCount(1)
+  }
+  // Nothing moved before the owner confirms.
+  expect(setups.map(onDisk)).toEqual([true, true])
+  await preview.getByRole('button', { name: en.organize.preview.confirm, exact: true }).click()
+  await expect(page.getByText(en.organize.status.done.move)).toBeVisible()
+  const moved = setups.map((p) => `Documentos/${p.slice('Downloads/'.length)}`)
+  expect([...setups.map(onDisk), ...moved.map(onDisk)]).toEqual([false, false, true, true])
+  for (const [i, path] of moved.entries()) {
+    expect(await entryId(path)).toBe(ids[i])
+  }
+})
+
+test('rescuing the kept file out of Fotos/2006 moves it with its keep', async () => {
+  const kept = await intentOf(keptThumbs)
+  expect(kept.decision).toBe('keep')
+  const id = await entryId(keptThumbs)
+  await openFolder('Fotos')
+  await page.getByRole('link', { name: 'Details of 2006', exact: true }).click()
+  const panel = page.getByRole('complementary', { name: '2006' })
+  await panel.getByRole('button', { name: en.organize.rescue }).click()
+  const chooser = page.getByRole('dialog', { name: 'Rescue the kept items of “2006” into…' })
+  // The chooser opens where 2006 is; go up to the source's top folder.
+  await chooser.getByRole('navigation', { name: en.organize.chooser.trail }).getByRole('button', { name: sourceLabel }).click()
+  await chooser.getByRole('list', { name: en.organize.chooser.folders }).getByRole('button', { name: 'Documentos', exact: true }).click()
+  await chooser.getByRole('button', { name: en.organize.chooser.here }).click()
+  const preview = page.getByRole('alertdialog', { name: 'Rescue kept items into “Documentos”' })
+  const planned = preview.getByRole('list', { name: en.organize.preview.groups.planned }).getByRole('listitem')
+  await expect(planned).toHaveCount(1)
+  await expect(planned).toContainText(keptThumbs)
+  await preview.getByRole('button', { name: en.organize.preview.confirm, exact: true }).click()
+  await expect(page.getByText(en.organize.status.done.rescue)).toBeVisible()
+  expect([onDisk(keptThumbs), onDisk('Documentos/Thumbs.db')]).toEqual([false, true])
+  expect(await entryId('Documentos/Thumbs.db')).toBe(id)
+  expect(await intentOf('Documentos/Thumbs.db')).toMatchObject({ decision: 'keep', eff_decision: 'keep' })
+})
+
+test('History lists every change newest first and undoes the bulk move', async () => {
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.history }).click()
+  const changes = page.getByRole('list', { name: en.history.list }).locator(':scope > li')
+  const undo = { name: en.history.undo, exact: true }
+  // The rescue, the move, the merge, the undo, and the rename, newest first.
+  await expect(changes).toHaveCount(5)
+  await expect(changes.nth(0)).toContainText('Rescue kept items into “Documentos”')
+  await expect(changes.nth(4)).toContainText(en.organize.titleNoDestination.rename)
+  // The rename was undone already, so it offers no Undo.
+  await expect(changes.nth(4).getByRole('button', undo)).toHaveCount(0)
+  const move = page.getByRole('article', { name: 'Move into “Documentos”' })
+  await move.getByRole('button', undo).click()
+  await expect(changes).toHaveCount(6)
+  await expect(changes.nth(0)).toContainText(en.history.state.done)
+  await expect(move).toContainText(en.history.undone)
+  await expect(move.getByRole('button', undo)).toHaveCount(0)
+  expect(['Downloads/Setup.exe', 'Downloads/Setup(1).exe'].map(onDisk)).toEqual([true, true])
+})
+
 // spaced matches text, ignoring the whitespace between its words, so a list
 // item whose parts are separate elements matches what it reads as.
 function spaced(text: string): RegExp {
@@ -1307,6 +1483,23 @@ async function command<T = unknown>(name: string, body: unknown): Promise<{ stat
   })
   const out: T & { error?: { code: string } } = await resp.json()
   return { status: resp.status(), code: out.error?.code, body: out }
+}
+
+// sourceWrites reads the corpus source's write permission from the read API.
+async function sourceWrites(): Promise<{ enabled: boolean; unavailable: string | null }> {
+  const listed: { sources: { label: string; writes: { enabled: boolean; unavailable: string | null } }[] } = await (
+    await page.request.get('/api/sources')
+  ).json()
+  const source = listed.sources.find((s) => s.label === sourceLabel)
+  if (source === undefined) {
+    throw new Error(`${sourceLabel} is not a source`)
+  }
+  return source.writes
+}
+
+// onDisk reports whether path, inside the corpus, exists on disk.
+function onDisk(path: string): boolean {
+  return existsSync(join(corpusPath(), path))
 }
 
 // startHash starts a hashing job of the corpus source and returns its ID.
