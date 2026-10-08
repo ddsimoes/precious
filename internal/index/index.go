@@ -16,7 +16,10 @@
 // A folder's totals are final once its last child is done (post-order), so
 // its row is written then: totals, the newest and oldest file times, the
 // main kind, dir_stats (counts, breakdowns by kind, year, and family, name
-// signals, and up to 20 indicator examples), and its classification.
+// signals, and the first 20 indicator examples by path), and its
+// classification. The root folder's name, for the rules, is the last
+// component of the source's folder on its volume, or the mount point's when
+// the source is the whole volume.
 //
 // A rescan reads each stored folder's children before listing it and writes
 // only what changed: an unchanged entry (same kind and size, a modification
@@ -41,6 +44,17 @@
 // An override set while a scan runs sets sources.rescan_requested; the scan
 // that ends with it set clears it and runs its job once more (jobs.Defer),
 // and only the last pass runs the OnScanDone hook.
+//
+// The index follows the steps Precious itself does on a source's disk (r3
+// design D6), in the transaction that records each step: MoveEntry moves
+// an entry and its subtree, keeping every ID (so decisions, tags,
+// overrides, digests, and listings follow) and rewriting paths, the paths
+// inside dir_stats lists, and the name index; InsertFolder and
+// RemoveFolder add and remove an empty folder; and a Refolder re-derives
+// the classification of the entries touched, and the totals, dir_stats,
+// and classification of their ancestors, from the stored rows, with the
+// fold a scan uses, so a rescan afterwards writes nothing. A scan given
+// DeferWhile waits while its source is being changed.
 package index
 
 import (
@@ -49,7 +63,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"path/filepath"
+	"time"
 
 	"precious/internal/clock"
 	"precious/internal/commands"
@@ -70,6 +84,8 @@ type Handler struct {
 	cfg config.Scan
 	// done, when set, runs after each successful scan (OnScanDone).
 	done func(ctx context.Context, src domain.SourceID)
+	// active, when set, tells a scan to wait (DeferWhile).
+	active func(ctx context.Context, q store.Queryer, src domain.SourceID) (bool, error)
 }
 
 var _ jobs.Handler = (*Handler)(nil)
@@ -104,8 +120,35 @@ func (h *Handler) OnScanDone(fn func(ctx context.Context, src domain.SourceID)) 
 	h.done = fn
 }
 
+// DeferOrganizing is the reason of a scan job that waits because Precious
+// is changing its source (r3 design D10).
+const DeferOrganizing = "organizing"
+
+// organizingDelay is how long a scan waits for organizing before it checks
+// again; it differs from the organize job's wait for a running scan, so the
+// two settle a tie when both start together (r3 design D10).
+const organizingDelay = 3 * time.Second
+
+// DeferWhile sets active, which a scan calls when it starts, before it
+// opens or walks its source: while active reports true (serve wires
+// executor.OrganizeActive), the scan returns a jobs.Defer for 3 s with
+// reason DeferOrganizing, so that it never indexes a step half recorded.
+// Call it before Register.
+func (h *Handler) DeferWhile(active func(ctx context.Context, q store.Queryer, src domain.SourceID) (bool, error)) {
+	h.active = active
+}
+
 // Run scans the job's source.
 func (h *Handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error {
+	if h.active != nil {
+		busy, err := h.active(ctx, h.st.Reader(), job.SourceID)
+		if err != nil {
+			return err
+		}
+		if busy {
+			return &jobs.Defer{Until: h.clk.Now().Add(organizingDelay), Reason: DeferOrganizing}
+		}
+	}
 	done := rt.FSCall("OpenRoot")
 	opened, err := h.src.Open(ctx, job.SourceID)
 	done()
@@ -140,10 +183,10 @@ func (h *Handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error 
 	s := &walk{
 		ctx: walkCtx, rt: rt, pol: h.pol, caps: opened.Source.Caps, w: w, children: children,
 		listN: h.cfg.ListBatch, batchN: h.cfg.BatchSize, codec: newCodec(), progress: map[string]int64{},
-		held: map[uint64]int32{}, owner: owner,
+		tokens: tokens{held: map[uint64]int32{}}, owner: owner,
 	}
 	s.report()
-	walkErr := s.run(opened.Root, []byte(filepath.Base(opened.AbsRoot)), root)
+	walkErr := s.run(opened.Root, rootName(opened.Source.RelRoot, opened.Source.MountPoint), root)
 	if walkErr != nil {
 		walkErr = cmpErr(walkErr, s.abort())
 	}

@@ -613,11 +613,11 @@ func (w *writer) finish(t *txStmts, b *batch, o *op) error {
 		delete(w.folders, string(b.bytes(o.path)))
 	}
 	cols := o.stats.cols
-	cols.indicators, err = w.indicators(o.stats.refs)
+	cols.indicators, err = encodeIndicators(o.stats.refs, w.tokens)
 	if err != nil {
 		return err
 	}
-	cols.inside, err = w.inside(o.stats.inside)
+	cols.inside, err = encodeInside(o.stats.inside, w.tokens)
 	if err != nil {
 		return err
 	}
@@ -641,9 +641,9 @@ func (w *writer) finish(t *txStmts, b *batch, o *op) error {
 }
 
 // resolveToken returns the ID the scan assigned to the entry inserted with
-// token.
-func (w *writer) resolveToken(token uint64, path []byte) (domain.EntryID, error) {
-	id, ok := w.tokens[token]
+// token, among ids.
+func resolveToken(ids map[uint64]domain.EntryID, token uint64, path []byte) (domain.EntryID, error) {
+	id, ok := ids[token]
 	if !ok {
 		return 0, fmt.Errorf("index: %q was listed but never inserted", domain.DisplayName(path))
 	}
@@ -658,7 +658,9 @@ type indicatorJSON struct {
 	Signal  string `json:"signal"`
 }
 
-func (w *writer) indicators(refs []indicatorRef) (string, error) {
+// encodeIndicators renders an indicators list, resolving the tokens of the
+// entries a scan inserted through ids.
+func encodeIndicators(refs []indicatorRef, ids map[uint64]domain.EntryID) (string, error) {
 	if len(refs) == 0 {
 		return "[]", nil
 	}
@@ -667,7 +669,7 @@ func (w *writer) indicators(refs []indicatorRef) (string, error) {
 		id := r.id
 		if r.token != 0 {
 			var err error
-			if id, err = w.resolveToken(r.token, r.path); err != nil {
+			if id, err = resolveToken(ids, r.token, r.path); err != nil {
 				return "", err
 			}
 		}
@@ -690,7 +692,9 @@ type insideJSON struct {
 	Files    int64   `json:"files"`
 }
 
-func (w *writer) inside(refs []insideRef) (string, error) {
+// encodeInside renders an inside list, resolving the tokens of the entries a
+// scan inserted through ids.
+func encodeInside(refs []insideRef, ids map[uint64]domain.EntryID) (string, error) {
 	if len(refs) == 0 {
 		return "[]", nil
 	}
@@ -700,7 +704,7 @@ func (w *writer) inside(refs []insideRef) (string, error) {
 		id := r.id
 		if r.token != 0 {
 			var err error
-			if id, err = w.resolveToken(r.token, r.path); err != nil {
+			if id, err = resolveToken(ids, r.token, r.path); err != nil {
 				return "", err
 			}
 		}
