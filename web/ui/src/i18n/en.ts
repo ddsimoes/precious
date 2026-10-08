@@ -1005,6 +1005,7 @@ export const en = {
       check_stale: 'The check is out of date',
       file_changed: 'A file changed since the check',
       copy_changed: 'A copy it relied on changed since the check',
+      reserved_name: 'That name is reserved for the quarantine at the top of a source',
     },
     itemState: {
       planned: 'Waiting',

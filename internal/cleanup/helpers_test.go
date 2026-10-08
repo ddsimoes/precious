@@ -56,9 +56,12 @@ type world struct {
 	keys  int
 }
 
-// newWorld builds and starts the stack.
+// newWorld builds and starts the stack. Each world is independent (its own
+// store, disks, clock, and runner), so the test calling it runs in
+// parallel with the others; call it once per test or subtest.
 func newWorld(t *testing.T) *world {
 	t.Helper()
+	t.Parallel()
 	cfg := config.Defaults()
 	w := &world{t: t, st: storetest.Open(t), sfs: synthfs.New(), clk: &checkClock{}, roots: map[domain.SourceID]string{}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

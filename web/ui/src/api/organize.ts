@@ -81,6 +81,7 @@ export type ItemReason =
   | 'check_stale'
   | 'file_changed'
   | 'copy_changed'
+  | 'reserved_name'
 
 // Found is what was at one name when a step could not be confirmed: nothing,
 // the entry expected, or something else.
