@@ -24,6 +24,11 @@
 // at the path the read used, so a read through the old path of a folder
 // moved meanwhile is dropped rather than recorded changed (r3 design D18).
 // The job yields after every commit and every yield_bytes read.
+//
+// Cleanup hashes on demand (hashread.go, R4 design D9): HashEntry,
+// HashArchive, and HashMember read a file, every file member of a complete
+// archive from one open of it, or one member, in full through the same
+// identity-checked opens, fstat the file once read, and write nothing.
 package content
 
 import (
