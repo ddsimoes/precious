@@ -305,6 +305,24 @@ func TestReadBounds(t *testing.T) {
 	j := bytes.LastIndex(extentOut, u32(uint32(len(good)+10))) // the Exif extent's length
 	binary.BigEndian.PutUint32(extentOut[j-4:], 1<<30)         // its offset
 	empty("Exif extent outside the file", extentOut, FormatISOBMFF)
+	// A box shorter than its fields never borrows its sibling's bytes (G8):
+	// an empty `mvhd` before a 12-byte `free` would read "free" as a 1958
+	// creation time, and an `infe` cut after its item ID would read the next
+	// `infe`'s header as its type.
+	empty("an empty mvhd", bytes.Join([][]byte{mkBox("ftyp", []byte("isom"), u32(0)),
+		mkBox("moov", mkBox("mvhd"), mkBox("free", u32(0)))}, nil), FormatISOBMFF)
+	empty("an mvhd v1 cut short", mkBox("moov", fullBox("mvhd", 1, u32(0)), mkBox("free", u64(1<<32))), FormatISOBMFF)
+	item := append(u32(6), append([]byte("Exif\x00\x00"), good...)...)
+	heifWith := func(infe1 []byte) []byte {
+		infe2 := fullBox("infe", 2, u16(2), u16(0), []byte("Exif"), []byte{0})
+		iloc := fullBox("iloc", 1, []byte{0x44, 0x40}, u16(1), u16(2), u16(1), u16(0), u32(0), u16(1), u32(0),
+			u32(uint32(len(item))))
+		meta := fullBox("meta", 0, fullBox("iinf", 0, u16(2), infe1, infe2), iloc, mkBox("idat", item))
+		return append(mkBox("ftyp", []byte("heic"), u32(0), []byte("mif1"), []byte("heic")), meta...)
+	}
+	m, _ := mustRead(t, heifWith(fullBox("infe", 2, u16(1), u16(0), []byte("hvc1"), []byte{0})), FormatISOBMFF)
+	sameMeta(t, "HEIF with two infe", m, sampleMeta())
+	empty("an infe cut after its ID", heifWith(fullBox("infe", 2, u16(1))), FormatISOBMFF)
 
 	// JPEG: a segment past the end, random bytes, and a truncated file.
 	j0 := buildJPEG(exifAPP1(good))
