@@ -220,7 +220,8 @@ func (h *handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error 
 
 // pass hashes what is not checked yet in spans (nil: the whole source), in
 // the order of design D4. withCandidates reads the small files of candidate
-// folder pairs before the other small files.
+// folder pairs before the other small files. No selection lists or reads
+// anything in the quarantine (r4 design D2).
 func (r *run) pass(spans []span, withCandidates bool) error {
 	r.phase = PhaseListing
 	r.report()
@@ -412,7 +413,7 @@ func (r *run) listZips(spans []span) (streamed []fileRow, members bool, err erro
 		rows, err := tx.QueryContext(r.ctx, `SELECT `+fileCols+`, coalesce(a.state, '') FROM entries e
 				LEFT JOIN archives a ON a.entry_id = e.id LEFT JOIN file_content f ON f.entry_id = e.id
 			WHERE e.source_id = ? AND e.kind = 'file' AND e.state = 'present' AND e.size > 0
-				AND e.ext IN `+archiveExts+` AND (a.entry_id IS NULL OR a.state = 'listing')`+where+`
+				AND e.ext IN `+archiveExts+` AND (a.entry_id IS NULL OR a.state = 'listing') AND `+notQuarantinedE+where+`
 			ORDER BY e.path`, append([]any{string(r.source)}, args...)...)
 		if err != nil {
 			return err
@@ -467,7 +468,7 @@ func (r *run) zipItems(spans []span) (large, small []fileRow, err error) {
 				JOIN archives a ON a.entry_id = m.archive_id JOIN entries e ON e.id = a.entry_id
 				LEFT JOIN file_content f ON f.entry_id = e.id
 			WHERE e.source_id = ? AND e.state = 'present' AND a.state = 'complete' AND a.format = 'zip'
-				AND m.kind = 'file' AND m.state = 'pending'`+where+`
+				AND m.kind = 'file' AND m.state = 'pending' AND `+notQuarantinedE+where+`
 			GROUP BY e.id ORDER BY e.path`, append([]any{string(r.source)}, args...)...)
 		if err != nil {
 			return err
@@ -536,8 +537,8 @@ func (r *run) samplePass(spans []span) error {
 				return nil
 			}
 			rows, err := tx.QueryContext(r.ctx, `SELECT `+fileCols+` FROM file_content f JOIN entries e ON e.id = f.entry_id
-				WHERE f.source_id = ? AND f.state = 'pending' AND f.size = ? AND f.sample IS NULL AND e.state = 'present'`+
-				where+` ORDER BY e.id`, append([]any{string(r.source), size}, args...)...)
+				WHERE f.source_id = ? AND f.state = 'pending' AND f.size = ? AND f.sample IS NULL AND e.state = 'present'
+					AND `+notQuarantinedE+where+` ORDER BY e.id`, append([]any{string(r.source), size}, args...)...)
 			if err != nil {
 				return err
 			}
@@ -581,7 +582,7 @@ func (r *run) largePass(spans []span, items []fileRow) error {
 		err := r.s.st.Read(r.ctx, func(tx *sql.Tx) error {
 			rows, err := tx.QueryContext(r.ctx, `SELECT `+fileCols+` FROM file_content f JOIN entries e ON e.id = f.entry_id
 				WHERE f.source_id = ? AND f.state = 'pending' AND f.size >= ? AND (f.size < ? OR (f.size = ? AND f.entry_id < ?))
-					AND e.state = 'present'`+where+`
+					AND e.state = 'present' AND `+notQuarantinedE+where+`
 				ORDER BY f.size DESC, f.entry_id DESC LIMIT ?`,
 				append(append([]any{string(r.source), LargeFileBytes, curSize, curSize, curID}, args...), pageRows)...)
 			if err != nil {
@@ -643,7 +644,8 @@ func (r *run) smallPass(spans []span, items []fileRow, mark bool) error {
 		}
 		err := r.s.st.Read(r.ctx, func(tx *sql.Tx) error {
 			rows, err := tx.QueryContext(r.ctx, `SELECT `+fileCols+` FROM entries e JOIN file_content f ON f.entry_id = e.id
-				WHERE e.source_id = ?`+cond+` AND e.state = 'present' AND f.state = 'pending' AND f.size < ?`+where+`
+				WHERE e.source_id = ?`+cond+` AND e.state = 'present' AND f.state = 'pending' AND f.size < ?
+					AND `+notQuarantinedE+where+`
 				ORDER BY e.path LIMIT ?`,
 				append(append(append([]any{string(r.source)}, cargs...), LargeFileBytes), append(args, pageRows)...)...)
 			if err != nil {

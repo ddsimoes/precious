@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/rules"
 	"precious/internal/search"
 )
@@ -24,26 +25,27 @@ import (
 // candidate, checked, and duplicated bytes) are computed on read from the
 // members below it, which one archive bounds (design D10).
 
-// memberSelect reads a member of a complete archive: the columns scanMember
+// memberSelect reads a member of a complete archive outside the quarantine
+// (r4 design D2; a WHERE condition follows it): the columns scanMember
 // takes. A file member's copies count it and every other physical copy.
 var memberSelect = `SELECT m.id, m.archive_id, ae.source_id, m.name, ae.path, m.path, a.format = 'zip', m.kind, m.size,
 	m.total_bytes, m.total_files, m.mtime_ns, ae.eff_decision, m.state,
 	CASE WHEN m.state = 'hashed' THEN ` + search.CopiesSQL("m.content_id") + `
 		WHEN m.state = 'unique_size' THEN 1 END
 	FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id AND a.state = 'complete'
-	JOIN entries ae ON ae.id = m.archive_id`
+	JOIN entries ae ON ae.id = m.archive_id AND ` + index.NotQuarantined("ae")
 
 // memberCopySQL holds for a hashed file member m with another physical
-// copy: a present file entry, or a member of a complete archive other than
-// m and its tar hard links.
-const memberCopySQL = `CASE WHEN m.state = 'hashed' THEN
+// copy outside the quarantine: a present file entry, or a member of a
+// complete archive other than m and its tar hard links.
+var memberCopySQL = `CASE WHEN m.state = 'hashed' THEN
 	EXISTS (SELECT 1 FROM file_content of JOIN entries oe ON oe.id = of.entry_id
-		WHERE of.content_id = m.content_id AND oe.state = 'present')
+		WHERE of.content_id = m.content_id AND oe.state = 'present' AND ` + index.NotQuarantined("oe") + `)
 	OR EXISTS (SELECT 1 FROM archive_members om JOIN archives oa ON oa.entry_id = om.archive_id
 		JOIN entries oae ON oae.id = oa.entry_id
 		WHERE om.content_id = m.content_id AND om.kind = 'file'
 			AND coalesce(om.link_member, om.id) <> coalesce(m.link_member, m.id)
-			AND oa.state = 'complete' AND oae.state = 'present')
+			AND oa.state = 'complete' AND oae.state = 'present' AND ` + index.NotQuarantined("oae") + `)
 	ELSE 0 END`
 
 // member is a member's row with the facts its folder figures need.

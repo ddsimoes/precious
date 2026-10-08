@@ -10,6 +10,7 @@ import (
 	"precious/internal/auth"
 	"precious/internal/clock"
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/jobs"
 	"precious/internal/sources"
 )
@@ -29,6 +30,8 @@ const (
 	stateNotEmpty       = "not_empty"
 	stateManualRecovery = "manual_recovery"
 	stateNotAttempted   = "not_attempted"
+	// stateBlocked ends a cleanup item whose subtree holds a keep (r4 D3).
+	stateBlocked = "blocked"
 )
 
 // Item reasons the executor records (the item JSON's reason).
@@ -40,13 +43,42 @@ const (
 	reasonNameTakenByMissing = "name_taken_by_missing"
 	reasonWouldLoseKeep      = "would_lose_keep"
 	reasonAlreadyUndone      = "already_undone"
+	// R4 (r4 D3, D5, D6, D11, D13).
+	reasonIdentityChanged    = "identity_changed"
+	reasonDecisionChanged    = "decision_changed"
+	reasonHoldsKept          = "holds_kept"
+	reasonNoVerifiedCopy     = "no_verified_copy"
+	reasonInQuarantine       = "in_quarantine"
+	reasonReservedName       = "reserved_name"
+	reasonPreviousFolderGone = "previous_folder_gone"
+	reasonUnreadable         = "unreadable"
+	reasonWritesOff          = "writes_off"
+	reasonCheckStale         = "check_stale"
+	reasonFileChanged        = "file_changed"
+	reasonCopyChanged        = "copy_changed"
 )
 
-// Item ops.
+// Action kinds the executor treats apart (r4 D3, D6, D11); every other kind
+// is an organize action of R3.
+const (
+	kindCleanup = "cleanup"
+	kindRestore = "restore"
+	kindPurge   = "purge"
+)
+
+// groundDuplicate is the ground of a cleanup plan drafted from the
+// duplicates list, whose items need a verified copy (r4 D5).
+const groundDuplicate = "duplicate"
+
+// Item ops: R3's, and R4's cleanup steps (r4 D3, D4, D10, D11).
 const (
 	opRename = "rename"
 	opMkdir  = "mkdir"
 	opRmdir  = "rmdir"
+	opRecord = "record"
+	opUnlink = "unlink"
+	opPurge  = "purge"
+	opVerify = "verify"
 )
 
 // Audit event written when the executor turns a source's writes off (D2):
@@ -74,10 +106,14 @@ type item struct {
 	size, mtime     sql.NullInt64
 	reverses        int64
 	state           string
+	// R4's draft-time identity of a cleanup rename (r4 D3): ctime_ns, and a
+	// folder's total bytes and files.
+	ctime, draftBytes, draftFiles sql.NullInt64
 }
 
 const itemColumns = `i.id, i.action_id, i.seq, i.op, i.entry_id, i.from_parent, i.from_name, i.from_path,
-	i.to_parent, i.to_dir_seq, i.to_name, i.to_path, i.kind, i.dev, i.ino, i.size, i.mtime_ns, i.reverses, i.state`
+	i.to_parent, i.to_dir_seq, i.to_name, i.to_path, i.kind, i.dev, i.ino, i.size, i.mtime_ns, i.reverses, i.state,
+	i.ctime_ns, i.draft_bytes, i.draft_files`
 
 func scanItem(s interface{ Scan(...any) error }) (item, error) {
 	var (
@@ -87,7 +123,7 @@ func scanItem(s interface{ Scan(...any) error }) (item, error) {
 	)
 	err := s.Scan(&it.id, &it.action, &it.seq, &it.op, &entry, &fromParent, &it.fromName, &it.fromPath,
 		&toParent, &toDirSeq, &it.toName, &it.toPath, &kind, &it.dev, &it.ino, &it.size, &it.mtime, &reverses,
-		&it.state)
+		&it.state, &it.ctime, &it.draftBytes, &it.draftFiles)
 	it.entry, it.fromParent, it.toParent = entry.Int64, fromParent.Int64, toParent.Int64
 	it.toDirSeq, it.reverses, it.kind = toDirSeq.Int64, reverses.Int64, kind.String
 	return it, err
@@ -130,6 +166,12 @@ type end struct {
 	state, reason, detail string
 	stop                  bool // the action stops
 	writesOff             bool // turn the source's writes off (no_safe_rename)
+	// also are the other planned items that end the same way: the rest of
+	// a cleanup item whose first step failed its re-check (r4 D3).
+	also []int64
+	// staleCheck is a pre-delete check the disk no longer matches, made
+	// stale in the same transaction (r4 D10).
+	staleCheck int64
 }
 
 // record ends the item with e in its own transaction, stopping the action
@@ -148,6 +190,16 @@ func (r *run) record(it item, e end) (verdict, error) {
 func (r *run) recordIn(tx *jobs.Tx, it item, e end) error {
 	if err := endItem(r.bg, tx.SQL(), it.id, e.state, e.reason, e.detail, tx.Now()); err != nil {
 		return err
+	}
+	for _, id := range e.also {
+		if err := endItem(r.bg, tx.SQL(), id, e.state, e.reason, e.detail, tx.Now()); err != nil {
+			return err
+		}
+	}
+	if e.staleCheck != 0 {
+		if err := markCheckStale(r.bg, tx.SQL(), e.staleCheck); err != nil {
+			return err
+		}
 	}
 	if e.writesOff {
 		if err := r.writesOff(tx); err != nil {
@@ -178,7 +230,16 @@ func (r *run) writesOff(tx *jobs.Tx) error {
 
 // item runs one planned item: intent, then its step.
 func (r *run) item(it item) (verdict, error) {
-	it, v, err := r.intent(it)
+	// A cleanup item's reads (its lstat, and the copies of a duplicate
+	// ground) run before its intent, outside any transaction (r4 D3, D5).
+	pre, err := r.preflightCleanup(it)
+	if err != nil {
+		if r.ctx.Err() != nil {
+			return halt, r.interrupted(r.ctx.Err())
+		}
+		return halt, err
+	}
+	it, v, err := r.intent(it, pre)
 	if err != nil || v != goOn || it.state != stateIntent {
 		return v, err
 	}
@@ -187,8 +248,19 @@ func (r *run) item(it item) (verdict, error) {
 		return r.stepRename(it)
 	case opMkdir:
 		return r.stepMkdir(it)
-	default:
+	case opRmdir:
 		return r.stepRmdir(it)
+	case opRecord:
+		return r.stepRecord(it)
+	case opUnlink:
+		return r.stepUnlink(it)
+	case opVerify:
+		return r.stepVerify(it)
+	case opPurge:
+		return r.stepPurge(it, false)
+	default:
+		// An op this executor has no step for never reaches the disk.
+		return r.record(it, end{state: stateFailed, detail: "unknown step " + it.op})
 	}
 }
 
@@ -200,11 +272,13 @@ type entryRow struct {
 	kind, state  string
 	dev, ino     sql.NullInt64
 	size         int64
-	mtime        sql.NullInt64
+	mtime, ctime sql.NullInt64
 	boundary     bool
 	decision     sql.NullString
 	eff          string
 	mountsInside int64
+	// totalBytes and totalFiles are a folder's subtree totals.
+	totalBytes, totalFiles int64
 }
 
 func loadEntry(ctx context.Context, q *sql.Tx, id int64) (entryRow, bool, error) {
@@ -214,10 +288,11 @@ func loadEntry(ctx context.Context, q *sql.Tx, id int64) (entryRow, bool, error)
 		mounts sql.NullInt64
 	)
 	err := q.QueryRowContext(ctx, `SELECT e.id, e.parent_id, e.source_id, e.name, e.path, e.kind, e.state, e.dev,
-			e.ino, e.size, e.mtime_ns, e.mount_boundary, e.decision, e.eff_decision, d.mount_boundaries
+			e.ino, e.size, e.mtime_ns, e.ctime_ns, e.mount_boundary, e.decision, e.eff_decision, d.mount_boundaries,
+			e.total_bytes, e.total_files
 		FROM entries e LEFT JOIN dir_stats d ON d.entry_id = e.id WHERE e.id = ?`, id).
 		Scan(&e.id, &parent, &e.source, &e.name, &e.path, &e.kind, &e.state, &e.dev, &e.ino, &e.size, &e.mtime,
-			&e.boundary, &e.decision, &e.eff, &mounts)
+			&e.ctime, &e.boundary, &e.decision, &e.eff, &mounts, &e.totalBytes, &e.totalFiles)
 	if errors.Is(err, sql.ErrNoRows) {
 		return entryRow{}, false, nil
 	}
@@ -238,8 +313,9 @@ func childPath(parent, name []byte) []byte {
 
 // intent re-checks a planned item and records it intent (design
 // Concurrency, per item). The returned item holds what was recorded; an item
-// that ended here comes back in its end state.
-func (r *run) intent(it item) (item, verdict, error) {
+// that ended here comes back in its end state. pre holds what a cleanup
+// item's preflight read (nil for every other item).
+func (r *run) intent(it item, pre *preflight) (item, verdict, error) {
 	var (
 		v    = goOn
 		wait bool
@@ -309,11 +385,32 @@ func (r *run) intent(it item) (item, verdict, error) {
 		var e *end
 		switch it.op {
 		case opRename:
-			rec, e, err = r.intentRename(ctx, q, it)
+			rec, e, err = r.intentRename(ctx, q, it, pre)
 		case opMkdir:
-			rec, e, err = r.intentMkdir(ctx, q, it)
+			rec, e, err = r.intentMkdir(ctx, q, it, pre)
 		case opRmdir:
 			rec, e, err = r.intentRmdir(ctx, q, it)
+			switch {
+			case err != nil || e != nil:
+			case r.kind == kindRestore || r.kind == kindPurge:
+				if !insideQuarantine(rec.fromPath) {
+					// The sweep of a restore or a purge removes only folders
+					// of the quarantine (r4 D6).
+					e = &end{state: stateChanged}
+				}
+			case index.IsQuarantinePath(rec.fromPath):
+				// Any other rmdir leaves the quarantine alone (r4 D13): what
+				// is in it is restored, or purged after a check.
+				e = &end{state: stateRefused, reason: reasonInQuarantine}
+			}
+		case opRecord:
+			rec, e, err = r.intentRecord(ctx, q, it)
+		case opUnlink:
+			rec, e, err = r.intentUnlink(ctx, q, it)
+		case opVerify:
+			rec, e, err = r.intentVerify(ctx, q, it)
+		case opPurge:
+			rec, e, err = r.intentPurge(ctx, q, it)
 		default:
 			e = &end{state: stateFailed, detail: "unknown step " + it.op}
 		}
@@ -388,8 +485,13 @@ func (r *run) destination(ctx context.Context, q *sql.Tx, it item) (entryRow, bo
 }
 
 // intentRename re-checks a rename (move or rename) and resolves its record.
-func (r *run) intentRename(ctx context.Context, q *sql.Tx, it item) (item, *end, error) {
+// A cleanup rename repeats its item's draft, decision, keep, and copy tests
+// (r4 D3, D5) and keeps its draft-time identity as the identity expected.
+func (r *run) intentRename(ctx context.Context, q *sql.Tx, it item, pre *preflight) (item, *end, error) {
 	changed := &end{state: stateChanged}
+	if r.kind == kindCleanup {
+		changed.reason = reasonIdentityChanged
+	}
 	ent, ok, err := loadEntry(ctx, q, it.entry)
 	if err != nil {
 		return it, nil, err
@@ -399,10 +501,19 @@ func (r *run) intentRename(ctx context.Context, q *sql.Tx, it item) (item, *end,
 		return it, changed, nil
 	}
 	dest, ok, err := r.destination(ctx, q, it)
-	if err != nil || !ok {
-		return it, changed, err
+	if err != nil {
+		return it, nil, err
+	}
+	if !ok {
+		if r.kind == kindRestore {
+			return it, &end{state: stateConflict, reason: reasonPreviousFolderGone}, nil
+		}
+		return it, &end{state: stateChanged}, nil
 	}
 	toPath := childPath(dest.path, it.toName)
+	if e := r.quarantineRules(ent, dest, it.toName); e != nil {
+		return it, e, nil
+	}
 	switch {
 	case ent.boundary:
 		return it, &end{state: stateRefused, reason: reasonOtherFilesystem}, nil
@@ -410,6 +521,15 @@ func (r *run) intentRename(ctx context.Context, q *sql.Tx, it item) (item, *end,
 		return it, &end{state: stateRefused, reason: reasonContainsMount}, nil
 	case ent.kind == "directory" && (bytes.Equal(toPath, ent.path) || bytes.HasPrefix(toPath, append(bytes.Clone(ent.path), '/'))):
 		return it, &end{state: stateRefused, reason: reasonIntoItself}, nil
+	}
+	if r.kind == kindCleanup {
+		var copies *copyCheck
+		if pre != nil {
+			copies = pre.copies
+		}
+		if e, err := r.cleanupRechecks(ctx, q, it, ent, copies); err != nil || e != nil {
+			return it, e, err
+		}
 	}
 	taken, err := r.e.idx.MissingIntentAt(ctx, q, r.src, toPath)
 	if err != nil {
@@ -433,18 +553,85 @@ func (r *run) intentRename(ctx context.Context, q *sql.Tx, it item) (item, *end,
 	rec := it
 	rec.fromParent, rec.fromName, rec.fromPath = ent.parent, ent.name, ent.path
 	rec.toParent, rec.toPath = dest.id, toPath
-	rec.kind, rec.dev, rec.ino, rec.mtime = ent.kind, ent.dev, ent.ino, ent.mtime
-	rec.size = sql.NullInt64{Int64: ent.size, Valid: true}
+	if r.kind != kindCleanup {
+		rec.kind, rec.dev, rec.ino, rec.mtime = ent.kind, ent.dev, ent.ino, ent.mtime
+		rec.size = sql.NullInt64{Int64: ent.size, Valid: true}
+	}
 	return rec, nil, nil
 }
 
-// intentMkdir re-checks a new folder and resolves its record.
-func (r *run) intentMkdir(ctx context.Context, q *sql.Tx, it item) (item, *end, error) {
+// quarantineRules are the rename refusals of r4 D1, D6, and D13: the
+// quarantine folder itself never moves, and nothing takes its name at a
+// source's top folder; a cleanup moves an entry that is not quarantined
+// into the quarantine; a restore moves a quarantined entry out of it, a
+// previous folder in the quarantine being gone; any other rename never goes
+// into the quarantine.
+func (r *run) quarantineRules(ent, dest entryRow, toName []byte) *end {
+	switch {
+	case string(ent.path) == index.QuarantineName,
+		len(dest.path) == 0 && string(toName) == index.QuarantineName:
+		return &end{state: stateRefused, reason: reasonReservedName}
+	}
+	switch r.kind {
+	case kindCleanup:
+		if index.IsQuarantinePath(ent.path) {
+			return &end{state: stateRefused, reason: reasonInQuarantine}
+		}
+		if !insideQuarantine(dest.path) {
+			return &end{state: stateFailed, detail: "a cleanup moves an entry into the quarantine only"}
+		}
+	case kindRestore:
+		if !index.IsQuarantinePath(ent.path) {
+			return &end{state: stateChanged}
+		}
+		if index.IsQuarantinePath(dest.path) {
+			return &end{state: stateConflict, reason: reasonPreviousFolderGone}
+		}
+	default:
+		if index.IsQuarantinePath(dest.path) {
+			return &end{state: stateRefused, reason: reasonInQuarantine}
+		}
+	}
+	return nil
+}
+
+// intentMkdir re-checks a new folder and resolves its record. Only a
+// cleanup makes the quarantine folder; when the source's quarantine,
+// which Precious made, is already there, that item is done with nothing
+// made (r4 D1). The first step of a cleanup item re-checks the whole item
+// (r4 D3).
+func (r *run) intentMkdir(ctx context.Context, q *sql.Tx, it item, pre *preflight) (item, *end, error) {
 	dest, ok, err := r.destination(ctx, q, it)
 	if err != nil || !ok {
 		return it, &end{state: stateChanged}, err
 	}
 	toPath := childPath(dest.path, it.toName)
+	switch {
+	case len(dest.path) == 0 && string(it.toName) == index.QuarantineName:
+		if r.kind != kindCleanup {
+			return it, &end{state: stateRefused, reason: reasonReservedName}, nil
+		}
+		id, found, err := quarantineFolder(ctx, q, r.src)
+		if err != nil || found {
+			if err == nil {
+				_, err = q.ExecContext(ctx, `UPDATE action_items SET entry_id = ?, to_parent = ?, to_path = ?
+					WHERE id = ?`, id, dest.id, toPath, it.id)
+			}
+			return it, &end{state: stateDone}, err
+		}
+	case r.kind != kindCleanup && index.IsQuarantinePath(dest.path):
+		return it, &end{state: stateRefused, reason: reasonInQuarantine}, nil
+	}
+	if pre != nil && pre.first {
+		e, err := r.firstCheck(ctx, q, pre)
+		if err != nil || e != nil {
+			if e != nil {
+				// The item's three steps end together, nothing made (r4 D3).
+				e.also = pre.group()
+			}
+			return it, e, err
+		}
+	}
 	taken, err := r.e.idx.MissingIntentAt(ctx, q, r.src, toPath)
 	if err != nil {
 		return it, nil, err

@@ -72,6 +72,9 @@ func (s *Service) SetTags(ctx context.Context, tx *sql.Tx, req SetTags) (applied
 	if err != nil {
 		return 0, err
 	}
+	if err := frozen(ctx, tx, t); err != nil {
+		return 0, err
+	}
 	var added, removed int64
 	if len(add) > 0 {
 		args := append([]any{clock.Millis(now)}, t.args...)

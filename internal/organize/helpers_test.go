@@ -121,7 +121,7 @@ func newWorld(t *testing.T) *world {
 	})
 	w.org = New(Options{Store: w.st, Policy: pol, AllowWrites: true, Clock: w.clk, Logger: log})
 	ex := executor.New(executor.Options{Store: w.st, Sources: srcs, Index: w.org.Index(), AllowWrites: true,
-		Clock: w.clk, Logger: log})
+		Clock: w.clk, Logger: log, Content: w.hashing})
 	ex.Register(r)
 	w.scanner.DeferWhile(executor.OrganizeActive)
 	w.scanner.Register(r)
@@ -332,7 +332,7 @@ func (w *world) refuse(status int, code domain.ErrorCode, name, body string) {
 // action and every item (following the items' pages).
 func (w *world) plan(name, body string) (actionJSON, []itemJSON) {
 	w.t.Helper()
-	var res planResponse
+	var res PlanResponse
 	decode(w.t, w.ok(http.StatusCreated, name, body), &res)
 	items := res.Items
 	if res.NextCursor != nil {

@@ -21,10 +21,15 @@ import (
 )
 
 // Item operations and the states and reasons a plan writes (Interfaces).
+// record, unlink, purge, and verify are cleanup steps (r4 D3, D4, D10, D11).
 const (
 	opRename = "rename"
 	opMkdir  = "mkdir"
 	opRmdir  = "rmdir"
+	opRecord = "record"
+	opUnlink = "unlink"
+	opPurge  = "purge"
+	opVerify = "verify"
 
 	statePlanned  = "planned"
 	stateRefused  = "refused"
@@ -43,6 +48,10 @@ const (
 	reasonNameTakenByMissing = "name_taken_by_missing"
 	reasonPreviousFolderGone = "previous_folder_gone"
 	reasonWouldLoseKeep      = "would_lose_keep"
+	// R4 (r4 D13): a quarantined entry, which only an individual move takes
+	// out, and the quarantine's reserved name at a source's top folder.
+	reasonInQuarantine = "in_quarantine"
+	reasonReservedName = "reserved_name"
 )
 
 const keep = string(domain.DecisionKeep)
@@ -145,7 +154,8 @@ func parseID(field, s string) (int64, error) {
 
 // folderArg loads the folder named by a request's field: unknown is
 // not_found; anything but a present folder (a file, an archive, a missing
-// or unreadable folder) is invalid_request.
+// or unreadable folder), or a folder at or below a source's quarantine (r4
+// D13), is invalid_request.
 func folderArg(ctx context.Context, tx *sql.Tx, field, s string) (*node, error) {
 	id, err := parseEntryID(field, s)
 	if err != nil {
@@ -161,14 +171,34 @@ func folderArg(ctx context.Context, tx *sql.Tx, field, s string) (*node, error) 
 	if !n.presentFolder() {
 		return nil, domain.Errorf(domain.CodeInvalidRequest, "%s %s is not a folder present on its disk", field, s)
 	}
+	if index.IsQuarantinePath(n.path) {
+		return nil, domain.Errorf(domain.CodeInvalidRequest,
+			"%s %s is in the quarantine, where only a cleanup plan moves items; choose a folder outside it", field, s)
+	}
 	return n, nil
 }
 
-// checkSource refuses planning or running on src: the source's write
-// permission and availability (sources.CheckWrites), then an item that
-// needs the owner's check (D4).
 func (s *Service) checkSource(ctx context.Context, tx *sql.Tx, src domain.SourceID) error {
-	if err := sources.CheckWrites(ctx, tx, src, s.allowWrites); err != nil {
+	return CheckSource(ctx, tx, src, s.allowWrites)
+}
+
+// frozen refuses a quarantined target of a plan other than an individual
+// move (r4 D13): 409 in_quarantine. A quarantined entry is restored or
+// purged, or moved out on its own.
+func frozen(field, s string, n *node) error {
+	if index.IsQuarantinePath(n.path) {
+		return domain.Errorf(domain.CodeInQuarantine,
+			"%s %s is in the quarantine; restore it, or move it out on its own, first", field, s)
+	}
+	return nil
+}
+
+// CheckSource refuses planning or running on src: the source's write
+// permission and availability (sources.CheckWrites, with allowWrites the
+// configuration's [sources] allow_writes), then an item that needs the
+// owner's check (D4). The cleanup plans check their source with it too.
+func CheckSource(ctx context.Context, tx *sql.Tx, src domain.SourceID, allowWrites bool) error {
+	if err := sources.CheckWrites(ctx, tx, src, allowWrites); err != nil {
 		return err
 	}
 	var recovery bool
@@ -183,9 +213,10 @@ func (s *Service) checkSource(ctx context.Context, tx *sql.Tx, src domain.Source
 	return nil
 }
 
-// prune marks planned actions past their expiry expired, and deletes those
-// expired for longer than plannedRetention with their items.
-func prune(ctx context.Context, tx *sql.Tx, now time.Time) error {
+// Prune marks planned actions past their expiry expired, and deletes those
+// expired for longer than plannedRetention with their items. Every plan,
+// the cleanup plans included, calls it before it writes its action.
+func Prune(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE actions SET state = 'expired' WHERE state = 'planned' AND expires_at <= ?`,
 		clock.Millis(now)); err != nil {
 		return fmt.Errorf("organize: expire plans: %w", err)
@@ -321,8 +352,11 @@ type plan struct {
 	// type.
 	sensitive bool
 	fsType    string
-	items     []*item
-	keptLost  int
+	// moveOut is set for an individual plan-move, the only plan that may
+	// take a quarantined entry out of the quarantine (r4 D13).
+	moveOut  bool
+	items    []*item
+	keptLost int
 	// children are the names of the entries that are not missing in each
 	// folder, read once; planned are the names the plan's items take.
 	children map[int64]*names
@@ -410,11 +444,15 @@ func below(p, dir []byte) bool {
 }
 
 // refusal is why n cannot move into d under name, whatever the names there
-// (D7, Interfaces), or "".
+// (D7, Interfaces), or "". A quarantined entry moves only out of the
+// quarantine, in an individual move (r4 D13), and nothing takes the
+// quarantine's name at a source's top folder.
 func (p *plan) refusal(n *node, d dest, name []byte) string {
 	switch {
 	case n.source != p.src:
 		return reasonOtherSource
+	case index.IsQuarantinePath(n.path) && (!p.moveOut || index.IsQuarantinePath(d.path)):
+		return reasonInQuarantine
 	case n.state == "missing":
 		return reasonMissing
 	case n.parent == 0:
@@ -427,6 +465,8 @@ func (p *plan) refusal(n *node, d dest, name []byte) string {
 		return reasonIntoItself
 	case d.id == n.parent && bytes.Equal(name, n.name):
 		return reasonAlreadyThere
+	case len(d.path) == 0 && string(name) == index.QuarantineName:
+		return reasonReservedName
 	}
 	if p.bulk && n.eff == keep && p.after(n, d) != "" {
 		return reasonWouldLoseKeep

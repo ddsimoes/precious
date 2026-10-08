@@ -36,7 +36,9 @@
 // Directories implement fsaccess.Writer with the Linux backend's semantics
 // and errors (see writer.go): a rename keeps the entry's node and identity
 // and never replaces a taken name, Mkdir gives the new folder its parent's
-// permission bits, Rmdir removes only empty folders, and Sync does nothing.
+// permission bits, Rmdir removes only empty folders, Sync does nothing,
+// CreateExclusive adds a file with explicit content over no taken name, and
+// Unlink removes anything but a folder.
 package synthfs
 
 import (

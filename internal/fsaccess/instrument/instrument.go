@@ -3,8 +3,8 @@
 // and bytes rather than by timing (§13.1, design D3). It also offers hooks to
 // interleave test actions with calls and to inject failures. Its directories
 // implement fsaccess.Writer, so writes are counted and logged too (OpRename,
-// OpMkdir, OpRmdir, OpSync); a wrapped directory without a Writer fails them
-// with fsaccess.ErrNoReplaceUnsupported.
+// OpMkdir, OpRmdir, OpSync, OpCreate, OpUnlink); a wrapped directory without
+// a Writer fails them with fsaccess.ErrNoReplaceUnsupported.
 package instrument
 
 import (
@@ -36,12 +36,15 @@ const (
 	// a source tree.
 	OpMounts       Op = "Mounts"
 	OpCapabilities Op = "Capabilities"
-	// OpRename, OpMkdir, OpRmdir, and OpSync are the fsaccess.Writer
-	// methods RenameNoReplace, Mkdir, Rmdir, and Sync.
+	// OpRename, OpMkdir, OpRmdir, OpSync, OpCreate, and OpUnlink are the
+	// fsaccess.Writer methods RenameNoReplace, Mkdir, Rmdir, Sync,
+	// CreateExclusive, and Unlink.
 	OpRename Op = "RenameNoReplace"
 	OpMkdir  Op = "Mkdir"
 	OpRmdir  Op = "Rmdir"
 	OpSync   Op = "Sync"
+	OpCreate Op = "CreateExclusive"
+	OpUnlink Op = "Unlink"
 )
 
 // Call is one logged call.
@@ -53,15 +56,16 @@ type Call struct {
 	// Path holds the raw components below Root that the call addresses: the
 	// directory itself for ReadBatch, FSInfo, Sync, and a directory's Close;
 	// the directory plus the name for Lstat, OpenDir, Readlink, OpenFile,
-	// Mkdir, and Rmdir, and the old name of a RenameNoReplace; the file's
-	// path for ReadAt, FileStat, and a file's Close; nil for OpenRoot,
-	// Mounts, and Capabilities.
+	// Mkdir, Rmdir, CreateExclusive, and Unlink, and the old name of a
+	// RenameNoReplace; the file's path for ReadAt, FileStat, and a file's
+	// Close; nil for OpenRoot, Mounts, and Capabilities.
 	Path [][]byte
 	// To is the FullPath of a RenameNoReplace's new name (its destination
 	// directory plus the new name), empty when the destination directory
 	// was not opened through this Recorder.
 	To string
-	// N is the batch size requested by ReadBatch, or len(p) of a ReadAt.
+	// N is the batch size requested by ReadBatch, len(p) of a ReadAt, or
+	// len(data) of a CreateExclusive.
 	N int
 	// Off is the offset requested by ReadAt.
 	Off int64
@@ -467,6 +471,17 @@ func (d *dir) Rmdir(name []byte) error {
 func (d *dir) Sync() error {
 	c := Call{Op: OpSync, Root: d.root, Path: d.path}
 	return d.write(c, d.inner.Self().Name, func(w fsaccess.Writer) error { return w.Sync() })
+}
+
+// CreateExclusive is logged with N = len(data).
+func (d *dir) CreateExclusive(name, data []byte) error {
+	c := Call{Op: OpCreate, Root: d.root, Path: d.child(name), N: len(data)}
+	return d.write(c, name, func(w fsaccess.Writer) error { return w.CreateExclusive(name, data) })
+}
+
+func (d *dir) Unlink(name []byte) error {
+	c := Call{Op: OpUnlink, Root: d.root, Path: d.child(name)}
+	return d.write(c, name, func(w fsaccess.Writer) error { return w.Unlink(name) })
 }
 
 type file struct {

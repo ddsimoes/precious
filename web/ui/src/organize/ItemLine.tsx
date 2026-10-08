@@ -4,9 +4,10 @@ import type { Item } from '@/api/organize'
 import { cn } from '@/lib/utils'
 
 // ItemLine shows one step of an action: an entry's path before and after,
-// or the folder made or removed, with its state when asked, the reason it
-// was refused or left as it is, the system's error text, and the decision
-// it would take from its new place.
+// the folder made or removed, the origin record written or removed, the
+// item deleted for good, or the comparison before a purge, with its state
+// when asked, the reason it was refused or left as it is, the system's
+// error text, and the decision it would take from its new place.
 export function ItemLine({ item, showState = false }: { item: Item; showState?: boolean }) {
   const { t } = useTranslation()
   const from = item.from?.path ?? ''
@@ -14,7 +15,7 @@ export function ItemLine({ item, showState = false }: { item: Item; showState?: 
   const line =
     item.op === 'rename'
       ? t('organize.item.rename', { from, to })
-      : t(`organize.item.${item.op}`, { path: item.op === 'mkdir' ? to : from })
+      : t(`organize.item.${item.op}`, { path: item.op === 'mkdir' || item.op === 'record' ? to : from })
   return (
     <li
       className={cn(

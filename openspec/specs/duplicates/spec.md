@@ -119,3 +119,10 @@ Files found only on one side of a relation SHALL be counted on screen by Compare
 - **WHEN** the owner selects `Fotos - Copia` after hashing
 - **THEN** the panel shows its relation to `Fotos`, with the bytes in common and a link that opens Compare on the two, and shows no count of files only on either side
 - **AND** Compare on the two counts the files only on each side, `2006/Praia/DSC_editada.JPG` among those only on the right
+
+### Requirement: A quarantined copy is not a copy elsewhere
+Copies inside a source's quarantine folder SHALL count for nothing. They are not listed among a file's copies, not counted in duplicate groups or relations, and not used for the duplicated share (§10.6). A file whose only other copy was quarantined SHALL read as having no other copy once relations are computed again.
+
+#### Scenario: Quarantining one of two copies
+- **WHEN** one of two identical files is quarantined and relations are computed again
+- **THEN** the other file reads "No other copy", and the duplicates card no longer lists the pair

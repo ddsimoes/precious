@@ -61,6 +61,7 @@ describe('Home screen', () => {
       'Discard40 GiB · 45,000 files',
       'Later5 GiB · 5,000 files',
       'Undecided50 GiB · 300,000 files',
+      'In quarantine0 B · 0 files',
     ])
   })
 
@@ -82,6 +83,7 @@ describe('Home screen', () => {
                   keep: { bytes: 0, files: 0 },
                   discard: { bytes: 0, files: 0 },
                   later: { bytes: 0, files: 0 },
+                  quarantine: { bytes: 0, files: 0 },
                 },
               }),
             )
@@ -125,6 +127,28 @@ describe('Home screen', () => {
     await screen.findByRole('region', { name: 'Totals' })
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Source' })).toHaveValue('fotos'))
     expect(homeRequests(requests)).toEqual(['?source=fotos'])
+  })
+
+  it('shows the bytes in quarantine beside the decisions', async () => {
+    const home = homeResponse()
+    stubApi({
+      'GET /api/session': () => jsonResponse(200, signedIn),
+      'GET /api/sources': () => jsonResponse(200, { sources: [fotosSource()] }),
+      'GET /api/home': () =>
+        jsonResponse(200, {
+          ...home,
+          decisions: { ...home.decisions, quarantine: { bytes: 50 * 1024 ** 2, files: 120 } },
+        }),
+    })
+    renderApp('/')
+    await screen.findByRole('region', { name: 'Totals' })
+    expect(rows('Decisions')).toEqual([
+      'Keep25 GiB · 60,000 files',
+      'Discard40 GiB · 45,000 files',
+      'Later5 GiB · 5,000 files',
+      'Undecided50 GiB · 300,000 files',
+      'In quarantine50 MiB · 120 files',
+    ])
   })
 
   it('says when its figures are partial, linking to what could not be read', async () => {

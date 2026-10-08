@@ -42,6 +42,9 @@ type child struct {
 	info  fsaccess.EntryInfo
 	old   *stored
 	token uint64
+	// aside marks the top folder's child at the quarantine's name: walked
+	// and written, never folded into the top folder (ADR 0011).
+	aside bool
 }
 
 // frame is one folder on the walk's stack: open, listed, and accumulating
@@ -64,6 +67,8 @@ type frame struct {
 	stems    map[string]bool
 
 	listed, unreadable, boundary bool
+	// aside: the quarantine at the top, which finish does not absorb.
+	aside bool
 
 	// agg is the fold of the folder's finished children.
 	agg
@@ -231,7 +236,7 @@ func (s *walk) descend(p *frame, c child) error {
 	}
 	f := s.push()
 	f.dir, f.path, f.name, f.info, f.old, f.token = dir, joinPath(p.path, c.name), c.name, c.info, c.old, c.token
-	f.boundary, f.unreadable = c.info.MountBoundary, unreadable
+	f.boundary, f.unreadable, f.aside = c.info.MountBoundary, unreadable, c.aside
 	s.dirs++
 	if f.old != nil {
 		f.id = f.old.id
@@ -374,12 +379,20 @@ func (s *walk) entry(f *frame, name []byte, info *fsaccess.EntryInfo) error {
 			old = nil
 		}
 	}
-	c := child{name: name, info: *info, old: old}
+	c := child{name: name, info: *info, old: old, aside: s.depth == 1 && isQuarantineName(name)}
 
 	if info.Kind == domain.EntryDirectory && old == nil {
 		// The hold of its frame, taken now (descend).
 		c.token = s.newToken()
 		s.hold(c.token)
+	}
+	if c.aside {
+		// The quarantine raises no signal of the top folder either.
+		if info.Kind == domain.EntryDirectory {
+			f.subdirs = append(f.subdirs, c)
+			return nil
+		}
+		return s.uncounted(f, &c)
 	}
 	var indicator rules.SignalID
 	s.sigs, indicator = f.nameSignals(s.pol, s.sigs, name, info.Kind)
@@ -415,6 +428,26 @@ func (s *walk) entry(f *frame, name []byte, info *fsaccess.EntryInfo) error {
 	default:
 		return s.leaf(f, &c)
 	}
+}
+
+// uncounted processes a file, symlink, or special file at the quarantine's
+// name in the top folder f: it is written as any other, but into a fold of
+// its own that nothing takes in, so the top folder does not count it (ADR
+// 0011). That fold's lists are dropped at once.
+func (s *walk) uncounted(f *frame, c *child) error {
+	x := &frame{dir: f.dir, path: f.path, id: f.id, stems: f.stems, agg: newAgg()}
+	var err error
+	if c.info.Kind == domain.EntryFile {
+		err = s.file(x, c, s.pol.FileKind(c.name))
+	} else {
+		err = s.leaf(x, c)
+	}
+	for i := range x.inside {
+		for j := range x.inside[i] {
+			s.drop(x.inside[i][j].token)
+		}
+	}
+	return err
 }
 
 // unchanged reports whether a stored entry's own facts match an Lstat under
@@ -546,11 +579,12 @@ func (s *walk) finish(f *frame) error {
 	}
 
 	s.depth--
-	if s.depth > 0 {
+	if s.depth > 0 && !f.aside {
 		s.absorb(&s.top().agg, &finished{a: &f.agg, r: &r, id: f.id, token: f.token, path: f.path,
 			inside: inside, contribution: contribution})
 	} else {
-		// The root: nothing refers to an indicator after it.
+		// The root, or the quarantine, which the root does not take in:
+		// nothing refers to an indicator after it.
 		for _, ref := range f.refs {
 			s.drop(ref.token)
 		}

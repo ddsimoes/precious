@@ -55,7 +55,9 @@
 // the page when it is by bytes.
 //
 // Entries of every state (present, missing, unreadable) are found; each row
-// carries its state.
+// carries its state. A source's quarantine folder and everything below it
+// are never found (r4 design D2), unless InQuarantine asks for them alone;
+// a quarantined copy is no copy (dupFilter, CopiesSQL).
 //
 // Results are ordered by Sort (bytes, files, newest, or name; default
 // bytes) and Order (desc or asc; default desc, asc for name), ties broken
@@ -105,6 +107,11 @@ type Query struct {
 	Within *domain.EntryID `json:"within,omitempty,string"`
 	Sort   string          `json:"sort,omitempty"`
 	Order  string          `json:"order,omitempty"`
+	// InQuarantine searches the quarantine folders and their contents
+	// only, for the Cleanup screen; every other search leaves them out
+	// (r4 design D2). It has no URL parameter, and a stored selection
+	// never carries it.
+	InQuarantine bool `json:"-"`
 }
 
 // StateUnreadable is the State of the entries that could not be read.

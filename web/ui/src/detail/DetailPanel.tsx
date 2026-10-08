@@ -41,8 +41,9 @@ const sideBySideQuery = '(min-width: 100rem)'
 // DetailPanel shows the entry named by ?entry=<id> on the Map and Search
 // screens: where it is, its sizes and dates, its breakdowns, its
 // classification, its decision and tags with their controls, the controls
-// that organize it on disk, and its technical details. Without ?entry= it
-// renders nothing.
+// that organize it on disk, and its technical details. An entry in
+// quarantine says so instead of offering any control that changes it.
+// Without ?entry= it renders nothing.
 export function DetailPanel() {
   const { t } = useTranslation()
   const [params] = useSearchParams()
@@ -126,6 +127,9 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
   const sources = useSources()
   const [viewing, setViewing] = useState(false)
   const { entry, ancestors, classification, intent, stats } = detail
+  // A quarantined entry keeps its viewer and figures, but shows no control
+  // that would change it (R4 design D13).
+  const quarantined = detail.in_quarantine
   const folder = entry.kind === 'directory'
   const drillable = isDrillable(entry)
   const member = isMember(entry)
@@ -224,6 +228,33 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       {entry.state === 'missing' && <Notice>{t('detail.missing')}</Notice>}
       {entry.state === 'unreadable' && <Notice>{t('detail.unreadableState')}</Notice>}
       {entry.partial && entry.state !== 'unreadable' && <Notice>{t('detail.partial')}</Notice>}
+      {quarantined !== null && (
+        <div role="status" className="grid gap-1 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+          <p className="font-medium break-all">
+            {quarantined.quarantined_at === null
+              ? t('detail.quarantine.noticeNoDate', {
+                  from: quarantined.original?.path ?? t('detail.quarantine.unknownOrigin'),
+                })
+              : t('detail.quarantine.notice', {
+                  when: fmt.dateTime(quarantined.quarantined_at),
+                  from: quarantined.original?.path ?? t('detail.quarantine.unknownOrigin'),
+                })}
+          </p>
+          <p>
+            <Trans
+              i18nKey="detail.quarantine.help"
+              components={{
+                cleanupLink: (
+                  <Link
+                    to={{ pathname: '/cleanup', search: `?${new URLSearchParams({ source: entry.source_id })}` }}
+                    className="font-medium text-primary underline"
+                  />
+                ),
+              }}
+            />
+          </p>
+        </div>
+      )}
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <Fact label={t('detail.kind')}>
@@ -386,31 +417,33 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
             )}
           </div>
         )}
-        {!member && (entry.kind === 'file' || folder) && (
+        {!member && quarantined === null && (entry.kind === 'file' || folder) && (
           <ClassificationControls key={entry.id} entry={entry} classification={classification} />
         )}
       </Section>
 
-      <Section title={t('detail.decision')}>
-        {member ? (
-          <div className="grid gap-1 text-sm">
-            <p className="font-medium">
-              {t('detail.memberDecision', { decision: t(`home.decision.${entry.eff_decision}`) })}
-            </p>
-            <p className="text-muted-foreground">{t('detail.memberHelp')}</p>
-          </div>
-        ) : (
-          <DecisionControls entry={entry} intent={intent} rootLabel={rootLabel} />
-        )}
-      </Section>
+      {quarantined === null && (
+        <Section title={t('detail.decision')}>
+          {member ? (
+            <div className="grid gap-1 text-sm">
+              <p className="font-medium">
+                {t('detail.memberDecision', { decision: t(`home.decision.${entry.eff_decision}`) })}
+              </p>
+              <p className="text-muted-foreground">{t('detail.memberHelp')}</p>
+            </div>
+          ) : (
+            <DecisionControls entry={entry} intent={intent} rootLabel={rootLabel} />
+          )}
+        </Section>
+      )}
 
-      {!member && (
+      {!member && quarantined === null && (
         <Section title={t('detail.tags')}>
           <TagEditor entryId={entry.id} tags={intent.tags} rootLabel={rootLabel} />
         </Section>
       )}
 
-      {!member && entry.state !== 'missing' && (
+      {!member && quarantined === null && entry.state !== 'missing' && (
         <Section title={t('organize.section')}>
           <OrganizeSection
             key={entry.id}

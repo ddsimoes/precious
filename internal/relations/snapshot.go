@@ -290,9 +290,12 @@ func (b *builder) sourceIndex(id domain.SourceID) (int32, bool) {
 	return int32(i), ok
 }
 
+// loadDirs reads the folders that are not missing. The quarantine folder of
+// each source, and every folder below it, is left out (r4 design D2), so
+// whatever lies there falls away as below a missing folder.
 func (b *builder) loadDirs(ctx context.Context, q store.Queryer) error {
 	return scanAll(ctx, q, `SELECT id, COALESCE(parent_id, 0), source_id, path, state <> 'present' OR mount_boundary <> 0
-		FROM entries WHERE kind = 'directory' AND state <> 'missing'`, nil, func(r *sql.Rows) error {
+		FROM entries e WHERE kind = 'directory' AND state <> 'missing' AND `+notQuarantinedE, nil, func(r *sql.Rows) error {
 		var d dirRow
 		var src domain.SourceID
 		if err := r.Scan(&d.id, &d.parent, &src, &d.path, &d.gap); err != nil {
@@ -318,14 +321,15 @@ func (b *builder) physOf(src int32, entry int64, dev, ino, nlink sql.NullInt64) 
 	return [2]int64{-1, entry}
 }
 
-// loadArchives reads the complete archives of present files and their
-// members (archive_members_children order), and orders each one's folders
-// depth first.
+// loadArchives reads the complete archives of present files outside the
+// quarantine and their members (archive_members_children order), and
+// orders each one's folders depth first.
 func (b *builder) loadArchives(ctx context.Context, q store.Queryer) error {
 	err := scanAll(ctx, q, `SELECT a.entry_id, e.parent_id, e.source_id, e.path, e.size, e.dev, e.ino, e.nlink,
 			COALESCE(fc.state, ''), COALESCE(fc.content_id, 0)
 		FROM archives a JOIN entries e ON e.id = a.entry_id LEFT JOIN file_content fc ON fc.entry_id = a.entry_id
-		WHERE a.state = 'complete' AND e.state = 'present' AND e.parent_id IS NOT NULL ORDER BY a.entry_id`,
+		WHERE a.state = 'complete' AND e.state = 'present' AND e.parent_id IS NOT NULL AND `+notQuarantinedE+`
+		ORDER BY a.entry_id`,
 		nil, func(r *sql.Rows) error {
 			var a archiveRow
 			var src domain.SourceID
@@ -658,7 +662,8 @@ func (b *builder) splice(d int32, run [2]int32, src int32) {
 	}
 }
 
-// loadFiles reads the present non-directory entries and keys them.
+// loadFiles reads the present non-directory entries outside the quarantine
+// and keys them.
 func (b *builder) loadFiles(ctx context.Context, q store.Queryer) error {
 	s := b.s
 	if s.dups != nil {
@@ -667,7 +672,8 @@ func (b *builder) loadFiles(ctx context.Context, q store.Queryer) error {
 	return scanAll(ctx, q, `SELECT e.id, e.parent_id, e.kind, e.size, e.dev, e.ino, e.nlink, e.link_text,
 			COALESCE(fc.state, ''), COALESCE(fc.content_id, 0)
 		FROM entries e LEFT JOIN file_content fc ON fc.entry_id = e.id
-		WHERE e.kind <> 'directory' AND e.state = 'present' AND e.parent_id IS NOT NULL`, nil, func(r *sql.Rows) error {
+		WHERE e.kind <> 'directory' AND e.state = 'present' AND e.parent_id IS NOT NULL
+			AND `+notQuarantinedE, nil, func(r *sql.Rows) error {
 		var id, parent, size, content int64
 		var kind, state string
 		var dev, ino, nlink sql.NullInt64

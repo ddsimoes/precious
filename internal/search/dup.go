@@ -14,7 +14,9 @@ import (
 // is a physical copy: a present file entry on any source, offline ones
 // included, where a hard-link set (same dev and ino on a source with stable
 // identity) is one copy; or a file member of a complete archive whose entry
-// is present, where a tar hard link and its target are one copy.
+// is present, where a tar hard link and its target are one copy. A file in
+// a source's quarantine, or a member of an archive there, is no copy (r4
+// design D2): each copy's entry carries notQuarantined.
 
 // copyKey is the physical-copy identity of the file entry aliased x: its
 // hard-link set, or the entry itself.
@@ -26,39 +28,45 @@ func copyKey(x string) string {
 
 // CopiesSQL is the number of physical copies of the content whose ID is the
 // SQL expression content, counting every present file entry and every file
-// member of a complete archive with that content. A hard-link set counts by
-// its lowest entry, a tar hard link by its target; neither count needs a
-// temporary table, so a page row costs two indexed lookups by content.
+// member of a complete archive with that content, outside the quarantine. A
+// hard-link set counts by its lowest entry outside the quarantine, a tar
+// hard link by its target; neither count needs a temporary table, so a page
+// row costs two indexed lookups by content.
 func CopiesSQL(content string) string {
 	return `((SELECT count(*) FROM file_content cf JOIN entries ce ON ce.id = cf.entry_id
-			WHERE cf.content_id = ` + content + ` AND ce.state = 'present'
+			WHERE cf.content_id = ` + content + ` AND ce.state = 'present' AND ` + notQuarantined("ce") + `
 				AND NOT (ce.nlink > 1 AND ce.ino IS NOT NULL AND ce.dev IS NOT NULL
 					AND (SELECT json_extract(cs.capabilities, '$.stable_identity') FROM sources cs WHERE cs.id = ce.source_id) = 1
 					AND EXISTS (SELECT 1 FROM file_content cl JOIN entries cle ON cle.id = cl.entry_id
 						WHERE cl.content_id = ` + content + ` AND cle.state = 'present' AND cle.id < ce.id
-							AND cle.source_id = ce.source_id AND cle.dev = ce.dev AND cle.ino = ce.ino)))
+							AND cle.source_id = ce.source_id AND cle.dev = ce.dev AND cle.ino = ce.ino
+							AND ` + notQuarantined("cle") + `)))
 		+ (SELECT count(*) FROM archive_members cm
 			JOIN archives ca ON ca.entry_id = cm.archive_id JOIN entries cae ON cae.id = ca.entry_id
 			WHERE cm.content_id = ` + content + ` AND cm.kind = 'file' AND ca.state = 'complete' AND cae.state = 'present'
+				AND ` + notQuarantined("cae") + `
 				AND NOT EXISTS (SELECT 1 FROM archive_members ct WHERE ct.id = cm.link_member AND ct.content_id = ` + content + `)))`
 }
 
 // copiesColumn is the copies column of Columns: a hashed present file's
 // physical copies, itself included; 1 for a file whose content is unique by
-// its size or its sample; NULL otherwise.
-var copiesColumn = `CASE WHEN e.state <> 'present' THEN NULL
+// its size or its sample; NULL otherwise, and for a file in the quarantine,
+// which is no copy itself (shown on the Cleanup screen only).
+var copiesColumn = `CASE WHEN e.state <> 'present' OR ` + inQuarantine("e") + ` THEN NULL
 	WHEN fc.state = 'hashed' THEN ` + CopiesSQL("fc.content_id") + `
 	WHEN fc.state IN ('unique_size', 'sampled') THEN 1 END`
 
 // otherCopy is an EXISTS over a physical copy of df's content other than
 // the entry e: another present file entry outside e's hard-link set, or a
-// file member of a complete archive whose entry is present. where, when
-// not nil, further restricts the copy's entry (an entry, or a member's
-// archive entry) by its alias, appending its arguments to args.
+// file member of a complete archive whose entry is present, neither in the
+// quarantine. where, when not nil, further restricts the copy's entry (an
+// entry, or a member's archive entry) by its alias, appending its arguments
+// to args.
 func otherCopy(where func(alias string, args *[]any) string, args *[]any) string {
 	var b strings.Builder
 	b.WriteString(`(EXISTS (SELECT 1 FROM file_content of JOIN entries oe ON oe.id = of.entry_id
 		WHERE of.content_id = df.content_id AND oe.state = 'present' AND oe.id <> e.id
+			AND ` + notQuarantined("oe") + `
 			AND (` + copyKey("oe") + `) IS NOT (` + copyKey("e") + `)`)
 	if where != nil {
 		b.WriteString(` AND `)
@@ -66,7 +74,8 @@ func otherCopy(where func(alias string, args *[]any) string, args *[]any) string
 	}
 	b.WriteString(`) OR EXISTS (SELECT 1 FROM archive_members om JOIN archives oa ON oa.entry_id = om.archive_id
 		JOIN entries oae ON oae.id = oa.entry_id
-		WHERE om.content_id = df.content_id AND om.kind = 'file' AND oa.state = 'complete' AND oae.state = 'present'`)
+		WHERE om.content_id = df.content_id AND om.kind = 'file' AND oa.state = 'complete' AND oae.state = 'present'
+			AND ` + notQuarantined("oae"))
 	if where != nil {
 		b.WriteString(` AND `)
 		b.WriteString(where("oae", args))
@@ -107,7 +116,10 @@ func (w withinRange) outside(x string, args *[]any) string {
 // When the filter drives (r2b design D8), dupDriver has put the file's
 // content row df in the FROM clause; otherwise each candidate row looks it
 // up by its entry ID. Either way, the exact test runs on the candidates
-// only.
+// only. Another copy is never in the quarantine (otherCopy); e itself is
+// kept out by buildFilter's residual on the same row, or, under
+// Query.InQuarantine, is a quarantined file whose copies are those outside
+// the quarantine.
 func dupFilter(b *filterBuilder, dups []domain.DupFilter, w *withinRange, driving bool) {
 	var (
 		conds []string

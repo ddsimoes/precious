@@ -17,13 +17,18 @@ import (
 
 // itemStates are the states of an item, every one counted in an Action.
 var itemStates = []string{"planned", "refused", "conflict", "intent", "done", "not_permitted", "offline", "changed",
-	"failed", "no_safe_rename", "not_empty", "manual_recovery", "not_attempted", "resolved"}
+	"failed", "no_safe_rename", "not_empty", "manual_recovery", "not_attempted", "resolved", "blocked"}
+
+// itemOps are the ops of an item, which the history's items filter on.
+var itemOps = []string{opRename, opMkdir, opRmdir, opRecord, opUnlink, opPurge, opVerify}
 
 // Why an action cannot be undone (Action.undo.reason).
 const (
 	undoNotDone       = "not_done"
 	undoAlreadyUndone = "already_undone"
 	undoNothingDone   = "nothing_done"
+	// undoNotUndoableKind: a cleanup, a restore, or a purge (r4 D13).
+	undoNotUndoableKind = "not_undoable_kind"
 )
 
 // actionJSON is Action of the Interfaces section.
@@ -41,6 +46,11 @@ type actionJSON struct {
 	UndoOf      *string          `json:"undo_of"`
 	Bulk        bool             `json:"bulk"`
 	Counts      map[string]int64 `json:"counts"`
+	// Entries counts, for a cleanup, restore, or purge, the items that
+	// stand for an entry by state: the rename items of a cleanup or a
+	// restore, the purge items of a purge (r4 Interfaces). Other kinds
+	// leave it out.
+	Entries map[string]int64 `json:"entries,omitempty"`
 	// Bytes and Files are those of the items that are planned, under way,
 	// or done: what the action moves or moved.
 	Bytes    int64    `json:"bytes"`
@@ -48,6 +58,14 @@ type actionJSON struct {
 	KeptLost int64    `json:"kept_lost"`
 	Reversed int64    `json:"reversed"`
 	Undo     undoJSON `json:"undo"`
+	// R4: what a cleanup plan was drafted from (its ground, and the review
+	// list), the check a purge deletes, and what a purge deleted and freed.
+	Ground       *string `json:"ground"`
+	List         *string `json:"list"`
+	CheckID      *string `json:"check_id"`
+	DeletedFiles int64   `json:"deleted_files"`
+	DeletedBytes int64   `json:"deleted_bytes"`
+	FreedBytes   int64   `json:"freed_bytes"`
 }
 
 type undoJSON struct {
@@ -95,6 +113,9 @@ type itemJSON struct {
 	Reversed      bool          `json:"reversed"`
 	Bytes         int64         `json:"bytes"`
 	Files         int64         `json:"files"`
+	// KeptCount is, for a blocked cleanup item, how many entries at or
+	// below it the owner keeps (r4 D3); the kept read lists them.
+	KeptCount *int64 `json:"kept_count,omitempty"`
 }
 
 // page is a page of actions or items.
@@ -103,8 +124,9 @@ type page[T any] struct {
 	NextCursor *string `json:"next_cursor"`
 }
 
-// planResponse answers a plan-* command (201).
-type planResponse struct {
+// PlanResponse answers a plan-* command (201): the action and the first
+// page of its items. plan-cleanup answers it with its summary beside.
+type PlanResponse struct {
 	Action     actionJSON `json:"action"`
 	Items      []itemJSON `json:"items"`
 	NextCursor *string    `json:"next_cursor"`
@@ -137,6 +159,10 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
+// cleanupKind reports whether kind is a cleanup kind: a cleanup, a restore,
+// or a purge (r4 D3, D6, D11).
+func cleanupKind(kind string) bool { return !undoable(kind) }
+
 // readAction returns the Action of id; not_found when there is none.
 func readAction(ctx context.Context, tx *sql.Tx, id int64, now time.Time) (actionJSON, error) {
 	out, err := readActions(ctx, tx, []int64{id}, now)
@@ -164,7 +190,8 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 	var dests []domain.EntryID
 	destOf := map[int64]int64{}
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind, source_id, state, bulk, destination_id, undo_of, kept_lost,
-		job_id, created_at, expires_at, started_at, finished_at FROM actions WHERE id IN (`+in+`)`, args...)
+		job_id, created_at, expires_at, started_at, finished_at, ground, list, check_id, deleted_files, deleted_bytes,
+		freed_bytes FROM actions WHERE id IN (`+in+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("organize: read actions: %w", err)
 	}
@@ -173,21 +200,31 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 			a                                        actionJSON
 			id, created                              int64
 			dest, undoOf, job, expires, start, finsh sql.NullInt64
+			ground, list                             sql.NullString
+			check                                    sql.NullInt64
 		)
 		if err := rows.Scan(&id, &a.Kind, &a.SourceID, &a.State, &a.Bulk, &dest, &undoOf, &a.KeptLost, &job, &created,
-			&expires, &start, &finsh); err != nil {
+			&expires, &start, &finsh, &ground, &list, &check, &a.DeletedFiles, &a.DeletedBytes,
+			&a.FreedBytes); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		a.ID, a.UndoOf, a.JobID = strconv.FormatInt(id, 10), idString(undoOf), idString(job)
 		a.CreatedAt, a.ExpiresAt, a.StartedAt, a.FinishedAt = clock.FromMillis(created).UTC(), timeOf(expires),
 			timeOf(start), timeOf(finsh)
+		a.Ground, a.List, a.CheckID = strPtr(ground), strPtr(list), idString(check)
 		if a.State == "planned" && expires.Valid && expires.Int64 <= clock.Millis(now) {
 			a.State = "expired"
 		}
 		a.Counts = make(map[string]int64, len(itemStates))
 		for _, s := range itemStates {
 			a.Counts[s] = 0
+		}
+		if cleanupKind(a.Kind) {
+			a.Entries = make(map[string]int64, len(itemStates))
+			for _, s := range itemStates {
+				a.Entries[s] = 0
+			}
 		}
 		if dest.Valid {
 			dests = append(dests, domain.EntryID(dest.Int64))
@@ -200,26 +237,32 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 		return nil, err
 	}
 
-	// Counts by state, bytes and files of what moves, reversed items, and
-	// the reversible done items left (D11).
-	rows, err = tx.QueryContext(ctx, `SELECT action_id, state, count(*),
-			coalesce(sum(bytes) FILTER (WHERE state IN ('planned', 'intent', 'done')), 0),
-			coalesce(sum(files) FILTER (WHERE state IN ('planned', 'intent', 'done')), 0),
-			count(*) FILTER (WHERE reversed_by IS NOT NULL),
-			count(*) FILTER (WHERE state = 'done' AND entry_id IS NOT NULL AND (op = 'rename' OR op = 'mkdir' AND created = 1)),
-			count(*) FILTER (WHERE state = 'done' AND entry_id IS NOT NULL AND (op = 'rename' OR op = 'mkdir' AND created = 1)
-				AND reversed_by IS NULL)
-		FROM action_items WHERE action_id IN (`+in+`) GROUP BY action_id, state`, args...)
+	// Counts by state, bytes and files of what moves, reversed items, the
+	// reversible done items left (D11), and the items that stand for an
+	// entry of a cleanup kind (a cleanup's or restore's renames, a purge's
+	// purges).
+	rows, err = tx.QueryContext(ctx, `SELECT i.action_id, i.state, count(*),
+			coalesce(sum(i.bytes) FILTER (WHERE i.state IN ('planned', 'intent', 'done')), 0),
+			coalesce(sum(i.files) FILTER (WHERE i.state IN ('planned', 'intent', 'done')), 0),
+			count(*) FILTER (WHERE i.reversed_by IS NOT NULL),
+			count(*) FILTER (WHERE i.state = 'done' AND i.entry_id IS NOT NULL
+				AND (i.op = 'rename' OR i.op = 'mkdir' AND i.created = 1)),
+			count(*) FILTER (WHERE i.state = 'done' AND i.entry_id IS NOT NULL
+				AND (i.op = 'rename' OR i.op = 'mkdir' AND i.created = 1) AND i.reversed_by IS NULL),
+			count(*) FILTER (WHERE a.kind IN ('cleanup', 'restore') AND i.op = 'rename'
+				OR a.kind = 'purge' AND i.op = 'purge')
+		FROM action_items i JOIN actions a ON a.id = i.action_id
+		WHERE i.action_id IN (`+in+`) GROUP BY i.action_id, i.state`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("organize: count items: %w", err)
 	}
 	reversible, left := map[int64]int64{}, map[int64]int64{}
 	for rows.Next() {
 		var (
-			id, n, bytes, files, reversed, rev, lft int64
-			state                                   string
+			id, n, bytes, files, reversed, rev, lft, entries int64
+			state                                            string
 		)
-		if err := rows.Scan(&id, &state, &n, &bytes, &files, &reversed, &rev, &lft); err != nil {
+		if err := rows.Scan(&id, &state, &n, &bytes, &files, &reversed, &rev, &lft, &entries); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -228,6 +271,9 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 		a.Bytes += bytes
 		a.Files += files
 		a.Reversed += reversed
+		if a.Entries != nil {
+			a.Entries[state] = entries
+		}
 		reversible[id] += rev
 		left[id] += lft
 	}
@@ -251,6 +297,8 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 		}
 		var reason string
 		switch {
+		case !undoable(a.Kind):
+			reason = undoNotUndoableKind
 		case a.State != "done" && a.State != "stopped":
 			reason = undoNotDone
 		case reversible[id] == 0:
@@ -268,18 +316,25 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 }
 
 // readItems returns a page of the items of action after seq, in seq order,
-// only those in states when it is not empty.
-func readItems(ctx context.Context, tx *sql.Tx, action int64, states []string, after int64, limit int) (page[itemJSON], error) {
-	query := `SELECT id, seq, op, entry_id, from_path, to_path, state, reason, decision_after, detail,
-		reversed_by IS NOT NULL, bytes, files FROM action_items WHERE action_id = ? AND seq > ?`
+// only those in states and of ops when they are not empty.
+func readItems(ctx context.Context, tx *sql.Tx, action int64, states, ops []string, after int64, limit int) (page[itemJSON], error) {
+	query := `SELECT i.id, i.seq, i.op, i.entry_id, i.from_path, i.to_path, i.state, i.reason, i.decision_after,
+		i.detail, i.reversed_by IS NOT NULL, i.bytes, i.files, a.source_id
+		FROM action_items i JOIN actions a ON a.id = i.action_id WHERE i.action_id = ? AND i.seq > ?`
 	args := []any{action, after}
 	if len(states) > 0 {
-		query += ` AND state IN (` + placeholders(len(states)) + `)`
+		query += ` AND i.state IN (` + placeholders(len(states)) + `)`
 		for _, s := range states {
 			args = append(args, s)
 		}
 	}
-	query += ` ORDER BY seq LIMIT ?`
+	if len(ops) > 0 {
+		query += ` AND i.op IN (` + placeholders(len(ops)) + `)`
+		for _, o := range ops {
+			args = append(args, o)
+		}
+	}
+	query += ` ORDER BY i.seq LIMIT ?`
 	args = append(args, limit+1)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -287,7 +342,12 @@ func readItems(ctx context.Context, tx *sql.Tx, action int64, states []string, a
 	}
 	items := []itemJSON{}
 	entryOf := map[int]domain.EntryID{}
-	var entries []domain.EntryID
+	var (
+		entries []domain.EntryID
+		src     domain.SourceID
+		blocked []int
+		paths   = map[int][]byte{}
+	)
 	for rows.Next() {
 		var (
 			it               itemJSON
@@ -297,7 +357,7 @@ func readItems(ctx context.Context, tx *sql.Tx, action int64, states []string, a
 			reason, after, d sql.NullString
 		)
 		if err := rows.Scan(&id, &it.Seq, &it.Op, &entry, &from, &to, &it.State, &reason, &after, &d, &it.Reversed,
-			&it.Bytes, &it.Files); err != nil {
+			&it.Bytes, &it.Files, &src); err != nil {
 			rows.Close()
 			return page[itemJSON]{}, err
 		}
@@ -312,6 +372,10 @@ func readItems(ctx context.Context, tx *sql.Tx, action int64, states []string, a
 		if entry.Valid {
 			entryOf[len(items)] = domain.EntryID(entry.Int64)
 			entries = append(entries, domain.EntryID(entry.Int64))
+		}
+		if it.State == "blocked" && from.Valid {
+			blocked = append(blocked, len(items))
+			paths[len(items)] = from.V
 		}
 		items = append(items, it)
 	}
@@ -333,6 +397,16 @@ func readItems(ctx context.Context, tx *sql.Tx, action int64, states []string, a
 		if e, ok := entryOf[i]; ok {
 			items[i].Entry = rowsOf[e]
 		}
+	}
+	for _, i := range blocked {
+		if i >= len(items) {
+			break
+		}
+		n, err := countKept(ctx, tx, src, paths[i])
+		if err != nil {
+			return page[itemJSON]{}, err
+		}
+		items[i].KeptCount = &n
 	}
 	return page[itemJSON]{Items: items, NextCursor: next}, nil
 }
@@ -360,16 +434,16 @@ func actionState(ctx context.Context, tx *sql.Tx, id int64) (state string, src d
 	return state, src, expires, err
 }
 
-// planResult reads the response of a plan: the action and its first page
-// of items.
-func planResult(ctx context.Context, tx *sql.Tx, id int64, now time.Time) (planResponse, error) {
+// ReadPlan reads the response of a plan: the action id and its first page
+// of items, in tx at now. The cleanup plans answer with it too.
+func ReadPlan(ctx context.Context, tx *sql.Tx, id int64, now time.Time) (PlanResponse, error) {
 	a, err := readAction(ctx, tx, id, now)
 	if err != nil {
-		return planResponse{}, err
+		return PlanResponse{}, err
 	}
-	items, err := readItems(ctx, tx, id, nil, 0, itemsDefaultLimit)
+	items, err := readItems(ctx, tx, id, nil, nil, 0, itemsDefaultLimit)
 	if err != nil {
-		return planResponse{}, err
+		return PlanResponse{}, err
 	}
-	return planResponse{Action: a, Items: items.Items, NextCursor: items.NextCursor}, nil
+	return PlanResponse{Action: a, Items: items.Items, NextCursor: items.NextCursor}, nil
 }

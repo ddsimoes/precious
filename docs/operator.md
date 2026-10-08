@@ -1,8 +1,8 @@
 # Precious operator guide
 
-Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks, except where you allow changes on one: there it moves, renames, and creates folders when you ask, and it never deletes, overwrites, or writes into a file (see [Changing disks](#changing-disks)). This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
+Precious helps you make sense of a disk that has been collecting files for years. It indexes every file and folder on the disks you add, shows where the space goes, lets you find any file, and lets you record what to keep and what to discard, all from a web browser. It only reads your disks, except where you allow changes on one: there it moves, renames, and creates folders when you ask, moves what you discarded into a quarantine folder on the same disk, and deletes for good only quarantined files that a check has read and you approved; it never overwrites or writes into a file of yours (see [Changing disks](#changing-disks) and [Cleanup](#cleanup)). This guide covers building, installing, configuring, and running it. The product specification is [`precious-spec-v0.3.md`](../precious-spec-v0.3.md).
 
-This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, and opportunity cards with review lists, among them your own files found inside programs. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing (moving, renaming, and creating folders on the sources where you allow it) comes with R3 (see [Changing disks](#changing-disks)); cleanup (quarantine and deletion) comes in a later release. Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
+This release, R2, adds duplicates to the full index and explorer of R1. Besides sources added from the browser, complete scans and rescans with every folder's size, classification rules, Home, Map, Search, the detail panel, the file viewer, and your decisions and tags, Precious now reads file content in the background to find copies: duplicate files, folders and archives that hold the same files, a side-by-side Compare, and opportunity cards with review lists, among them your own files found inside programs. It browses and views inside zip and tar archives without unpacking them. Duplicates are information only: you decide each copy yourself, and nothing in R2 changes a file on a disk. Organizing (moving, renaming, and creating folders on the sources where you allow it) comes with R3 (see [Changing disks](#changing-disks)), and cleanup (quarantine, restore, and deletion for good) with R4 (see [Cleanup](#cleanup)). Why the product was reset from the earlier `curator` design is recorded in [ADR 0008](adr/0008-product-reset.md).
 
 ## Installation
 
@@ -486,7 +486,7 @@ Some folders are refused:
 
 The browser never sends a typed path. Each folder the picker shows carries an opaque handle signed with a key that Precious makes when it starts, and adding a source names that handle. After a restart the old handles are refused, so reopen the picker.
 
-Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, history of changes by Precious, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed, and nothing changes, while its scan is queued, running, or paused, or while a change by Precious on it (a move, a rename, a new folder) is waiting its turn or running (`job_active`); cancel it first. Nor can it while a step of a change is still being recorded or waits for you to check it in History (`recovery_needed`): removing the source would delete the only record of a step that may be half done. Resolve the step first. A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
+Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, history of changes by Precious, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed, and nothing changes, while its scan is queued, running, or paused, or while a change by Precious on it (a move, a rename, a new folder) is waiting its turn or running (`job_active`); cancel it first. Nor can it while a step of a change is still being recorded or waits for you to check it in History (`recovery_needed`): removing the source would delete the only record of a step that may be half done. Resolve the step first. Nor can it while its quarantine holds items (`quarantine_not_empty`): restore them or delete them for good first (see [Removing a source with a quarantine](#removing-a-source-with-a-quarantine)). A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
 
 ### Allowed roots
 
@@ -533,7 +533,7 @@ Each source in `GET /api/sources` carries `schedule` (the object above, or `null
 
 ### Changes by Precious
 
-Each source has its own write permission: whether Precious may move, rename, and create folders on it when you ask. Every source starts with it off, so Precious only reads it. Turn it on with **Allow changes…** on the Sources screen, which asks first, and off with **Turn off**, which takes effect at once; the next step of a change in progress checks it and stops.
+Each source has its own write permission: whether Precious may change it when you ask, by moving, renaming, and creating folders, and by cleaning it up (see [Cleanup](#cleanup)). Every source starts with it off, so Precious only reads it. Turn it on with **Allow changes…** on the Sources screen, which asks first, and off with **Turn off**, which takes effect at once; the next step of a change in progress checks it and stops.
 
 | Command | Request | Response |
 |---|---|---|
@@ -548,6 +548,8 @@ Each source in `GET /api/sources` carries `writes`: `{"enabled":false,"unavailab
 | `no_replace_rename` | The filesystem cannot rename without the risk of replacing an existing file (`capabilities.no_replace_rename` is `false`; see [Filesystem capabilities](#filesystem-capabilities)). |
 
 The reasons read the capabilities as last recorded, which Precious refreshes every minute and whenever the list is loaded. Turning writes on while `unavailable` is not `null` is refused with `409 writes_unavailable` and changes nothing; turning them off always succeeds, also where they are unavailable. A missing or malformed `enabled`, or any other field, is `invalid_request`, and an unknown source `unknown_source`. Each change writes one `source_writes_set` audit event with the source, the new value, and the previous one; a request that sets the value the source already has changes nothing and writes no event.
+
+Each source in `GET /api/sources` also carries `quarantine`: `{"files":12,"bytes":50000000,"name_taken":false}`. `files` and `bytes` are what the source's [quarantine folder](#the-quarantine-folder) holds, its own row's totals, and `0` while it has none. `name_taken` is `true` when the top of the source holds an entry named `.precious-quarantine` that Precious did not create: a folder or file of your own, which Precious hides like its quarantine and which you need to rename before it can clean up that source.
 
 ### Volumes that cannot be recognized when moved
 
@@ -591,6 +593,10 @@ A scan that finishes successfully starts a hashing job for every online source (
 ### Moves made by Precious
 
 When Precious itself moves or renames an entry, or creates or removes a folder, on a source, the index follows in the same database transaction that records the step, without a rescan. A moved entry keeps its ID, so its decision, tags, classification overrides, digests, and archive listing go with it, and so does everything below a moved folder; its effective decision then comes from its new folder unless it has its own. Its classification, and the totals, breakdowns, and classification of every folder above its old and new places, are recomputed from the index exactly as a scan computes them, so after moves and renames the next rescan finds nothing to change (after a new folder, it only records the folder's own size on disk). A folder's indicator examples are therefore the first 20 by path; the first scan after upgrading reorders those lists once. A large folder moves in one transaction, which holds other writes to the index for a moment (well under 10 seconds for 100,000 entries). A missing entry that holds the destination's name is removed from the index, with whatever is below it, unless one of them carries your decision, a tag, or an override: the step is then refused. A scan waits while Precious is changing its source.
+
+### The quarantine folder
+
+Each source's quarantine is the folder `.precious-quarantine` at the source's top. Scans walk it like any other folder, so the index always matches what is in it: a file deleted there by hand goes missing, and a file put there by hand, or left there by an interrupted step, is added. They never count it, though: the source's top folder leaves it out of its totals, breakdowns, and classification, so the source's size, Home, and every folder's figures exclude what is in quarantine. The quarantine folder's own row still adds up what it holds, which is how Home shows the bytes in quarantine. Hashing, duplicates, review lists, relations, the Map, and Search leave everything at or below that path out. A file or link with that name at the top is likewise left out of the totals. A folder of that name anywhere below the top is an ordinary folder.
 
 ### Scheduled scans
 
@@ -664,6 +670,8 @@ Each job starts by grouping, without reading anything, every present non-empty f
 
 A digest stays valid until a rescan finds that the file's size, modification time, change time, or identity changed; the rescan then discards it. A file that did not change is never read again, across jobs and restarts.
 
+Nothing in a source's quarantine (see [The quarantine folder](#the-quarantine-folder)) is grouped or read: a file there is never enrolled, a file moved there while still to read stays unread, and its size no longer keeps another file's size group alive, so a file left alone in its size outside the quarantine is no longer read. A file moved there keeps the digest it had, so a restore brings it back already checked.
+
 ### Reading order
 
 1. The source's zip archives that are not listed yet: only their central directories (see [Archives](#archives)).
@@ -693,9 +701,11 @@ Coverage is published per source and for all sources together (Home, and the det
 
 A file inside a listed archive counts under the archive's source. A file with no other copy by size is not in these figures: its claim needs no read. Every "no other copy" claim states the checked share of all sources, because a copy can be anywhere. Archives Precious does not open (7z, rar, partly read or damaged ones) count as plain files, so a file inside them is never seen as a copy.
 
+Files in quarantine are not in these figures, nor are the members of an archive in quarantine. The figures are recomputed whenever a hashing job groups the files, so a cleanup or a restore shows in them from the next hashing job.
+
 ### Check now
 
-`check-now` with `{"entry_ids":["12","m45"]}` (one or two folders, archive files, or folders inside archives) hashes what is not checked yet inside them before any other hashing on their disks, for example to compare two folders while the first hashing run has not reached their small files. It answers 202 with `{"jobs":[{"job_id","state","coalesced"}]}`, one job per source; a second request for the same source adds its folders to the job already waiting or running. A file is 400 `invalid_request`, an unknown ID 404, and a folder on an unmounted source 409 `source_offline`. The rest of the source continues with its regular hashing job afterwards.
+`check-now` with `{"entry_ids":["12","m45"]}` (one or two folders, archive files, or folders inside archives) hashes what is not checked yet inside them before any other hashing on their disks, for example to compare two folders while the first hashing run has not reached their small files. It answers 202 with `{"jobs":[{"job_id","state","coalesced"}]}`, one job per source; a second request for the same source adds its folders to the job already waiting or running. A file is 400 `invalid_request`, an unknown ID 404, a folder on an unmounted source 409 `source_offline`, and an entry in a quarantine 409 `in_quarantine`: only the [pre-delete check](#the-pre-delete-check) reads what is there. The rest of the source continues with its regular hashing job afterwards.
 
 ### Progress and cancelling
 
@@ -874,7 +884,7 @@ When the rules get an entry wrong, you can correct them. Your choice always wins
 
 The item itself reads its new category or group at once. The figures of the folders above it (their size by category and what stands out inside them) and the review lists follow when the scan of its disk that the change starts ends; if that disk is already being scanned, the scan runs once more. A disk that is not connected keeps the change, and its next scan applies it. The detail panel marks each value you set with **set by you** and says what the rules would set.
 
-Through the command API (see [Commands](#commands)): `set-category` with `{"entry_id":"12","category":"documents"}`, `{"entry_ids":[…]}` (1 to 1,000), or `{"selection_id":"…"}`, and `"category":"rules"` to remove yours; `set-group` with the same targets and `"group":true`, `false`, or `"rules"`. Both answer `{"applied":n,"scan":{"job_id","coalesced"}}`, or `"scan":null` when the disk is not connected. An archive member, a `set-group` on anything but a folder, and a category on a symbolic link or special file are refused with `invalid_request`, and a refused request changes nothing. Each accepted request writes one audit event, `category_set` or `group_set`, with the entries or selection, the old values (`rules` when the rules decided), and the new value.
+Through the command API (see [Commands](#commands)): `set-category` with `{"entry_id":"12","category":"documents"}`, `{"entry_ids":[…]}` (1 to 1,000), or `{"selection_id":"…"}`, and `"category":"rules"` to remove yours; `set-group` with the same targets and `"group":true`, `false`, or `"rules"`. Both answer `{"applied":n,"scan":{"job_id","coalesced"}}`, or `"scan":null` when the disk is not connected. An archive member, a `set-group` on anything but a folder, and a category on a symbolic link or special file are refused with `invalid_request`, an entry in a quarantine with `in_quarantine` (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)), and a refused request changes nothing. Each accepted request writes one audit event, `category_set` or `group_set`, with the entries or selection, the old values (`rules` when the rules decided), and the new value.
 
 ## Duplicates and Compare
 
@@ -887,6 +897,8 @@ A **duplicate group** is one content held by at least two copies among the prese
 A group's **redundant bytes** are its size times the number of copies minus one: what deleting every copy but one would give back. Precious never picks that one copy for you; each copy keeps its own decision.
 
 A file is said to have **no other copy** only when that is known: no other file anywhere has its size, its 64 KiB samples differ from every file of its size, or it was read in full and no other file has its digest. The claim always comes with the share of the content that could have a copy and was checked, across every source, because a copy could sit on any of them. Archives that are not opened (7z, rar, encrypted zips, archives inside archives, and archives that went over a budget) count as plain files: a copy inside one is not seen.
+
+A copy in quarantine is no copy. The detail panel's **Copies**, the duplicate groups, and every "other copy" count only files and members outside every source's quarantine: once one of two identical files moves to quarantine, the other has no copy left, and its group is gone. The quarantined file itself still lists the copies outside, which are what a cleanup verified before moving it.
 
 ### Folder relations
 
@@ -903,6 +915,8 @@ Each relation records its matched bytes, its redundant bytes, and the files and 
 A folder that holds a file not checked yet, a file that could not be read, an unreadable folder, or a mount point is never claimed `same` or `inside`: something in it might exist nowhere else. It can still `overlap`. Files that are empty count for nothing, and symbolic links match by their target text.
 
 Each copy is listed once, at its highest related folder: when `Fotos - Copia` overlaps `Fotos` and their `2004` folders are the same, the list holds those two relations, and none for the folders inside `2004`. Folders that hold nothing but one folder are named by it in a `same` relation, so a copied program folder pairs with the original even when it sits alone in its parent; a folder that holds nothing but an archive is named by the archive.
+
+No relation has a side in quarantine, and nothing in quarantine matches anything: the relations leave the quarantine folder out with everything below it, as they leave out what lies below a folder that is gone. Moving one side of a `same` relation to quarantine therefore ends that relation at the next `relate` run, and what is left of the other side is related again as it now stands.
 
 ### Percent duplicated
 
@@ -932,6 +946,8 @@ Compare opens on the first group that holds files, in this order: only on the le
 Each file shows its path inside each side whenever the two paths differ: when `fotos-b/2002/12/img_0001.jpg` is identical to `fotos/2014/celular/IMG_0001.jpg`, the item reads `2002/12/img_0001.jpg` on the left and `2014/celular/IMG_0001.jpg` on the right. When one side holds more copies of a content than the other, the identical group pairs them in path order and lists each copy left over on its own as an **extra copy**, naming the file on the other side that holds the same content ("Extra copy, same as … on the left"). The groups' counts and bytes are unchanged by this: an item counts once, at its left file's size, else its right file's.
 
 When one side holds nothing but a single folder, such as `emule-0.47c/` inside a zip, and dropping it lines up the paths with the other side, Compare drops it. The two sides cannot contain each other: comparing `Fotos` with `Fotos/2005`, or a file, is refused with `400 invalid_request`.
+
+A side never lists what is in its source's quarantine, so comparing a source's top folder with a folder on another source leaves the quarantine out. A folder inside the quarantine, compared on its own, lists its own files.
 
 ### When relations are recomputed
 
@@ -966,6 +982,7 @@ How the bytes are counted:
 - **A duplicates row** is a relation (its bytes are one side's worth of redundant bytes), or a group of identical files with at least one copy outside every listed relation. A group's bytes are its size times its copies outside the listed relations, less one when none of its copies is inside a relation: the relation already counts the copies inside it. Hard links to one file are one copy. Files inside archives count as copies; the archive itself does not.
 - **Only open rows count.** A row is open while its entry's effective decision is undecided. A duplicates row is open while at least two of its copies are undecided (for a relation, both sides). A row of **Your files inside programs** is open until you decide the file itself or it is kept (see below). Deciding an entry, or the folder above it, closes its row at once and shrinks the card by the row's bytes. A card's bytes are always the sum of its list's open rows, read through every page.
 - **Decided rows show as progress.** Besides its open rows, each card and each list's header shows how many rows are no longer open and what they hold, such as "20 decided (4.4 GiB)"; these equal the list of decided rows. A card with no open row left reads **Nothing left to review** instead of zero.
+- **Nothing in quarantine is a row.** No card counts an entry in a source's quarantine, a relation with a side there, a rescue row inside a group there, or a duplicate group whose copies outside the quarantine are fewer than two; a copy in quarantine is never offered as a group's copy. Until the next `relate` run rewrites the rows, a duplicates row with a copy just moved to quarantine is no longer open when fewer than two copies outside it are undecided, and the entries moved there carry the discard they were moved with, so their rows are closed too.
 
 The rows are recomputed by the `relate` job (see Duplicates and Compare), after each scan and as hashing advances, so the classification and duplicates they show are as current as that job's last run. Decisions are never stored in them: they are read live.
 
@@ -1007,20 +1024,22 @@ The interface reads the index through a small JSON API under `/api`. The same en
 
 | Endpoint | Answers |
 |---|---|
-| `GET /api/home`, `GET /api/home?source=ID` | The figures of Home for every source, or for one: totals, bytes and files by family, by file kind, and by year, the decision totals, whether the figures are partial, and the scans in progress. |
+| `GET /api/home`, `GET /api/home?source=ID` | The figures of Home for every source, or for one: totals, bytes and files by family, by file kind, and by year, the decision totals, whether the figures are partial, and the scans in progress. The decision totals are `undecided`, `keep`, `discard`, and `later`, each `{"bytes","files"}` over the present files outside the quarantine, and `quarantine`, the bytes and files of every quarantine folder chosen, kept apart from the other four and from the totals. |
 | `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). |
 | `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable); with `kind=directory`, only its folders, archives left out. |
 | `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. |
 | `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
 | `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text` | A file's content, and its text decoded. See [Viewer safety](#viewer-safety). |
-| `GET /api/history`, `GET /api/history/{id}`, `GET /api/history/{id}/items` | The changes Precious made or planned on the disks, and their items. See [Organizing](#organizing). |
+| `GET /api/history`, `GET /api/history/{id}`, `GET /api/history/{id}/items` | The changes Precious made or planned on the disks, and their items. See [Organizing](#organizing) and [Cleanup API](#cleanup-api). |
 
 Every entry row carries its name and path twice: `name` and `path` are the escaped display form, and `name_b64` and `path_b64` are the exact bytes on disk in base64. A name that is not valid UTF-8 is therefore never lost. For example, a Latin-1 `fé.txt` shows as `f\xE9.txt`, and its raw bytes are `ZukudHh0`. Times are in UTC, in RFC 3339 form, or `null` when unknown.
 
 Every entry row also carries `composition`, its bytes and files by family as a list such as `[{"family":"personal","bytes":400000000000,"files":7},{"family":"programs","bytes":6000000000,"files":5}]`: a folder's composition, or for a file one element under its family. Families with nothing in them are left out. See [What a folder is made of](#what-a-folder-is-made-of).
 
 The detail of `GET /api/entries/{id}` also helps the Map shorten paths and explain archives. Each folder in `ancestors` has `only_child`, true when it holds nothing but the next one (the entry itself for its parent). `only_folder` is the ID of a folder's only item when that item is a folder, and `null` otherwise. `archive_note` says why an archive file has no `archive`: `unsupported` for a format Precious recognizes but does not open (7z, rar, xz, cab, jar, and the like), `nested` for an archive inside an archive, `not_listed` for a format it opens that was not listed yet, and `null` for anything else. Items in every state count, as in the children list.
+
+**The quarantine is left out of every view.** Each source's [quarantine folder](#the-quarantine-folder) and everything inside it never appear among a folder's children, in a treemap, in `only_folder` or `only_child`, in search results, counts, or selections, in the decision totals, or among a file's copies: a file in quarantine is no copy, so the `copies` of the others drop, and an archive in quarantine lists no items. Its entries keep their IDs, and `GET /api/entries/{id}` still answers for each one, with `in_quarantine` set: `{"plan_id","quarantined_at","original":{"path","path_b64"}}` for the top item of a cleanup plan and everything inside it (the plan, when its move was done, and where the item was), each `null` for the quarantine's own folders and for an item found there with no move recorded (origin unknown). `in_quarantine` is `null` for every entry outside the quarantine, and the `copies` of a file in quarantine is `null`.
 
 Children are sorted with `sort=bytes`, `files`, `newest` (the newest change inside a folder), or `name`, and with `order=desc` or `asc`. By default the sort is by bytes, largest first. A sort by name defaults to ascending and compares the raw bytes of the names, so `Zeta` comes before `alfa`. `kind=directory` lists only the folders, in every state, sorted and paged the same way; an archive is a file, so it is left out, even one Precious can open as a folder, and inside such an archive only the member folders are listed. It is the only `kind` accepted. A page holds 200 rows unless `limit` asks for another number, and never more than 1,000. A page with more after it carries `next_cursor`, and the same request with `cursor=` set to it gives the next page. A cursor belongs to the folder's order and `kind`: changing `sort`, `order`, or `kind` needs a new first page. A cursor holds the position of the last row, not a row count. So a row added or removed while you page does not shift the other rows: a new row is listed only when it sorts after the current page. A row whose size or date a scan changes may move to a page already read.
 
@@ -1155,7 +1174,7 @@ A keep protects an entry, and everything inside a kept folder, from changes made
 - **One entry at a time** (the detail panel, or a request naming one `entry_id`), you can set any decision, including changing a keep, explicit or inherited.
 - **In bulk** (several selected entries, or all the results of a search), any decision other than keep skips every entry whose effective decision is keep, explicit or inherited, and applies to the rest. Inherit in bulk skips them too, so it never clears a keep. The result says how many entries were changed and how many were skipped, and lists up to 100 of the skipped ones with their paths. Keep in bulk applies to every entry.
 
-Discarding a folder that holds a kept entry discards the folder and leaves the kept entry, and everything inside it, kept. Cleanup plans (a later release) never remove a kept entry.
+Discarding a folder that holds a kept entry discards the folder and leaves the kept entry, and everything inside it, kept. A cleanup plan never moves a kept entry: such a folder is blocked as a whole (see [Blocked items and kept entries](#blocked-items-and-kept-entries)).
 
 A bulk request is checked against the decisions in force when it is applied: a keep set a moment before it, on an entry or on a folder above it, is honored.
 
@@ -1184,17 +1203,17 @@ Decisions and tags change through the command API, `POST /api/commands/{name}` w
 | `create-tag`, `rename-tag`, `delete-tag` | `{"name":"familia"}`, `{"tag_id":3,"name":"família"}`, `{"tag_id":3}` | `{"tag":{"id","name"}}` |
 | `create-selection` | `{"query":{…}}`, with the parameters of a search | `{"selection_id","count","bytes","kept":{"count","bytes"},"expires_at"}` |
 
-A request naming both one entry and several, or neither, or more than 1,000 IDs, is refused with `invalid_request`. A request naming any unknown entry, tag, or selection is refused whole with `not_found`, and a duplicate tag name with `tag_exists`. A refused request changes nothing.
+A request naming both one entry and several, or neither, or more than 1,000 IDs, is refused with `invalid_request`. A request naming any unknown entry, tag, or selection is refused whole with `not_found`, a duplicate tag name with `tag_exists`, and an entry in a quarantine with `in_quarantine` (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). A refused request changes nothing.
 
 Each accepted request writes one audit event (`decision_set`, `tags_set`, `tag_created`, `tag_renamed`, or `tag_deleted`) with the time, the client address, the entries or selection it named with the counts of changed and skipped entries, and the old and new values.
 
 ## Changing disks
 
-Precious changes a disk only to organize it, when you ask: it moves and renames files and folders, creates folders, and removes an empty folder that one of its own changes created, when you undo that change. It never deletes a file, never writes into one, and never changes a file's times or permissions. Every change is listed in [History](#history). How the index follows a move, without a rescan, is described under [Scanning and the index](#scanning-and-the-index).
+Precious changes a disk only when you ask. To organize it, it moves and renames files and folders, creates folders, and removes an empty folder that one of its own changes created, when you undo that change. To clean it up, it moves discarded items into the source's quarantine with a small record beside each, moves them back, and deletes for good what a check covered (see [Cleanup](#cleanup)): it creates and deletes files only inside the quarantine. It never writes into an existing file, and never changes a file's times or permissions. Every change is listed in [History](#history). How the index follows a move, without a rescan, is described under [Scanning and the index](#scanning-and-the-index).
 
 ### Organizing
 
-Every change Precious makes on a disk is an **action** that you plan first and then run. Planning reads only the index, never the disk, and changes nothing anywhere: it lists every step the action would take, its **items**, each with the path before and after. Running it queues an `organize` job that does exactly the steps that were planned, in order (see [How Precious changes a disk](#how-precious-changes-a-disk)). A plan can be run for one hour; after that it reads `expired`, running it is refused with `action_expired`, and you plan again. Expired plans are deleted a day later.
+Every change Precious makes on a disk is an **action** that you plan first and then run. Planning reads only the index, never the disk, and changes nothing anywhere: it lists every step the action would take, its **items**, each with the path before and after. Running it queues an `organize` job that does exactly the steps that were planned, in order (see [How Precious changes a disk](#how-precious-changes-a-disk)). A plan can be run for one hour (a cleanup plan for 24 hours); after that it reads `expired`, running it is refused with `action_expired`, and you plan again. Expired plans are deleted a day later.
 
 **The actions:**
 
@@ -1231,9 +1250,9 @@ A name taken on the disk but not yet indexed is found when the step runs: the it
 
 **Decisions follow the place, not the move.** A move never changes a decision. An entry with a decision of its own keeps it; one without takes the decision of its new folder, which the plan shows for each item as `decision_after`. A move of one entry, a rename, and an undo may take away a keep the entry had through its folder; the plan counts those items in `kept_lost`, and the interface warns "N kept items would no longer be kept" before it runs. A move of many entries (ticked entries, a selection, a rescue, or a merge) never takes away a keep: such an item is refused with `would_lose_keep`, and if the destination's decision changes before the item runs, it ends `changed` with that reason.
 
-**Undo.** Every action that ran can be undone from History while some of its done items are not undone yet. `plan-undo` plans the reverse of those items, last first: each moved or renamed entry goes from wherever it is now back to its previous folder and name, and each folder the action created is removed, if it is still empty (an `rmdir` item, which ends `not_empty` otherwise). An item whose previous name is taken now is a conflict (`name_taken`), as is one whose previous folder is gone (`previous_folder_gone`); planned again with `destination_id`, those items go into that folder under their previous names, still in conflict if taken there too. An item counts as undone only once its undo step is done, so an undo that stopped early, was cancelled, or expired leaves the rest undoable, and an undo planned twice does each item once (the second ends `changed`, `already_undone`). An undo is itself an action, which can be undone in turn. A move of many entries is one action and is undone as a whole.
+**Undo.** Every move, rename, new folder, rescue, merge, or undo that ran can be undone from History while some of its done items are not undone yet. `plan-undo` plans the reverse of those items, last first: each moved or renamed entry goes from wherever it is now back to its previous folder and name, and each folder the action created is removed, if it is still empty (an `rmdir` item, which ends `not_empty` otherwise). An item whose previous name is taken now is a conflict (`name_taken`), as is one whose previous folder is gone or is in a quarantine (`previous_folder_gone`); planned again with `destination_id`, those items go into that folder under their previous names, still in conflict if taken there too. An item whose entry is now in a quarantine is refused (`in_quarantine`). An item counts as undone only once its undo step is done, so an undo that stopped early, was cancelled, or expired leaves the rest undoable, and an undo planned twice does each item once (the second ends `changed`, `already_undone`). An undo is itself an action, which can be undone in turn. A move of many entries is one action and is undone as a whole. A cleanup, a restore, and a purge are not undone: items moved to quarantine come back with a restore, and what was deleted for good cannot (see [Cleanup](#cleanup)).
 
-**Run and cancel.** `run-action` queues a planned action. It is refused with `action_expired` after the hour, with `action_not_runnable` when the action is not planned any more or has no item to run, and with the source's own refusals. `cancel-action` stops an action that is waiting or running: a waiting one stops at once and none of its items runs; a running one stops after the step in progress, which is confirmed and recorded. Its items not yet attempted end `not_attempted`, and a stopped action never runs later.
+**Run and cancel.** `run-action` queues a planned action. It is refused with `action_expired` after the hour, with `action_not_runnable` when the action is not planned any more or has no item to run, and with the source's own refusals; a purge also with `check_running`, `check_stale`, or `purge_not_allowed`, its check being checked again (see [Deleting for good](#deleting-for-good)). `cancel-action` stops an action that is waiting or running: a waiting one stops at once and none of its items runs; a running one stops after the step in progress, which is confirmed and recorded. Its items not yet attempted end `not_attempted`, and a stopped action never runs later.
 
 **What every plan and run checks.** The source must allow changes now: refused with `source_offline` while its disk is not connected, `writes_unavailable` while changes cannot be allowed (see [Changes by Precious](#changes-by-precious)), and `writes_disabled` while its **Changes by Precious** is off. While one of the source's items needs your check (see [Recovery after an interruption](#recovery-after-an-interruption)), nothing can be planned or run on it: `recovery_needed`. Resolve it with `resolve-recovery`, which marks the item resolved and starts a scan of the source, so the index shows what you left on the disk; the source must be online for that scan.
 
@@ -1251,7 +1270,7 @@ A name taken on the disk but not yet indexed is found when the step runs: the it
 | `cancel-action` | `{"action_id":"8"}` | 200 `{"action"}` |
 | `resolve-recovery` | `{"item_id":"77"}` | 200 `{"action","scan":{"job_id","coalesced"}}` |
 
-A plan answers with the action and the first 200 of its items; `next_cursor` continues them through `GET /api/history/{id}/items`. A plan of one entry is individual; one of `entry_ids` or of a selection is bulk (`"bulk": true`), as are rescues and merges. An unknown entry, folder, action, item, or selection is `not_found`; a destination or parent that is not a folder the last scan saw (a file, an archive, a missing folder, an archive member) is `invalid_request`. `run-action`, `cancel-action`, and `resolve-recovery` each write an audit event (`action_run`, `action_cancelled`, `recovery_resolved`) with the action, its kind and source, and the job; plans write none, since they change nothing.
+A plan answers with the action and the first 200 of its items; `next_cursor` continues them through `GET /api/history/{id}/items`. A plan of one entry is individual; one of `entry_ids` or of a selection is bulk (`"bulk": true`), as are rescues and merges. An unknown entry, folder, action, item, or selection is `not_found`; a destination or parent that is not a folder the last scan saw (a file, an archive, a missing folder, an archive member), or that is in a source's quarantine, is `invalid_request`. `run-action`, `cancel-action`, and `resolve-recovery` each write an audit event (`action_run`, `action_cancelled`, `recovery_resolved`) with the action, its kind and source, and the job; plans write none, since they change nothing.
 
 **Read endpoints** (each needs a session, like every endpoint):
 
@@ -1259,26 +1278,28 @@ A plan answers with the action and the first 200 of its items; `next_cursor` con
 |---|---|
 | `GET /api/history?source=&cursor=&limit=` | The actions that ran (waiting, running, done, or stopped), newest first, 50 per page by default and at most 200: `{"items":[Action],"next_cursor"}`. An unknown `source` is `not_found`. |
 | `GET /api/history/{id}` | One action in any state, planned and expired ones included. |
-| `GET /api/history/{id}/items?state=&cursor=&limit=` | The action's items in order, 200 per page by default and at most 1,000; `state` repeats, such as `state=manual_recovery` or `state=done&state=conflict`. |
+| `GET /api/history/{id}/items?state=&op=&cursor=&limit=` | The action's items in order, 200 per page by default and at most 1,000; `state` repeats, such as `state=manual_recovery` or `state=done&state=conflict`, and so does `op`, such as `op=rename` for one row per item of a cleanup or a restore (see [Cleanup API](#cleanup-api)). |
+| `GET /api/history/{id}/export.csv` | Every item of the action as a CSV file (see [Exporting an action](#exporting-an-action)). |
 
-An **action** has its `id`, `kind` (`move`, `rename`, `create_folder`, `rescue`, `merge`, or `undo`), `source_id`, `state` (`planned`, `queued`, `running`, `done`, `stopped`, or `expired`), `created_at`, `expires_at`, `started_at`, and `finished_at`, its `destination` as an entry row (`null` for a rename or an undo to the previous places), `job_id`, `undo_of` (the action an undo reverses), `bulk`, `counts` (its items in each state, every state listed), `bytes` and `files` (of the items planned, under way, or done), `kept_lost`, `reversed` (its items undone), and `undo`: `{"possible":true,"reason":null}`, or `possible` false with `not_done` (it did not run), `nothing_done` (no item was done), or `already_undone`.
+An **action** has its `id`, `kind` (`move`, `rename`, `create_folder`, `rescue`, `merge`, `undo`, `cleanup`, `restore`, or `purge`), `source_id`, `state` (`planned`, `queued`, `running`, `done`, `stopped`, or `expired`), `created_at`, `expires_at`, `started_at`, and `finished_at`, its `destination` as an entry row (`null` for a rename or an undo to the previous places), `job_id`, `undo_of` (the action an undo reverses), `bulk`, `counts` (its items in each state, every state listed), `bytes` and `files` (of the items planned, under way, or done), `kept_lost`, `reversed` (its items undone), `undo`: `{"possible":true,"reason":null}`, or `possible` false with `not_done` (it did not run), `nothing_done` (no item was done), `already_undone`, or `not_undoable_kind` (a cleanup, a restore, or a purge), and the fields of cleanup: `ground`, `list`, `check_id`, `deleted_files`, `deleted_bytes`, `freed_bytes`, and, for those three kinds only, `entries` (see [Cleanup API](#cleanup-api)).
 
-An **item** has its `id`, `seq`, `op` (`rename` for a move or rename, `mkdir`, or `rmdir`), `entry` (the entry's row as it is now, or `null`), `from` and `to` (`{"path","path_b64"}` or `null`), `state`, `reason` (from the tables above), `decision_after`, `detail` (the system's message of a `failed` item), `found` (for an item that needs your check, what was at each name: `{"from","to"}`, each `absent`, `same`, or `other`), `reversed`, `bytes`, and `files`. Item states are `planned`, `refused`, `conflict`, `intent` (started and not yet confirmed), `done`, `not_permitted`, `offline`, `changed`, `failed`, `no_safe_rename`, `not_empty`, `manual_recovery`, `not_attempted`, and `resolved`.
+An **item** has its `id`, `seq`, `op` (`rename` for a move or rename, `mkdir`, `rmdir`, or, in cleanup, `record`, `unlink`, `purge`, and `verify`), `entry` (the entry's row as it is now, or `null`), `from` and `to` (`{"path","path_b64"}` or `null`), `state`, `reason` (from the tables above), `decision_after`, `detail` (the system's message of a `failed` item), `found` (for an item that needs your check, what was at each name: `{"from","to"}`, each `absent`, `same`, or `other`), `reversed`, `bytes`, and `files`, and a `blocked` cleanup item its `kept_count`. Item states are `planned`, `refused`, `conflict`, `blocked`, `intent` (started and not yet confirmed), `done`, `not_permitted`, `offline`, `changed`, `failed`, `no_safe_rename`, `not_empty`, `manual_recovery`, `not_attempted`, and `resolved`.
 
 **Errors** of the commands above, besides `invalid_request` and `not_found`:
 
 | Status | Code | When |
 |---|---|---|
 | 409 | `name_taken` | A rename or new folder whose name is taken in its folder. |
-| 409 | `action_expired` | Running a plan made over an hour ago. |
+| 409 | `action_expired` | Running a plan made over an hour ago (a cleanup plan, over 24 hours ago). |
 | 409 | `action_not_runnable` | Running an action that is not planned, or has nothing to run; cancelling one that is not waiting or running. |
-| 409 | `action_not_undoable` | Undoing an action that did not run, or has nothing left to undo. |
+| 409 | `action_not_undoable` | Undoing an action that did not run, has nothing left to undo, or is a cleanup, a restore, or a purge. |
 | 409 | `recovery_needed` | Planning or running on a source with an item that needs your check. |
 | 409 | `writes_disabled` | The source's **Changes by Precious** is off. |
 | 409 | `writes_unavailable` | Changes cannot be allowed on the source (see [Changes by Precious](#changes-by-precious)). |
 | 409 | `source_offline` | The source's disk is not connected. |
 | 409 | `selection_expired` | A selection older than an hour. |
 | 409 | `invalid_entry_state` | A rescue of a kept folder or of one with nothing kept inside; resolving an item that does not need your check. |
+| 409 | `in_quarantine` | A rename, rescue, or merge of an entry in a quarantine (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). |
 
 ### How Precious changes a disk
 
@@ -1289,7 +1310,13 @@ An **item** has its `id`, `seq`, `op` (`rename` for a move or rename, `mkdir`, o
 - **Errors.** Permission denied ends the item `failed` with the system's message, and the change goes on. So does "invalid argument" on a rename on any filesystem but ZFS: the disk refused the name, and changes stay on. A filesystem that became read-only ends it `failed` and stops the change; a folder to remove that is not empty ends it `not_empty`. Any other error (an I/O error, for example) is looked at as after an interruption: `failed` when the step clearly did not happen, done when it clearly did, `manual_recovery` otherwise, which stops the change.
 - **One at a time.** The changes of one source run one at a time, oldest first, each in the order of its items, as an `organize` job whose progress counts `items` and `done`.
 - **Changes wait for scans, and scans for changes.** A change waits while a scan of its source is running, deferring by one second, and runs when the scan ends. A scan waits while a change of its source is waiting or running, or one of its steps is recorded as started and not yet confirmed. Hashing goes on meanwhile: a result it read through a path that has since moved is dropped, and the file is read again.
-- **Cancel.** Cancelling a change in History, or cancelling its job, stops a waiting change at once, and a running one after the step in progress, which is confirmed and recorded. The rest of the change is not attempted and never runs later.
+- **Cancel.** Cancelling a change in History, or cancelling its job, stops a waiting change at once, and a running one after the step in progress, which is confirmed and recorded. The rest of the change is not attempted and never runs later. A deletion for good stops between items, never inside one.
+- **The quarantine's name is reserved.** No move or rename gives an entry the name `.precious-quarantine` at a source's top folder, and only a cleanup plan creates that folder (`refused`, `reserved_name`); a move or new folder of an organizing change never goes into the quarantine (`refused`, `in_quarantine`). Moving one quarantined file out to a folder outside it is allowed.
+- **Moving items to the quarantine.** A cleanup plan first creates the quarantine (once per source; a plan that finds it already made by another plan uses it) and its plan folder `<plan>`. Each item then takes three steps: Precious creates the item folder `<plan>/<n>`, moves the item into it under its own name, and writes its origin record `<plan>/<n>.json` beside it. Before the first step of an item it checks the whole item against the plan as drafted: the entry still in the same folder under the same name, in the index and on the disk with the same kind, size, modification and change times, and device and inode where they are stable, and for a folder the same total files and bytes; its own decision still discard; nothing in it kept. A difference ends the item `changed` (`identity_changed`, or `decision_changed` when you kept or undecided it), and a keep inside it ends it `blocked` (`holds_kept`): all three steps end together and nothing is made. The move itself checks the same things again. For a plan drafted from the duplicates list, Precious first reads in full one copy of each file of the item that stays (outside the plan and the quarantine, its disk connected) and compares it with the file's digest; just before each step it checks again that the copy is unchanged in the index, not quarantined, and not being moved to a quarantine by another plan at that moment, on any source. Otherwise the item ends `changed` (`no_verified_copy`) and nothing moves, so two plans can never quarantine the last copies of a file between them.
+- **Origin records never replace a file.** The record is a short JSON file: `version`, `source_id`, `entry_id`, `plan_id`, `original` (`path` in display form and `path_b64`, the raw bytes), and `quarantined_at`, the time the move was recorded. It is written only after the move, so it never describes a move that did not happen: created only if its name is free (`O_EXCL`), written in full, flushed, with its folder's permission bits. When the name is taken, the record ends `conflict` (`name_taken`) and the file there is left as it is; the item stays in quarantine, and History still has where it came from.
+- **Restoring.** A restore moves each item back to its previous folder and name, or to the folder you chose, never replacing anything; a previous folder that is gone or is itself in the quarantine ends the item `conflict` (`previous_folder_gone`). Then Precious removes the item's record, only once nothing of the item is left in its item folder, and that folder if it is empty, and the plan folder once a restore or deletion empties it. A file is removed there only when it still is the record of that plan.
+- **Deleting for good, only inside the quarantine.** Precious creates and deletes files only through folders inside `.precious-quarantine`, and deletes only entries a check recorded. A deletion first verifies: it looks at every entry the check recorded below the readable items, every folder walked whole, and at every copy the check relied on, which must be in the index at its path, outside the quarantine, on a connected disk, and the same on the disk (size, modification and change times, and inode where stable). On any difference, nothing is deleted, the deletion stops (`changed`, with `file_changed` or `copy_changed` and the path), and the check is out of date (`stale_reason` `disk_changed`). Then, for each item, Precious checks again that changes are allowed, the check is still ready with everything confirmed (else `check_stale`, and the deletion stops), and the item is still discarded with nothing in it kept (else `changed`, `decision_changed`). It walks the item's whole tree before deleting anything: an entry the check did not record, or one that differs, leaves the whole item as it is (`changed`, `file_changed`) and makes the check out of date. Just before the item's first deletion it also looks again at every copy its files rely on, as the verification did, since the copy may have gone after it (a restart in between, or a scan of the copy's disk): a copy gone, on a disk no longer connected, or changed leaves the whole item as it is (`changed`, `copy_changed`), makes the check out of date (`disk_changed`), and stops the deletion. A copy that is another name of a file the deletion already removed keeps its data, and its new change time is expected. Then it deletes depth first, each file and link compared once more just before (when another name of the same file was deleted before, its new change time and link count are expected), each folder after its contents; then the item's record and its item folder, and flushes the folders it changed. Should a file change in the middle, the item ends `changed` with what was deleted until then recorded. The deletion reports the files and bytes deleted and the space freed: the allocated size of each file whose last link it removed.
+- **Checks follow every change.** Every step recorded, of any change, makes out of date the checks that read or relied on something at or below the paths it changed, in the same transaction. A deletion for good leaves its own check ready while it deletes, item by item, what that check was for.
 
 ### Recovery after an interruption
 
@@ -1299,7 +1326,52 @@ When Precious stops between recording a step and recording its result (a crash, 
 - the item at its new name with that identity, and the old name free: the step happened, and Precious records it and updates the index without renaming again;
 - anything else, such as both names taken or neither: the item ends `manual_recovery`, **Needs your check**, with what was found at each name (`absent`, `same`, or `other`).
 
-While a source has an item that needs your check, no change can be planned or run on it. Put things right on the disk, then choose **I fixed it** in History: Precious marks the item resolved and scans the source again. A source that is offline keeps its unchecked step until it is back, and its scans wait until then.
+The steps of cleanup are looked at the same way:
+
+- **an origin record:** its name free, it is written once; holding exactly the record, it is recorded done; anything else needs your check;
+- **the removal of a record:** the name gone, it is recorded done; still the record, it runs once; anything else needs your check;
+- **the verification before a deletion** runs again;
+- **a deletion for good** cut short resumes only if changes are still allowed, its check is still ready and confirmed, and the item is still discarded with nothing kept. Then it looks again at the copies the item relies on (a difference ends it `changed`, `copy_changed`, as above) and deletes what is left of the item, each entry once. Otherwise the item ends `changed` (`writes_off`, `check_stale`, or `decision_changed`): what was deleted before the interruption is recorded, its rows leave the index and it counts in the report, and nothing more is deleted. Either way, when the item's folder or a folder inside it is no longer what the index and the check recorded (replaced, made unreadable, or another filesystem mounted there), the item needs your check (`manual_recovery`) and nothing more is deleted; an input/output error leaves it for the next attempt. When a later change of the source is the one that finds the interrupted deletion, only the deletion's own change stops: the later change runs.
+
+While a source has an item that needs your check, no change can be planned or run on it. Put things right on the disk, then choose **I fixed it** in History: Precious marks the item resolved and scans the source again. Scans walk the quarantine, so an item a step left there is indexed at its quarantine path; when its move was never recorded it gets a new ID, and the Cleanup screen lists it with its origin unknown. A source that is offline keeps its unchecked step until it is back, and its scans wait until then.
+
+### The pre-delete check
+
+Nothing in quarantine is deleted for good until a check of it is ready. A check covers a set you choose: quarantined items of one source. It runs as a job of kind `purge_check`, with the priority of work you are waiting for, and it only reads: it changes nothing on any disk, writes no digest into the index, and is not a change in History. It waits while a change by Precious on its source is waiting its turn or running, and a scan of the source can run alongside it.
+
+**What it reads.** It records every entry of the set, of every kind, with its identity as it is on the disk (size, modification and change times, device, inode, link count, allocated size), and reads every file in full:
+
+- a file is read once, from start to end, through the same checked opening as hashing;
+- an archive Precious read completely (zip, tar, tar.gz, tar.bz2, gzip, bzip2) is read once, and each file inside it is recorded with its own finding; the archive itself counts as nothing to copy, since its content is its files;
+- an archive Precious does not open (7z, rar, an encrypted zip, a partly read or damaged one, or one not listed yet) is read as one file, and the report says its insides were not opened;
+- empty files, folders, links, and special files have nothing to copy.
+
+An item holding a folder the scan could not read, a folder read only in part, or a mount point cannot be checked: Precious cannot see everything it would delete. Its entries are listed as could not be read, and that item can never be deleted for good; restore it, or fix the folder's permissions, scan, and check again. A single file that cannot be read is listed the same way and needs its own confirmation. A file that no longer matches the index (changed since the last scan) fails the check with `invalid_entry_state`; scan the source, then check again.
+
+**What counts as a copy.** For each file it looks for the same content outside the set and outside every quarantine, in this order: files whose digest is known to match, then files inside archives read completely whose digest matches, then files of the same size not read in full yet. A copy counts only once the check has read it in full itself, it still matched the index when opened, and its source is online; the first that matches is recorded, with its source, path, and identity. A hard link to the same file elsewhere counts too: the data stays reachable through it. Digests stored by hashing are only used to find candidates, never trusted as proof.
+
+**Findings.** Each file gets one, with its files and bytes counted in the report:
+
+| Finding | Meaning | Before deleting |
+|---|---|---|
+| `safe` | a copy was read and verified; it is named | nothing |
+| `copy_offline` | the only known copies are on sources that are not online; nothing on them was read | its own confirmation |
+| `unique` | no copy was found | its own confirmation, or the likely junk group's |
+| `opaque_archive` | an archive not opened; its copy is named when one was verified | its own confirmation when no copy was verified |
+| `unreadable` | could not be read, or its item holds a folder that could not be read | its own confirmation, unless its item holds a folder that could not be read: such an item is never deleted, so its files need none |
+| `no_content` | folders, links, special files, empty files, and archives whose files are listed one by one | nothing |
+
+Connect the disk and check again to turn `copy_offline` into `safe`.
+
+**Classes.** Files with no copy are ranked by the rules, from their classification in the index (a file inside an archive by its name):
+
+- **possibly valuable**: personal material (personal media, documents, source projects, application user data), anything with user material, credentials, or a database among its traits, images, videos, audio, documents, source code, and mail (`eml`, `mbox`, `msg`, `pst`, `dbx`);
+- **likely junk**: otherwise, disposable material (system junk, caches, temporary data, generated artifacts), installers, application installations, and operating system installations;
+- **uncertain**: everything else, including archives not opened with no verified copy.
+
+**Freshness.** A check is `running`, then `ready`, `failed`, or `stale`. It ends `ready` only if, at its very end, it is still running and every item of its set is still at the quarantine path it read. A check becomes `stale` as soon as something it read or relied on changes in the index: an item restored, a file moved out, a copy moved, quarantined, deleted, or decided again, or a decision, category, or group set on any of them or a folder above. A stale check is never acted on; check the set again. Changes on a disk that the index has not seen yet are caught when the deletion runs: its first step compares every recorded entry and every copy with the disk, and deletes nothing if anything differs. Cancelling the job ends the check `failed`; a check whose job stops with the service runs again from the start.
+
+**Progress.** The job reports `files` and `bytes` read so far, of `of_files` and `of_bytes`, the files of the set it reads and their size (an archive counts once, at its size). The copies it reads are not counted.
 
 ### Allowing changes in the deployment
 
@@ -1318,11 +1390,178 @@ The shipped deployments keep every disk read-only at the operating-system level:
 
 Then turn **Changes by Precious** on for that source in Sources. The service's `UMask=0077` does not make new folders private: a folder Precious creates gets its parent's permission bits.
 
+## Cleanup
+
+Cleanup takes what you discarded off a disk in two stages. A **cleanup plan** moves the discarded items into the source's quarantine, a folder on the same disk where they keep their names and can be restored. A **purge** deletes a set of quarantined items for good, and only after a [pre-delete check](#the-pre-delete-check) has read them and you have confirmed what it asks. Cleanups, restores, and purges are actions like those of [Organizing](#organizing): planning reads only the index and changes nothing, `run-action` queues the plan as an `organize` job, `cancel-action` stops it, and every plan and run checks the source as described there (online, **Changes by Precious** on, no item that needs your check). Each one that runs is listed in History. How each step is checked and recorded on the disk is under [How Precious changes a disk](#how-precious-changes-a-disk), and the interface to all of it is the [Cleanup screen](#the-cleanup-screen).
+
+### Drafting a cleanup plan
+
+`plan-cleanup` with `{"source_id":"fotos"}` drafts a plan of every entry of the source with a discard of its own, outside the quarantine. With `"list"`, it takes only the rows of that review list on the source (`rescue`, `duplicates`, `unpacked_archives`, `system_junk`, `installers`, `programs`, `caches`, or `leftovers`; see [Review lists](#review-lists)) whose entry has a discard of its own. An entry that reads discard only through its folder is never an item of its own, and only the topmost entries are items: a discarded entry inside another goes with it.
+
+Each item is planned, blocked, or refused:
+
+| State | Reason | Meaning |
+|---|---|---|
+| `planned` | | It moves to the quarantine. |
+| `blocked` | `holds_kept` | Something inside it is kept (see [Blocked items and kept entries](#blocked-items-and-kept-entries)). Nothing of it moves. |
+| `refused` | `missing` | The last scan did not find it. |
+| `refused` | `source_root` | It is the source's top folder. |
+| `refused` | `other_filesystem` | Another filesystem is mounted there. |
+| `refused` | `contains_mount` | Another filesystem is mounted inside the folder; moving it would leave that mount behind. |
+| `refused` | `in_quarantine` | It is already in the quarantine. |
+| `refused` | `both_sides`, `last_copy` | A plan from the duplicates list would leave no copy (see [Plans from the duplicates list](#plans-from-the-duplicates-list)). |
+
+**Draft-time identity.** Each planned item records the entry as the index showed it when the plan was drafted: its kind, size, modification and change times, device and inode, and for a folder its total files and bytes. When the plan runs, an item that no longer matches that record, in the index or on the disk (a file changed, or a rescan found something new inside the folder), or that is no longer discarded, ends `changed` and stays where it is; one with something kept inside it by then ends `blocked`. A plan never moves more than its preview showed.
+
+**Steps.** A plan's items are steps, in order: the creation of the quarantine folder (only while Precious has not made it) and of the plan folder, then, for each planned item in path order, the creation of its item folder, the move into it, and its origin record. A refused or blocked item is a single `rename` row with its reason and no other step, so `op=rename` lists one row per item (see [Cleanup API](#cleanup-api)).
+
+**Limits.** A cleanup plan can be run for 24 hours; after that it reads `expired`, and you draft it again. A plan holds at most 30,000 steps (three per planned item, one per refused or blocked item, and two for the plan's folders), so at most 9,999 planned items; a larger one is refused with `invalid_request`, and you draft from a review list or discard less at a time. A plan with nothing discarded in its scope, and an unknown list, are refused with `invalid_request` too. A plan with no planned item, only blocked or refused ones, has nothing to run.
+
+**The answer** is `201` with the action, its first 200 items, `next_cursor`, and a `summary` of the planned items. The summary comes from the index alone, so it is what the last scan and hashing knew:
+
+| Field | Counts |
+|---|---|
+| `with_copy_bytes` | Bytes of the files below the planned items that were hashed and have a present copy outside the plan and every quarantine: another file, or a file inside an opened archive. |
+| `no_copy_bytes` | Bytes of the files unique by size or by sample, or hashed with no such copy. |
+| `unchecked_bytes` | Bytes of the files not checked for copies yet: still to read, changed since they were read, or unreadable. |
+| `personal_items` | Planned items whose own family is personal, or that hold your own material (see [The veto](#the-veto-user-material-inside-disposable-folders)). |
+
+### Blocked items and kept entries
+
+A cleanup plan never moves a kept entry. A discarded folder that holds an entry you kept, explicitly or through a folder inside it, is `blocked` (`holds_kept`) as a whole: nothing of it moves, not even the parts that are not kept. Its item carries `kept_count`, the number of entries at or below it with a keep of their own, and `GET /api/history/{id}/items/{item}/kept` lists them by path, 100 at a time. To clean up the rest of such a folder, move its kept items out with [Rescue kept items](#organizing), or discard its other parts one by one, and draft again. A keep set after the plan was drafted is caught when the item runs: it ends `blocked` and nothing of it moves.
+
+### Plans from the duplicates list
+
+A plan drafted with `"list":"duplicates"` has the `ground` `duplicate` (any other plan has `discard`), and it never removes the last copy of anything:
+
+- **A relation row** (two related folders or archives) gives an item for each side that has a discard of its own. When both sides do, the one that sorts later by path is refused with `both_sides`.
+- **A group of identical files** (hard links to one file being one copy, as in the [duplicate groups](#duplicate-groups)) gives an item for each discarded copy, in path order, until one would leave no copy present outside the plan and every quarantine: that copy, and every one after it, is refused with `last_copy`. A file staying at any of its names, or a file inside an opened archive, is such a copy.
+
+The plan relies on the index, so the copy is checked again when each item runs: Precious first reads in full one staying copy of each of the item's files and compares it with the file's digest, then, just before the move, checks that the copy is unchanged, not in a quarantine, and not being moved to one by another plan at that moment, on any source. Otherwise the item ends `changed` (`no_verified_copy`) and nothing of it moves, so two plans can never quarantine the last copies of a file between them.
+
+**Hard links.** Moving a file changes the change time of every name it has, which the index learns only at the next scan. So in any plan, a later item that is another name (a hard link) of a file the plan moved ends `changed` (`identity_changed`), and in a plan from the duplicates list, an item whose only staying copy is such a name ends `changed` (`no_verified_copy`). Nothing is lost: scan the source and draft again.
+
+### The quarantine
+
+Each source has one quarantine, the folder `.precious-quarantine` at its top: on the same filesystem as everything the source indexes, so moving an item there is a rename, never a copy. The first cleanup plan that runs creates it, and Precious records the folder as its own. Inside it, each item lives at `.precious-quarantine/<plan>/<seq>/<name>`, where `<plan>` is the ID of the cleanup action, `<seq>` numbers its items from 1 in path order, and `<name>` is the item's own name, unchanged. Beside each item folder, `<plan>/<seq>.json` is its origin record: where the item came from, in a short JSON file described under [How Precious changes a disk](#how-precious-changes-a-disk).
+
+The quarantine is left out of every view, total, search, duplicate group, relation, and review list, but scans walk it like any other folder, so the index always matches what is in it (see [The quarantine folder](#the-quarantine-folder)). `GET /api/quarantine?source=fotos` lists its items, newest plan first, each with where it came from, when it was moved, its size, and its newest check. An item a scan found there with no move recorded, after an interruption or put there by hand, has its origin unknown and can be restored only to a folder you choose.
+
+### Restoring from quarantine
+
+`plan-restore` plans moving quarantined items back: the ones named in `entry_ids` (1 to 1,000 items of one source, each an entry at `<plan>/<seq>/<name>`), or every item still in one plan folder with `plan_id`. Each item goes back to the folder and name it had before the cleanup, then Precious removes its origin record and its item folder. When every item of a plan folder leaves in the same restore, the plan folder is swept too: any other empty item folder and any record whose item is gone are removed, and then the plan folder itself; anything else in it keeps it.
+
+An item that cannot go back is a conflict, and nothing of it moves:
+
+| Reason | Meaning |
+|---|---|
+| `name_taken` | An entry with its name is in its previous folder now. |
+| `name_taken_in_plan` | An earlier item of the same restore takes that name. |
+| `name_taken_by_missing` | A missing entry with that name carries your decision, tags, or category. |
+| `previous_folder_gone` | Its previous folder is gone, is not a folder any more, or is itself in the quarantine, or its origin is unknown. |
+
+Planned again with `"destination_id"`, those items go into that folder under their original names, and stay in conflict only if the name is taken there too. The destination must be a present folder of the same source outside the quarantine; anything else is refused with `invalid_request`. A restore never merges into or replaces anything. A restore plan can be run for one hour, like an organizing plan, and every restored entry keeps its ID, decision, tags, and category.
+
+### Deleting for good
+
+Deleting takes three commands, each on a set of quarantined items of one source:
+
+1. **`check-purge`** with the items' IDs (1 to 10,000) starts the [pre-delete check](#the-pre-delete-check) and answers `202` with its `check_id` and `job_id`. The source must be online, but changes need not be allowed: the check only reads. One check of a source runs at a time; another is refused with `check_running`.
+2. **`confirm-purge`** records your confirmations once the check is `ready`. What needs one:
+   - every `unique` file the rules rank **likely junk**: one confirmation for the whole group, `{"check_id":"5","group":"likely_junk"}`;
+   - every other `unique` file (possibly valuable or uncertain), every `copy_offline` file, every `unreadable` file of an item that could be read, and every `opaque_archive` without a verified copy: one confirmation each, `{"check_id":"5","file_ids":["81","82"]}`, up to 1,000 at a time. A file that needs no confirmation of its own (with a verified copy, with nothing to copy, or likely junk) is refused with `invalid_request`.
+
+   Instead of confirming a file, you can take it out of the set: restore its item, or move it out of the quarantine on its own with `plan-move` (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). Either makes the check stale, and you check what is left again. Confirmations belong to their check: a new check starts with none. Each accepted request writes a `purge_confirmed` audit event with the check, the source, the files or the group, and their files and bytes.
+3. **`plan-purge`** with the `check_id` plans the deletion once the check is `ready` and nothing is left unconfirmed: one `verify` step, one `purge` step per item of the set, in path order, and the sweep of each plan folder the purge empties, as for a restore. An item the check could not read is never deleted: its `purge` row is `refused` (`unreadable`), and a set with nothing else left (from the start, or once its other items were deleted for good) is refused with `check_stale`: nothing of it can be deleted; restore those items, or fix the folder's permissions, scan, and check again. While a file still needs a confirmation, the plan is refused with `purge_not_allowed`, whose message names up to ten of those files by path (`<member> inside <archive>` for a file inside an archive). The plan can be run for one hour; `run-action` checks the check and its confirmations again.
+
+**When it runs**, the `verify` step first compares every entry the check recorded, and every copy it relied on, with the disk, and deletes nothing if anything differs; then each `purge` step walks its whole item, and looks again at the copies its files rely on, before deleting it, file by file, each compared once more just before (see [How Precious changes a disk](#how-precious-changes-a-disk)). A purge stops between items, never inside one.
+
+**Freed space.** The action reports `deleted_files` and `deleted_bytes`, the regular files it deleted and their size, and `freed_bytes`, the space allocated to the files whose last name it removed: a file that also has a hard link elsewhere frees nothing. On ZFS, a snapshot taken before the deletion keeps those blocks until it is destroyed, so the pool's free space can grow by less than `freed_bytes`; the Cleanup screen says so.
+
+### Exporting an action
+
+`GET /api/history/{id}/export.csv` downloads every item of any action, of any kind, as a CSV file (`text/csv; charset=utf-8`, named `precious-<kind>-<id>.csv`): the header `path,size,operation,state,reason`, then one row per item in order, each line ending in CRLF.
+
+- `path` is the item's path before, or for a created folder or a record the path it creates, in display form;
+- `size` is its bytes;
+- `operation` is `quarantine` (a cleanup's move), `restore`, `rename`, `move`, `create_folder`, `remove_folder`, `write_record`, `remove_record`, `purge`, or `verify`;
+- `state` and `reason` are the item's.
+
+Every cell is quoted, with its quotes doubled, and a cell that starts with `=`, `+`, `-`, `@`, a tab, or a carriage return gets a leading `'`, so no spreadsheet reads it as a formula: a file `=SOMA(A1).txt` at the top of a source exports as `"'=SOMA(A1).txt"`. A plan's export lists every step, the blocked and refused items included:
+
+```csv
+path,size,operation,state,reason
+".precious-quarantine","0","create_folder","planned",""
+".precious-quarantine/31","0","create_folder","planned",""
+".precious-quarantine/31/1","0","create_folder","planned",""
+"Downloads/Setup.exe","48211968","quarantine","planned",""
+".precious-quarantine/31/1.json","0","write_record","planned",""
+"Fotos/2006","1073741824","quarantine","blocked","holds_kept"
+```
+
+### The reserved name
+
+The name `.precious-quarantine` at a source's top belongs to Precious. When the top already holds an entry of that name that Precious did not make, a folder or file of your own, `plan-cleanup` is refused with `409 quarantine_name_taken`, and the source's `quarantine.name_taken` is `true` (see [Changes by Precious](#changes-by-precious)). Views hide it like the quarantine, and Precious cannot rename it for you: rename it on the disk, rescan the source, and draft again.
+
+Nothing else takes that name there: `plan-rename` and `plan-create-folder` to it at a source's top are refused with `invalid_request`, and a move or restore item that would take it is `refused` (`reserved_name`).
+
+### Quarantined entries are frozen
+
+An entry in a quarantine, and everything inside it, keeps the decision, tags, category, and group it had when it was moved there, so a restore brings it back as it was. Until it is restored, deleted, or moved out, Precious refuses to change it with `409 in_quarantine`:
+
+- `set-decision`, `set-tags`, `set-category`, and `set-group` naming it, one entry or many: the whole request is refused;
+- `check-now` on it;
+- `plan-rename` of it, `plan-rescue` of a folder in the quarantine, and `plan-merge` with a side there.
+
+In a `plan-move` of several entries, a quarantined one is a `refused` item (`in_quarantine`). `plan-undo` refuses the same way an item whose entry is now in a quarantine, the removal of a folder the change created included, and reads a previous folder there as gone (`previous_folder_gone`). A `plan-move` of one `entry_id` is the way out: it moves a quarantined entry, such as one file of a quarantined folder, to a folder outside the quarantine, and makes the checks that read it stale. Only a cleanup plan puts anything into the quarantine: a destination or parent at or below it (`plan-move`, `plan-rescue`, `plan-create-folder`, `plan-undo`, `plan-restore`) is refused with `invalid_request`. A cleanup, a restore, and a purge cannot be undone: `plan-undo` refuses them with `action_not_undoable`, and their `undo.reason` is `not_undoable_kind`.
+
+### Removing a source with a quarantine
+
+`remove-source` is refused with `409 quarantine_not_empty`, and nothing changes, while the quarantine Precious made on the source holds an item that is not missing (an entry at `.precious-quarantine/<plan>/<seq>/<name>`); the message names one. Plan folders, item folders, and records left without an item (by a cleanup whose items stayed where they were, or by moving an item out) do not count, and a `.precious-quarantine` of your own does not count. Removing the source deletes its index, which is the only thing that knows where those files came from and what a check found in them. Restore them or delete them for good first.
+
+### Cleanup API
+
+**Commands** (`POST /api/commands/{name}` with an `Idempotency-Key`; IDs are strings):
+
+| Command | Request | Success | Errors |
+|---|---|---|---|
+| `plan-cleanup` | `{"source_id":"fotos"}`, optionally with `"list":"duplicates"` | 201 `{"action","items","next_cursor","summary"}` | 400 `invalid_request` (an unknown list, nothing discarded, over 30,000 steps); 404 `unknown_source`; 409 `source_offline`, `writes_unavailable`, `writes_disabled`, `recovery_needed`, `quarantine_name_taken` |
+| `plan-restore` | exactly one of `{"entry_ids":["90","91"]}` (1 to 1,000 quarantined items of one source) or `{"plan_id":"31"}`, optionally with `"destination_id":"40"` | 201 `{"action","items","next_cursor"}` | 400 `invalid_request` (an entry that is not a quarantined item, items of two sources, a plan with no item left, a destination that is not a present folder, is in the quarantine, or is on another source); 404 `not_found` (an unknown entry, plan, or destination); 409 `source_offline`, `writes_unavailable`, `writes_disabled`, `recovery_needed` |
+| `check-purge` | exactly one of `{"entry_ids":["90","91"]}` (1 to 10,000 quarantined items of one source) or `{"check_id":"5"}` (check again the items of check 5's set that are still in the quarantine) | 202 `{"check_id","job_id"}` | 400 `invalid_request`, 404 `not_found`, as for `plan-restore`; 404 `not_found` also for a check with no item left in the quarantine; 409 `source_offline`, `check_running` |
+| `confirm-purge` | `{"check_id":"5"}` with exactly one of `"file_ids":["81"]` (1 to 1,000) or `"group":"likely_junk"` | 200 `{"check"}` | 400 `invalid_request` (a file not in the check, or one that needs no confirmation of its own); 404 `not_found`; 409 `check_running`, `check_stale` |
+| `plan-purge` | `{"check_id":"5"}` | 201 `{"action","items","next_cursor"}` | 404 `not_found`; 409 `check_running`, `check_stale` (also when nothing of the set is left, or only items that could not be read), `purge_not_allowed`, `source_offline`, `writes_unavailable`, `writes_disabled`, `recovery_needed` |
+| `run-action` | as for organizing | 202, as for organizing | for a purge, also 409 `check_running`, `check_stale`, `purge_not_allowed` |
+| `plan-undo` | as for organizing | | also 409 `action_not_undoable` for a cleanup, a restore, or a purge |
+
+A cleanup, restore, or purge action has the `kind` `cleanup`, `restore`, or `purge`, and adds to the [action](#organizing) `ground` (`discard` or `duplicate` for a cleanup), `list` (the review list it was drafted from), `check_id` (a purge's check), `deleted_files`, `deleted_bytes`, and `freed_bytes`, and `entries`: its items that stand for an entry (the `rename` rows of a cleanup or restore, the `purge` rows of a purge) by state, every state listed. Its item ops add `record`, `unlink`, `purge`, and `verify`, its item states `blocked`, and a blocked item carries `kept_count`.
+
+**Read endpoints:**
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/quarantine?source=&cursor=&limit=` | The source's quarantined items, newest plan first, 100 per page by default and at most 500: `{"items","next_cursor","total":{"files","bytes"}}`. Each item has `entry` (its row), `original` (`{"path","path_b64"}`, or `null` when its origin is unknown), `plan_id` and `quarantined_at` (`null` when unknown), `bytes`, `files`, and `check` (`{"id","state"}` of the newest check holding it, or `null`). `total` is what the quarantine folder holds, records included. `source` is required; an unknown one is `unknown_source`, and a source without a quarantine has no items. |
+| `GET /api/checks/{id}` | One check: `id`, `source_id`, `state` (`running`, `ready`, `failed`, or `stale`), `job_id`, `created_at`, `finished_at`, `stale_reason` (`index_changed` or `disk_changed`), `items` (its set's items still indexed: 0 once all were deleted for good), `counts` (`{"verdict":{finding:{"files","bytes"}},"class":{class:{"files","bytes"}}}`, every bucket listed, the classes over `unique` files only; a complete archive counts as its members, and its own record, under `no_content`, counts no bytes), `confirmed` and `unconfirmed` (`{"files","bytes"}` of the files that need a confirmation; likely junk counts as unconfirmed until its group is confirmed), `junk_confirmed`, and `allowed` (ready, with an item left that could be read and nothing unconfirmed). |
+| `GET /api/checks/{id}/files?verdict=&class=&confirmed=&cursor=&limit=` | What the check recorded, in the order it recorded it, 200 per page by default and at most 1,000, filtered by finding, by class, and by `confirmed=1` or `confirmed=0`: `{"items","next_cursor"}`. Each file has `id`, `item` (the row of its set item), `entry_id` (`null` for a file inside an archive), `path` and `path_b64` (the archive's, for a file inside one), `member` (its path inside the archive, or `null`), `kind`, `size`, `verdict`, `class`, `copy` (`{"source_id","path","path_b64","hard_link"}` of the verified copy, or `null`), `confirmed` (on its own, or through the likely junk group), and `item_readable` (false when its set item holds something the check could not read: that item is never deleted). |
+| `GET /api/history/{id}/items?op=&state=&cursor=&limit=` | The action's items, as for organizing; `op` repeats, from `rename`, `mkdir`, `rmdir`, `record`, `unlink`, `purge`, and `verify`. `op=rename` lists one row per item of a cleanup or restore, and `op=purge` of a purge. |
+| `GET /api/history/{id}/items/{item}/kept?cursor=` | The entries at or below the item's entry, by its path before, that have a keep of their own, by path, 100 per page: `{"count","items":[entry rows],"next_cursor"}`. |
+| `GET /api/history/{id}/export.csv` | Every item of the action as CSV (see [Exporting an action](#exporting-an-action)). |
+
+**Errors** of the cleanup commands, besides those of [Organizing](#organizing), `invalid_request`, and `not_found`:
+
+| Status | Code | When |
+|---|---|---|
+| 409 | `in_quarantine` | Changing a quarantined entry other than by a restore, a purge, or a move of it alone out of the quarantine (see [Quarantined entries are frozen](#quarantined-entries-are-frozen)). |
+| 409 | `purge_not_allowed` | Planning or running a purge while a file of its check still needs a confirmation; the message names up to ten of them. |
+| 409 | `check_stale` | Confirming, planning, or running a purge on a check that is stale or failed, or whose items are no longer all in the quarantine (or all gone, deleted for good); check the items again. Also planning a purge of a check whose items left all hold a folder that could not be read, which are never deleted. |
+| 409 | `check_running` | Starting a check while another of the source runs; confirming, planning, or running a purge on a check that is still running. |
+| 409 | `quarantine_not_empty` | Removing a source whose quarantine holds items. |
+| 409 | `quarantine_name_taken` | Drafting a cleanup plan on a source whose top holds a `.precious-quarantine` that Precious did not make. |
+
 ## Interface
 
-Precious is used through a web interface served by `precious serve` at the address in `server.external_origin`. Everything it needs is built into the binary: it loads nothing from the internet and works on a network with no outside access. The top bar links the screens, Home, Map, Search, Opportunities, History, and Sources, and has the Sign out button. Sizes are shown in binary units (KiB, MiB, GiB, where 1 GiB is 1,024 MiB). The interface is in English, the only language in this release, and shows numbers and dates in English formats.
+Precious is used through a web interface served by `precious serve` at the address in `server.external_origin`. Everything it needs is built into the binary: it loads nothing from the internet and works on a network with no outside access. The top bar links the screens, Home, Map, Search, Opportunities, Cleanup, History, and Sources, and has the Sign out button. Sizes are shown in binary units (KiB, MiB, GiB, where 1 GiB is 1,024 MiB). The interface is in English, the only language in this release, and shows numbers and dates in English formats.
 
-Decisions and tags are recorded in Precious's database only. The interface changes a disk only when you organize it: moving, renaming, or creating folders on a source where you allowed changes (see [The Sources screen](#the-sources-screen)). Precious never replaces a file, and every change is listed in [History](#history), where it can be undone.
+Decisions and tags are recorded in Precious's database only. The interface changes a disk only when you organize it or clean it up: moving, renaming, or creating folders, or moving discarded items to quarantine, restoring them, and deleting a checked set for good, on a source where you allowed changes (see [The Sources screen](#the-sources-screen) and [The Cleanup screen](#the-cleanup-screen)). Precious never replaces a file, and every change is listed in [History](#history), where a move can be undone and a quarantine can be restored.
 
 ### Signing in
 
@@ -1334,7 +1573,7 @@ Home answers "how is my disk?" for all sources together, or for the one chosen i
 
 - **Totals:** the size, files, and folders counted.
 - **Scans in progress,** with folders, files, and bytes so far, updating as they run.
-- **Decisions:** the bytes and files you have decided to keep, discard, or look at later, and the undecided rest. The four add up to the total. They count files present on the disk at the last scan.
+- **Decisions:** the bytes and files you have decided to keep, discard, or look at later, and the undecided rest. The four add up to the total. They count files present on the disk at the last scan. **In quarantine** follows them: the bytes and files moved to quarantine and not yet restored or deleted for good. They are outside the totals and the four decisions, since nothing outside the Cleanup screen shows them.
 - **Size by category, by file type, and by year of last change.** Categories are grouped into four families, counted from what each folder holds; see [What a folder is made of](#what-a-folder-is-made-of).
 
 When some folder could not be read, Home says its figures are incomplete rather than presenting them as complete.
@@ -1347,7 +1586,8 @@ The Sources screen lists each source with its state (online, offline, or unavail
 - **Open in Map** browses the source, also while it is offline.
 - **Change schedule** sets the rescan schedule: off, daily, or weekly on a day, at a time in your browser's time zone. See [Rescan schedule](#rescan-schedule).
 - **Rename** changes the label only.
-- **Remove** asks first. It forgets the source with its decisions and tag assignments; no file on the disk is changed.
+- **Remove** asks first. It forgets the source with its decisions and tag assignments; no file on the disk is changed. It is refused while the source's quarantine holds items: restore them or delete them for good first.
+- **A folder named `.precious-quarantine`** that you made yourself at the top of the source is named on its card: Precious hides that name everywhere, as its own quarantine, and cannot clean up the source until you rename the folder on the disk.
 - **Changes by Precious** says whether Precious may change the source. Every source starts with it off, and Precious only reads it. **Allow changes…** asks first, saying that Precious will then move, rename, and create folders on that source only when you ask, never replaces a file, and keeps a history you can undo; nothing changes until you confirm. **Turn off** stops it at once, with no question. Where changes cannot be allowed, the row says why instead of offering the button: the server's configuration forbids changes on every source (`sources.allow_writes = false`), the disk is mounted read-only, or its file system cannot rename without the risk of replacing a file. This is separate from the file system's own **Writable** or **Read-only** line above it.
 
 **Add source** opens the folder picker. It starts at the locations Precious may use and lists folders only; open folders until the one you want is current, optionally give it a name, and add it. Then choose Scan now. See [Adding a source](#adding-a-source), [Allowed roots](#allowed-roots), and [Offline and unavailable sources](#offline-and-unavailable-sources).
@@ -1398,7 +1638,7 @@ A decision applied to many items never changes a kept one, whether it was kept i
 
 Clicking an item on the Map or in Search opens its details beside the screen, or over it in a window narrower than 1,600 pixels (Escape or × closes it). They show:
 
-- **Where it is,** each folder above it a link to its own details, and its kind, size, file and folder counts, and dates of last change (for a folder, its newest and oldest change inside). A notice says when the item was not found in the last scan or could not be read.
+- **Where it is,** each folder above it a link to its own details, and its kind, size, file and folder counts, and dates of last change (for a folder, its newest and oldest change inside). A notice says when the item was not found in the last scan or could not be read. An item in quarantine says so, with when it was moved there and where from (or that its origin is unknown), and links to the Cleanup screen. It keeps its preview, figures, and Open, but shows no decision, tags, category, or Organize controls: restore it first.
 - **A preview of a file,** without choosing Open: a photo scaled to the panel (click it to see it full size), a video or audio player, a PDF, or the first 40 lines of a text, source, or Markdown file. Other types offer the download. A file changed on disk since the last scan, or on a disk that is not connected, says so instead.
 - **For a folder, its size by category** (its composition) and **Inside this folder**, the notable entries below it with their category and size, each opening its own details. See [What a folder is made of](#what-a-folder-is-made-of).
 - **Size by file type and by year** for a folder.
@@ -1442,7 +1682,7 @@ Files from a disk are never run as part of Precious:
 
 **Opportunities** (in the main menu) lists the eight cards: **Your files inside programs** first while it has open rows, then the others largest first. Each card shows its bytes, how many items it holds, and whether it rests on the rules or on the same content found by hashing; **Your files inside programs**, and a card whose open items hold no bytes, lead with their count instead. A card counts only what is still open, so it shrinks as you decide, and reads **Nothing left to review** once nothing is.
 
-**A review list** shows one card's items, largest first. Each row gives its path, size, dates, suggestion, and a one-line summary (category, years, files, size, and up to two notable things inside, such as an Office document or version history), with the decision buttons. A row of **Your files inside programs** also says which program or disposable folder it is inside, with a link to that folder on the Map. **Show decided rows** also lists the rows you already decided, with their decision. **Select all rows** works as Search's select all: it confirms the count, size, and kept items, then a decision skips kept items and reports them. The duplicates list has no select all: show a row's copies and decide each copy on its own (Precious never picks a copy for you); a folder pair also offers **Compare**.
+**A review list** shows one card's items, largest first. Each row gives its path, size, dates, suggestion, and a one-line summary (category, years, files, size, and up to two notable things inside, such as an Office document or version history), with the decision buttons. A row of **Your files inside programs** also says which program or disposable folder it is inside, with a link to that folder on the Map. **Show decided rows** also lists the rows you already decided, with their decision. **Select all rows** works as Search's select all: it confirms the count, size, and kept items, then a decision skips kept items and reports them. The duplicates list has no select all: show a row's copies and decide each copy on its own (Precious never picks a copy for you); a folder pair also offers **Compare**. **Draft a cleanup plan from this list** drafts a plan of the list's rows you discarded, on the source chosen at the top, and opens its preview (see [The Cleanup screen](#the-cleanup-screen)). It is off, with the reason, while all sources are shown, the disk is not connected, or changes are not allowed on the source. A plan from the duplicates list never takes the last copy of a file or both sides of a folder pair.
 
 Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J** or **↓** next row, **↑** previous row, and **Enter** opens the row's details (in the duplicates list, Enter shows or hides a row's copies, and the keys then act on the selected copy). The keys do nothing while you type in a field or while a dialog or the detail panel has the focus.
 
@@ -1456,13 +1696,46 @@ Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J
 
 **The detail panel** adds **Copies** for a file (its other copies, each with its path and decision, or why there is none: no other file of its size, different from every file of its size, or not checked yet), **Related folders** for a folder or archive (same content, contained in, or mostly shared, each with its bytes in common and **Compare**, which is where the files only on one side are counted), **Archive** for an archive file (format, what was read, items, size unpacked, and **Open as a folder**), the **Has copies** share, with a line under it saying that it counts every copy and is not the space you could free, which Opportunities shows, and the SHA-256 in the technical details. Every "no other copy" statement carries the share checked on all disks, because a copy can be on any of them; archives Precious does not open (7z, rar, and those over the limits) count as plain files.
 
+### The Cleanup screen
+
+**Cleanup** (in the main menu) is where discarded items leave a disk. Nothing is deleted in one step: a plan first moves them to the source's quarantine, a folder named `.precious-quarantine` at the top of the source, on the same disk, where they keep their names and can be restored; only a checked set is ever deleted for good. The screen shows each source, or the one chosen in the **Source** list at the top, with its plans and its quarantine.
+
+**Draft a cleanup plan** makes a plan of the items you discarded on that source, the outermost ones (a discarded file inside a discarded folder goes with the folder). It needs the disk connected and changes allowed (see [The Sources screen](#the-sources-screen)); otherwise the button is off and says why. A source whose top already holds a folder of your own named `.precious-quarantine` explains that instead. Review lists draft the same plan from their discarded rows (see [Opportunities and Compare](#opportunities-and-compare)).
+
+**The plan's preview** changes nothing until you approve it. It shows:
+
+- how many items will move to quarantine, how many are blocked, and how many are not included, with the total files and size;
+- what is known of copies, from the last scan and hashing: the bytes that have a copy elsewhere, the bytes with no known copy, the bytes not checked for copies yet, and how many items hold personal material;
+- every item, paged, under Planned, Blocked by kept items, or Not included, with its size and reason. A blocked item is a discarded folder that holds something kept: nothing of it moves. **Show the kept items inside** lists them, 100 at a time;
+- **Export CSV**, which downloads the plan's items as in History.
+
+**Approve and run** runs it; the result follows live, with a link to History. An item that changed since the plan was drafted, or that you kept meanwhile, is left in place and reported. **Close** leaves everything as it is. A plan can be run for 24 hours; after that, draft it again.
+
+**The quarantine** lists the source's quarantined items, newest first: where each came from (or "origin unknown" for an item Precious found there without its record), its size and files, when it was moved, and its last check, which links to the check's report. Tick items, or **Select all shown**, then:
+
+- **Restore** puts them back where they came from, after a preview. When an item's place is taken, or its folder is gone, or its origin is unknown, the preview says so and offers **Choose a folder for them…**: the destination chooser picks a folder, and those items go there under their own names. Nothing is ever merged or replaced. It needs changes allowed on the source.
+- **Check before deleting** starts a check of the selected items and opens its report. The check reads every file in full, archive members included, and looks for an identical copy outside the quarantine, which it reads too. It changes nothing on the disk.
+
+**The check's report** shows its progress while it runs (files and bytes read), with **Stop the check**. Then it gives the files and bytes of each finding: has a verified copy, copy only on a disk not connected, no copy found, could not be read, archive not opened, and nothing to copy (folders, links, empty files); and, for the files with no copy, how many look possibly valuable, uncertain, or likely junk. An archive Precious read completely counts as the files inside it: the archive itself is listed under nothing to copy, with no bytes of its own. The files are listed below, filterable by finding, by kind, and by whether they are confirmed, each with the copy that was found.
+
+Before anything can be deleted, every file without a verified copy must be confirmed:
+
+- **Confirm all likely junk** confirms the likely junk at once;
+- every other such file has its own **Confirm**, one click per file; each file's buttons are named after it for screen readers. Or take it out of the set: **Restore its item**, or **Move out…** to a folder outside the quarantine with the destination chooser. Either makes the check out of date.
+- a file of an item that holds something that could not be read needs no confirmation and offers none: the report says it stays in quarantine, since that item is never deleted for good. Restore the item, or fix the folder's permissions, scan, and check again.
+
+A check is out of date as soon as something it read or relied on changes: an item restored, a file moved out, a copy moved, decided again, or changed. The report then says so and offers **Check again**, which checks what is left in the quarantine of that check's own set, even after a newer check of the same items. When nothing of the set is left in quarantine (each item restored, moved out, or deleted for good), the report says so and offers neither Confirm, nor Check again, nor Delete for good.
+
+**Delete for good…** is on once everything is confirmed and an item that could be read is left; when only items that could not be read are left, the report says nothing left can be deleted. It asks one last time, stating how many items, files, and bytes will be deleted; **Keep them** cancels. Precious first compares every checked file and copy with the disk, and deletes nothing if anything changed: the status then lists, under **Why it stopped**, what changed (a file of the set, or a copy it relied on) and its path, as History's Show items does. The result gives the files and bytes deleted and the space freed. On ZFS, space held by snapshots taken before the deletion returns only when they expire, and the result says so. Opening another check's report starts clean: nothing of this one's deletion carries over.
+
 ### History
 
-**History** (in the main menu) lists every change Precious made on a disk, newest first: what it was (such as "Move into “Documentos”" or "Rename"), its source, when it ran, its size, its state (waiting for its turn, in progress, done, or stopped), and how many of its items were done, left as they were because their place was taken, not included, not done, or not attempted. The list follows running changes live.
+**History** (in the main menu) lists every change Precious made on a disk, newest first: what it was (such as "Move into “Documentos”", "Rename", "Move discarded items to quarantine", "Restore from quarantine", or "Delete for good"), its source, when it ran, its size, its state (waiting for its turn, in progress, done, or stopped), and how many of its items were done, blocked by kept items, left as they were because their place was taken, not included, not done, or not attempted. A cleanup, restore, or deletion counts the items you see on the Cleanup screen, not each of its steps. A deletion for good also gives the files and bytes deleted and the space freed. The list follows running changes live.
 
-- **Undo** puts a done change back: each moved or renamed item returns to its previous folder and name, and each folder the change created is removed if it is still empty. When an item's previous name is taken, or its previous folder is gone, the preview opens and offers to choose a folder for those items, where they go under their previous names. An undo is itself a change in the list, and an item already undone reads Undone.
+- **Export CSV** downloads the change's items as a spreadsheet file, one row per item with its path, size in bytes, operation, state, and reason. Cells are written so that no spreadsheet reads them as formulas.
+- **Undo** puts a done change back: each moved or renamed item returns to its previous folder and name, and each folder the change created is removed if it is still empty. When an item's previous name is taken, or its previous folder is gone, the preview opens and offers to choose a folder for those items, where they go under their previous names. An undo is itself a change in the list, and an item already undone reads Undone. A cleanup, a restore, and a deletion for good have no Undo: items moved to quarantine come back with Restore on the Cleanup screen, and what was deleted for good cannot come back.
 - **Cancel**, on a change waiting for its turn or running, stops it after the step in progress; nothing more of it runs.
-- **Show items** lists every item with its paths and what became of it, such as Done, Name taken, or Changed on disk since the last scan.
+- **Show items** lists every item with its paths and what became of it, such as Done, Name taken, or Changed on disk since the last scan. A deletion for good lists its comparison with the disk first, so a deletion that stopped there says what changed (a file of the set, or a copy it relied on) and where.
 - **Needs your check** marks an item whose step Precious could not confirm, for example after a power cut. It shows the item's path before and after and what was found at each (nothing, the item, or something else). Put things right on the disk, then choose **I fixed it**: Precious marks the item resolved and scans the source again. Until then, no other change can be planned on that source.
 
 ### Common tasks
@@ -1472,3 +1745,4 @@ Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J
 - **Decide many files:** search for them, select all results (or tick some), check the confirmation, and choose the decision. Read the report for the kept items that were skipped.
 - **Label things:** tag a folder in its details, and everything inside it carries the tag. Search by the tag, or color the Map by it, to see them.
 - **Tidy up a disk:** allow changes on its source on the Sources screen, then rename or move items from their details, or move many search results at once with Move to…. Check History to undo a change.
+- **Free space for good:** discard what you no longer want, then on the Cleanup screen draft a plan, read its preview, and approve it. Later, select the quarantined items, choose Check before deleting, confirm what the check asks for, and choose Delete for good.

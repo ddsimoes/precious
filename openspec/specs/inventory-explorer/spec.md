@@ -422,3 +422,18 @@ The Map, Search, the treemap legend, and the detail panel SHALL name a folder's 
 #### Scenario: Folders only
 - **WHEN** a client lists the children of the corpus root with `kind=directory&sort=name`
 - **THEN** every row is a folder, every folder child of the root is listed in name order, and files and archives are not listed
+
+### Requirement: Quarantine is left out of every view
+Quarantined entries SHALL appear only on the Cleanup screen and in their own detail panels. The following SHALL leave the quarantine folder and everything below it out:
+- the Map's table and treemap;
+- Search results, counts, and selections;
+- the source and Home totals and breakdowns;
+- decision totals;
+- copy counts;
+- review lists and cards.
+
+Home's decision progress SHALL show the bytes in quarantine beside kept, discarded, later, and undecided (§11.1). A quarantined entry's detail panel SHALL say it is in quarantine, show no decision, tag, or organizing controls, and link to the Cleanup screen.
+
+#### Scenario: Home after quarantining a folder
+- **WHEN** a discarded 50 MB folder is quarantined
+- **THEN** Home's totals drop by 50 MB, its decision progress shows 50 MB in quarantine and 50 MB less discarded, and neither the Map nor Search lists the folder

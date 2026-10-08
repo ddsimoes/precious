@@ -50,11 +50,20 @@
 // an entry and its subtree, keeping every ID (so decisions, tags,
 // overrides, digests, and listings follow) and rewriting paths, the paths
 // inside dir_stats lists, and the name index; InsertFolder and
-// RemoveFolder add and remove an empty folder; and a Refolder re-derives
-// the classification of the entries touched, and the totals, dir_stats,
-// and classification of their ancestors, from the stored rows, with the
-// fold a scan uses, so a rescan afterwards writes nothing. A scan given
-// DeferWhile waits while its source is being changed.
+// RemoveFolder add and remove an empty folder; DeleteSubtree and
+// DeleteEntries delete what a purge removed (r4 design D11); and a
+// Refolder re-derives the classification of the entries touched, and the
+// totals, dir_stats, and classification of their ancestors, from the
+// stored rows, with the fold a scan uses, so a rescan afterwards writes
+// nothing. A scan given DeferWhile waits while its source is being changed.
+//
+// Each source's quarantine is the folder QuarantineName at its top (r4
+// design D1, D2, ADR 0011). Scans walk it like any folder, so its rows
+// follow the disk, and the quarantine folder's own row folds what it holds;
+// but the top folder's fold, in a scan and in a refold, leaves out its child
+// at that name, whatever its kind, so source and folder totals exclude it.
+// Readers that show or count the disk leave its paths out with
+// NotQuarantined, a residual condition on precomputed BLOB bounds.
 package index
 
 import (

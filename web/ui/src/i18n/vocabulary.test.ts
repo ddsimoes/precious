@@ -55,6 +55,21 @@ describe('vocabulary', () => {
     expect(violations(en)).toEqual([])
   })
 
+  it('keeps internal terms out of the cleanup screens (R4)', () => {
+    const r4 = {
+      cleanup: en.cleanup,
+      detail: en.detail.quarantine,
+      reasons: en.organize.reason,
+      errors: en.errors.codes,
+      history: en.history,
+    }
+    expect(catalogStrings(en.cleanup).length).toBeGreaterThan(100)
+    expect(violations(r4)).toEqual([])
+    expect(duplicatedLabels(r4)).toEqual([])
+    // The interface says "delete for good", never the internal "purge".
+    expect(catalogStrings(r4).filter(([, text]) => /\bpurge/i.test(text))).toEqual([])
+  })
+
   it('catches every banned term in any case and nesting', () => {
     const sample = {
       a: 'An Atomic folder',

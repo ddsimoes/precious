@@ -84,10 +84,12 @@ func TestV5DatabaseMigratesToOrganize(t *testing.T) {
 	}
 }
 
+// The 0006 schema, as R3 shipped it; 0007 rebuilds these tables (see
+// cleanup_schema_test.go).
 func TestOrganizeColumnsAndIndexes(t *testing.T) {
-	s, _ := openTemp(t, Options{})
-	if v, err := SchemaVersion(context.Background(), s.Writer()); err != nil || v != latestVersion(t) || v < 6 {
-		t.Fatalf("schema version = %d, %v; want the latest, at least 6", v, err)
+	s, _ := openTemp(t, Options{Migrations: migrationsUpTo(t, 6)})
+	if v, err := SchemaVersion(context.Background(), s.Writer()); err != nil || v != 6 {
+		t.Fatalf("schema version = %d, %v; want 6", v, err)
 	}
 	if cols := tableColumns(t, s, "sources"); cols[len(cols)-1] != "write_enabled" {
 		t.Errorf("sources columns end %q, want write_enabled", cols[len(cols)-1])
@@ -190,7 +192,7 @@ func TestOrganizeChecksRejectBadValues(t *testing.T) {
 		{"action kind", func() error { return write(actionSQL, "delete", "planned", 0) }},
 		{"action state", func() error { return write(actionSQL, "move", "failed", 0) }},
 		{"action bulk 2", func() error { return write(actionSQL, "move", "planned", 2) }},
-		{"item op", func() error { return item("unlink", nil, 0, "planned") }},
+		{"item op", func() error { return item("delete", nil, 0, "planned") }},
 		{"item decision_after", func() error { return item("rename", "maybe", 0, "planned") }},
 		{"item created 2", func() error { return item("mkdir", nil, 2, "planned") }},
 		{"item state", func() error { return item("rename", nil, 0, "running") }},

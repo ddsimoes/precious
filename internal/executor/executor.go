@@ -33,6 +33,17 @@
 //
 // Actions of one source run one at a time, oldest first, and never while a
 // scan of the source is running (D10): the job defers by one second.
+//
+// R4 runs cleanup, restore, and purge actions on the same journal (r4 D3–D6,
+// D10–D13). A cleanup item is the mkdir of its folder in the quarantine,
+// the rename of its entry into it, and its origin record (created
+// exclusively); its first step re-checks the whole item against its draft,
+// and, for a duplicate ground, against copies read in full beforehand. A
+// restore renames back, unlinks the record, and removes the emptied
+// folders. A purge verifies its check against the disk, then deletes one
+// checked item per step, compared whole before its first deletion. Files
+// are created and unlinked only through folders inside the quarantine, and
+// every outcome marks stale the pre-delete checks relying on its paths.
 package executor
 
 import (
@@ -46,6 +57,7 @@ import (
 	"time"
 
 	"precious/internal/clock"
+	"precious/internal/content"
 	"precious/internal/domain"
 	"precious/internal/index"
 	"precious/internal/jobs"
@@ -73,6 +85,13 @@ type Index interface {
 	// IntentBelow is index.IntentBelow: owner intent on an entry below a
 	// folder, which keeps an undo from removing it (design V2).
 	IntentBelow(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error)
+	// ApplyPurge deletes what a purge step removed (r4 D11): the subtree of
+	// whole when the step removed the whole item, else the entries removed,
+	// and refolds the quarantine chain above them.
+	ApplyPurge(ctx context.Context, tx *sql.Tx, src domain.SourceID, removed []domain.EntryID, whole domain.EntryID) error
+	// ApplyUnlink drops the row at path, a record a scan indexed, after an
+	// unlink (r4 D4, D6); a path not indexed is nothing to drop.
+	ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.SourceID, path []byte) error
 }
 
 // Options configures New.
@@ -86,6 +105,9 @@ type Options struct {
 	Clock  clock.Clock
 	Logger *slog.Logger
 	Hooks  Hooks
+	// Content hashes the files a duplicate-ground cleanup relies on (r4 D5,
+	// D9).
+	Content *content.Service
 }
 
 // Hooks run around each Writer call. Tests only: an error simulates a crash
@@ -103,13 +125,14 @@ type Executor struct {
 	clk         clock.Clock
 	log         *slog.Logger
 	hooks       Hooks
+	content     *content.Service
 	runner      *jobs.Runner
 }
 
 // New returns an executor. Call Register before the runner starts.
 func New(o Options) *Executor {
 	e := &Executor{st: o.Store, src: o.Sources, idx: o.Index, allowWrites: o.AllowWrites, clk: o.Clock,
-		log: o.Logger, hooks: o.Hooks}
+		log: o.Logger, hooks: o.Hooks, content: o.Content}
 	if e.clk == nil {
 		e.clk = clock.Real{}
 	}

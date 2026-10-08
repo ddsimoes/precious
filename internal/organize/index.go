@@ -3,8 +3,10 @@ package organize
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
+	"precious/internal/content"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/executor"
@@ -62,9 +64,14 @@ func (a indexAdapter) ApplyRmdir(ctx context.Context, tx *sql.Tx, src domain.Sou
 	return a.rf.Refold(ctx, tx, src, []domain.EntryID{parent})
 }
 
-// ActionDone marks relations and review rows dirty once per action.
-func (indexAdapter) ActionDone(_ context.Context, tx *jobs.Tx, _ domain.SourceID) error {
-	return relations.RequestRefresh(tx)
+// ActionDone marks relations and review rows dirty once per action, and
+// enqueues the source's hashing, whose plan recomputes its coverage once
+// files moved into or out of the quarantine (r4 B5).
+func (indexAdapter) ActionDone(ctx context.Context, tx *jobs.Tx, src domain.SourceID) error {
+	if err := relations.RequestRefresh(tx); err != nil {
+		return err
+	}
+	return content.EnqueueHashing(ctx, tx, src)
 }
 
 func (indexAdapter) MissingIntentAt(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error) {
@@ -73,6 +80,95 @@ func (indexAdapter) MissingIntentAt(ctx context.Context, q store.Queryer, src do
 
 func (indexAdapter) IntentBelow(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error) {
 	return index.IntentBelow(ctx, q, src, path)
+}
+
+// ApplyPurge deletes what a purge step removed (r4 D11): whole with its
+// subtree when the step removed the whole item, else each removed entry with
+// whatever is still indexed below it. Then it refolds the folders that held
+// them, so the quarantine's row and the folders up to the top fold again.
+// Entries no longer indexed are skipped. An entry of another source, or not
+// strictly below the quarantine folder, is refused, and nothing changes.
+func (a indexAdapter) ApplyPurge(ctx context.Context, tx *sql.Tx, src domain.SourceID, removed []domain.EntryID,
+	whole domain.EntryID) error {
+	ids := removed
+	if whole != 0 {
+		ids = []domain.EntryID{whole}
+	}
+	var parents []domain.EntryID
+	seen := map[domain.EntryID]bool{}
+	for _, id := range ids {
+		var (
+			source string
+			parent sql.NullInt64
+			path   []byte
+		)
+		err := tx.QueryRowContext(ctx, `SELECT source_id, parent_id, path FROM entries WHERE id = ?`, int64(id)).
+			Scan(&source, &parent, &path)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("organize: read entry %d: %w", id, err)
+		}
+		if domain.SourceID(source) != src {
+			return fmt.Errorf("organize: entry %d is on source %q, not %q", id, source, src)
+		}
+		if !insideQuarantine(path) {
+			return fmt.Errorf("organize: entry %d is not inside the quarantine; a purge deletes nothing else", id)
+		}
+		if p := domain.EntryID(parent.Int64); !seen[p] {
+			seen[p] = true
+			parents = append(parents, p)
+		}
+	}
+	var err error
+	if whole != 0 {
+		err = index.DeleteSubtree(ctx, tx, whole)
+	} else {
+		err = index.DeleteEntries(ctx, tx, removed)
+	}
+	if err != nil {
+		return err
+	}
+	// A parent the purge removed too is skipped; the folder above the
+	// outermost removed entry is not removed, and folds its chain.
+	return a.rf.Refold(ctx, tx, src, parents)
+}
+
+// ApplyUnlink drops the row of the file at path, a record that a scan
+// indexed, and refolds the folder that held it (r4 D4, D6). A path not
+// indexed is nothing to drop. A path not strictly below the quarantine
+// folder, or a folder's row, is refused.
+func (a indexAdapter) ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.SourceID, path []byte) error {
+	if !insideQuarantine(path) {
+		return fmt.Errorf("organize: %q is not inside the quarantine; an unlink drops nothing else", domain.DisplayName(path))
+	}
+	var (
+		id     int64
+		parent sql.NullInt64
+		kind   string
+	)
+	err := tx.QueryRowContext(ctx, `SELECT id, parent_id, kind FROM entries WHERE source_id = ? AND path = ?`,
+		string(src), path).Scan(&id, &parent, &kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("organize: read the entry at %q: %w", domain.DisplayName(path), err)
+	}
+	if kind == string(domain.EntryDirectory) {
+		return fmt.Errorf("organize: %q is indexed as a folder, which an unlink does not remove", domain.DisplayName(path))
+	}
+	if err := index.DeleteSubtree(ctx, tx, domain.EntryID(id)); err != nil {
+		return err
+	}
+	return a.rf.Refold(ctx, tx, src, []domain.EntryID{domain.EntryID(parent.Int64)})
+}
+
+// insideQuarantine reports whether path lies strictly below a source's
+// quarantine folder.
+func insideQuarantine(path []byte) bool {
+	return index.IsQuarantinePath(path) && string(path) != index.QuarantineName
 }
 
 // parentOf returns the folder holding entry id.

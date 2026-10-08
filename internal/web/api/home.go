@@ -10,19 +10,22 @@ import (
 	"precious/internal/content"
 	"precious/internal/decisions"
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/jobs"
 	"precious/internal/review"
 	"precious/internal/search"
 )
 
 type homeBody struct {
-	Totals    homeTotals                 `json:"totals"`
-	ByFamily  []search.FamilyAmount      `json:"by_family"`
-	ByKind    []kindAmount               `json:"by_kind"`
-	ByYear    []yearAmount               `json:"by_year"`
-	Decisions map[domain.Decision]amount `json:"decisions"`
-	Partial   bool                       `json:"partial"`
-	Scans     []homeScan                 `json:"scans"`
+	Totals   homeTotals            `json:"totals"`
+	ByFamily []search.FamilyAmount `json:"by_family"`
+	ByKind   []kindAmount          `json:"by_kind"`
+	ByYear   []yearAmount          `json:"by_year"`
+	// Decisions are decisions.Totals summed by decision, with the
+	// quarantine bucket beside them (r4 design D15).
+	Decisions map[string]amount `json:"decisions"`
+	Partial   bool              `json:"partial"`
+	Scans     []homeScan        `json:"scans"`
 	// The R2 fields: what hashing checked, the opportunity cards, and the
 	// active hashing jobs.
 	Coverage coverageJSON `json:"coverage"`
@@ -49,9 +52,11 @@ type homeScan struct {
 // home serves GET /api/home[?source=ID]: the figures of one source, or of
 // every source when source is absent or empty. Totals and breakdowns are
 // the sums of the root entries and their dir_stats (a source not scanned
-// yet adds nothing), decisions are decisions.Totals summed, partial is set
-// when a root is partial or unreadable, and scans are the queued, running,
-// and paused scans with their progress. Coverage is the source's (all
+// yet adds nothing), which leave the quarantine out (r4 design D2);
+// decisions are decisions.Totals summed, and their quarantine bucket the
+// sum of each source's quarantine folder row (D15); partial is set when a
+// root is partial or unreadable, and scans are the queued, running, and
+// paused scans with their progress. Coverage is the source's (all
 // sources' without one), cards are review.Cards for the source, and
 // hashing lists the active hash and hash_now jobs like the scans. An
 // unknown source is not_found.
@@ -81,7 +86,7 @@ func readHome(ctx context.Context, tx *sql.Tx, src domain.SourceID) (homeBody, e
 	}
 	defer rows.Close()
 	var (
-		body    = homeBody{Decisions: make(map[domain.Decision]amount, len(domain.Decisions))}
+		body    = homeBody{Decisions: make(map[string]amount, len(domain.Decisions)+1)}
 		b       = newBreakdowns()
 		sources []domain.SourceID
 	)
@@ -122,19 +127,26 @@ func readHome(ctx context.Context, tx *sql.Tx, src domain.SourceID) (homeBody, e
 	body.ByFamily, body.ByKind, body.ByYear = b.familyList(), b.kindList(), b.yearList()
 
 	for _, d := range domain.Decisions {
-		body.Decisions[d] = amount{}
+		body.Decisions[string(d)] = amount{}
 	}
+	var quarantine amount
 	for _, s := range sources {
 		totals, err := decisions.Totals(ctx, tx, s)
 		if err != nil {
 			return homeBody{}, err
 		}
 		for d, t := range totals {
-			a := body.Decisions[d]
+			a := body.Decisions[string(d)]
 			a.add(amount{Files: t.Files, Bytes: t.Bytes})
-			body.Decisions[d] = a
+			body.Decisions[string(d)] = a
 		}
+		q, err := quarantineAmount(ctx, tx, s)
+		if err != nil {
+			return homeBody{}, err
+		}
+		quarantine.add(q)
 	}
+	body.Decisions[quarantineBucket] = quarantine
 
 	if body.Scans, err = activeJobs(ctx, tx, src, false, jobs.KindScan); err != nil {
 		return homeBody{}, err
@@ -149,6 +161,24 @@ func readHome(ctx context.Context, tx *sql.Tx, src domain.SourceID) (homeBody, e
 		return homeBody{}, err
 	}
 	return body, nil
+}
+
+// quarantineBucket is the key of Home's decisions that holds the bytes and
+// files in quarantine.
+const quarantineBucket = "quarantine"
+
+// quarantineAmount reads the files and bytes in the quarantine of source
+// src: its quarantine folder row's totals, which the scans and Refold fold
+// while the top leaves them out (r4 design D2, D15); zero without one.
+func quarantineAmount(ctx context.Context, tx *sql.Tx, src domain.SourceID) (amount, error) {
+	var a amount
+	err := tx.QueryRowContext(ctx, `SELECT ifnull(sum(q.total_files), 0), ifnull(sum(q.total_bytes), 0) FROM entries q
+		WHERE q.source_id = ? AND q.path = ? AND q.kind = 'directory' AND q.state <> 'missing'`,
+		string(src), []byte(index.QuarantineName)).Scan(&a.Files, &a.Bytes)
+	if err != nil {
+		return amount{}, fmt.Errorf("api: quarantine of %s: %w", src, err)
+	}
+	return a, nil
 }
 
 // activeJobs lists the queued, running, and paused jobs of the kinds for

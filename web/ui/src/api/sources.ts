@@ -99,6 +99,9 @@ export interface Source {
   next_scan_at: string | null
   schedule_skipped: ScheduleSkip | null
   writes: SourceWrites
+  // quarantine is what the source's quarantine holds (R4 design D1, D15),
+  // and whether a folder of the owner's own takes its name at the top.
+  quarantine: { files: number; bytes: number; name_taken: boolean }
 }
 
 export interface SourcesResponse {

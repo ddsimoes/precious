@@ -34,6 +34,8 @@ func TestPortableWriterRefusesEverything(t *testing.T) {
 		"Mkdir":           w.Mkdir([]byte("novo")),
 		"Rmdir":           w.Rmdir([]byte("vazio")),
 		"Sync":            w.Sync(),
+		"CreateExclusive": w.CreateExclusive([]byte("c.txt"), []byte("C")),
+		"Unlink":          w.Unlink([]byte("a.txt")),
 	} {
 		var e *fsaccess.Error
 		if !errors.As(err, &e) || e.Op != name || e.Outcome != "" || !errors.Is(err, fsaccess.ErrNoReplaceUnsupported) {
@@ -43,12 +45,18 @@ func TestPortableWriterRefusesEverything(t *testing.T) {
 	if err := w.Mkdir([]byte("..")); !errors.Is(err, fsaccess.ErrInvalidName) {
 		t.Errorf("Mkdir(..) = %v, want ErrInvalidName", err)
 	}
+	if err := w.CreateExclusive([]byte("a/b"), nil); !errors.Is(err, fsaccess.ErrInvalidName) {
+		t.Errorf("CreateExclusive(a/b) = %v, want ErrInvalidName", err)
+	}
+	if err := w.Unlink([]byte(".")); !errors.Is(err, fsaccess.ErrInvalidName) {
+		t.Errorf("Unlink(.) = %v, want ErrInvalidName", err)
+	}
 	for _, name := range []string{"a.txt", "vazio"} {
 		if _, err := os.Lstat(filepath.Join(src, name)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	for _, name := range []string{"b.txt", "novo"} {
+	for _, name := range []string{"b.txt", "novo", "c.txt"} {
 		if _, err := os.Lstat(filepath.Join(src, name)); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s exists after a refused write: %v", name, err)
 		}

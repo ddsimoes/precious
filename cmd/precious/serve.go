@@ -16,6 +16,7 @@ import (
 	_ "time/tzdata"
 
 	"precious/internal/auth"
+	"precious/internal/cleanup"
 	"precious/internal/clock"
 	commandapi "precious/internal/commands"
 	"precious/internal/config"
@@ -138,10 +139,15 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 	org := organize.New(organize.Options{Store: st, Policy: pol, AllowWrites: cfg.Sources.AllowWrites,
 		Clock: d.Clock, Logger: log})
 	exec := executor.New(executor.Options{Store: st, Sources: srcs, Index: org.Index(),
-		AllowWrites: cfg.Sources.AllowWrites, Clock: d.Clock, Logger: log})
+		AllowWrites: cfg.Sources.AllowWrites, Clock: d.Clock, Logger: log, Content: hashing})
 	exec.Register(runner)
 	scanner.DeferWhile(executor.OrganizeActive)
 	scanner.Register(runner)
+	// Cleanup (r4 design D1–D16): its plans run on the executor through
+	// run-action; its pre-delete check is a read-only job of its own.
+	clean := cleanup.New(cleanup.Options{Store: st, Runner: runner, Sources: srcs, Content: hashing, Policy: pol,
+		Executor: exec, AllowWrites: cfg.Sources.AllowWrites, Clock: d.Clock, Logger: log})
+	clean.Register(runner)
 	authSvc := auth.New(st, d.Clock, cfg.Auth, auth.Options{})
 	shell, err := spa.New(d.UI)
 	if err != nil {
@@ -160,6 +166,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		decisions: decisions.New(d.Clock, pol, index.StartScan),
 		hashing:   hashing,
 		organize:  org,
+		cleanup:   clean,
 		spa:       shell,
 	})
 
@@ -266,6 +273,7 @@ type handlerDeps struct {
 	decisions *decisions.Service
 	hashing   *content.Service
 	organize  *organize.Service
+	cleanup   *cleanup.Service
 	spa       http.Handler
 }
 
@@ -290,12 +298,14 @@ func newHandler(d handlerDeps) http.Handler {
 	content.RegisterCommands(cmds, d.hashing)
 	review.RegisterCommands(cmds, d.decisions)
 	d.organize.RegisterCommands(cmds)
+	d.cleanup.RegisterCommands(cmds)
 	mux.Handle("POST /api/commands/{name}", cmds)
 	mux.Handle("GET /api/jobs/{id}", jobs.NewStatusHandler(d.runner))
 	mux.Handle("GET /api/events", jobs.NewEventsHandler(d.runner))
 	sources.Register(mux, d.sources, d.log)
 	api.Register(mux, d.store, d.policy, d.log)
 	d.organize.Routes(mux)
+	d.cleanup.Routes(mux)
 	viewer.Register(mux, d.store, d.sources, d.hashing, d.log)
 	mux.HandleFunc("/api", apiNotFound)
 	mux.HandleFunc("/api/", apiNotFound)

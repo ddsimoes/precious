@@ -86,12 +86,22 @@ function HomeFigures({ home, source, sources }: { home: Home; source: string | n
     .sort((a, b) => b.bytes - a.bytes)
     .map((a) => ({ key: a.kind, label: t(`home.kind.${a.kind}`), bytes: a.bytes, files: a.files }))
   const byYear = yearBars(home.by_year, t)
-  const byDecision = decisions.map((decision) => ({
-    key: decision,
-    label: t(`home.decision.${decision}`),
-    bytes: home.decisions[decision].bytes,
-    files: home.decisions[decision].files,
-  }))
+  // The quarantine is outside the totals and the four decisions (R4 design
+  // D15); it shows beside them.
+  const byDecision = [
+    ...decisions.map((decision) => ({
+      key: decision,
+      label: t(`home.decision.${decision}`),
+      bytes: home.decisions[decision].bytes,
+      files: home.decisions[decision].files,
+    })),
+    {
+      key: 'quarantine',
+      label: t('home.inQuarantine'),
+      bytes: home.decisions.quarantine.bytes,
+      files: home.decisions.quarantine.files,
+    },
+  ]
   // The partial notice links to what could not be read, in the source shown.
   const unreadable = new URLSearchParams({ state: 'unreadable' })
   if (source !== null) {

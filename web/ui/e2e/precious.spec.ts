@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { devices, expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test'
@@ -1364,6 +1364,418 @@ test('History lists every change newest first and undoes the bulk move', async (
   expect(['Downloads/Setup.exe', 'Downloads/Setup(1).exe'].map(onDisk)).toEqual([true, true])
 })
 
+// The R4 tests clean up what the earlier tests discarded: a cleanup plan
+// with a folder that a kept file blocks, the quarantine and a restore from
+// it, a check and a purge of all it holds but one item, the export of the
+// cleanup, and Home's figure of what stays in quarantine.
+const backup = 'Backup_PC_2004'
+const thesis = `${backup}/C/Documents and Settings/Joao/Meus documentos/TCC_rascunho.doc`
+const oldCv = 'Documentos/curriculo_final.doc'
+const restored = 'Documentos/curriculo (1).doc'
+const leftInQuarantine = 'Fotos - Copia/2006/Praia/Thumbs.db'
+const quarantineDir = '.precious-quarantine'
+
+test('R4.1: a cleanup plan lists the folder a kept file blocks, changes nothing until approved, then moves the rest to quarantine', async () => {
+  // No discarded folder holds a kept entry yet: keep the thesis draft in
+  // the discarded backup. Discard an old version of the curriculum too, a
+  // document with no other copy, which the check will ask to confirm on its
+  // own.
+  expect((await discardedItems()).blocked).toEqual([])
+  // These tests take single files besides the backup. The review keys test
+  // discards the first row of the system junk list, which is a file or a
+  // folder depending on how the test's filesystem orders the rows of equal
+  // size: a folder discarded there is undecided again.
+  const isFolder = (path: string) => path !== backup && truth.find((e) => e.path === path)?.kind === 'directory'
+  for (const path of (await discardedItems()).planned.filter(isFolder)) {
+    expect((await command('set-decision', { entry_id: await entryId(path), decision: 'inherit' })).status).toBe(200)
+  }
+  expect((await intentOf(thesis)).decision).toBeNull()
+  expect((await intentOf(oldCv)).decision).toBeNull()
+  expect((await command('set-decision', { entry_id: await entryId(thesis), decision: 'keep' })).status).toBe(200)
+  expect((await command('set-decision', { entry_id: await entryId(oldCv), decision: 'discard' })).status).toBe(200)
+  const { planned, blocked } = await discardedItems()
+  expect(blocked).toEqual([backup])
+  expect(planned).toEqual(expect.arrayContaining([oldCv, restored, leftInQuarantine]))
+  expect(planned.filter(isFolder)).toEqual([])
+  const ids = new Map<string, string>()
+  for (const path of [...planned, backup]) {
+    ids.set(path, await entryId(path))
+  }
+  const sizeOf = (path: string) => truth.find((e) => e.path === path)?.size ?? Number.NaN
+  const backupFiles = filesBelow(backup)
+  const backupBytes = backupFiles.reduce((sum, e) => sum + (e.size ?? 0), 0)
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.cleanup }).click()
+  const region = page.getByRole('region', { name: sourceLabel })
+  const drafted = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/commands/plan-cleanup')
+  await region.getByRole('button', { name: en.cleanup.draft }).click()
+  const plan: CleanupPlan = await (await drafted).json()
+  const { action } = plan
+  expect(action).toMatchObject({ kind: 'cleanup', state: 'planned', ground: 'discard', list: null })
+  expect(action.entries).toMatchObject({ planned: planned.length, blocked: 1, refused: 0, conflict: 0 })
+  expect(action.files).toBe(planned.length)
+  expect(action.bytes).toBe(planned.reduce((sum, p) => sum + sizeOf(p), 0))
+
+  const preview = page.getByRole('alertdialog', { name: en.organize.titleNoDestination.cleanup })
+  const counts = preview.getByRole('list', { name: en.cleanup.preview.counts, exact: true })
+  await expect(counts.getByRole('listitem')).toHaveText([
+    plural(en.cleanup.preview.cleanup, 'planned', planned.length),
+    plural(en.cleanup.preview.cleanup, 'blocked', 1),
+    fill(en.organize.preview.total, { files: fileCount(action.files), bytes: bytes(action.bytes) }),
+  ])
+  const summary = preview.getByRole('region', { name: en.cleanup.summary.title })
+  for (const line of [
+    fill(en.cleanup.summary.withCopy, { bytes: bytes(plan.summary.with_copy_bytes) }),
+    fill(en.cleanup.summary.noCopy, { bytes: bytes(plan.summary.no_copy_bytes) }),
+    fill(en.cleanup.summary.unchecked, { bytes: bytes(plan.summary.unchecked_bytes) }),
+    plural(en.cleanup.summary, 'personal', plan.summary.personal_items),
+  ]) {
+    await expect(summary).toContainText(line)
+  }
+  // The summary splits the planned bytes, from the index alone.
+  expect(plan.summary.with_copy_bytes + plan.summary.no_copy_bytes + plan.summary.unchecked_bytes).toBe(action.bytes)
+  const plannedRows = preview
+    .getByRole('list', { name: en.cleanup.preview.groups.planned, exact: true })
+    .locator(':scope > li')
+  await expect(plannedRows).toHaveCount(planned.length)
+  for (const path of planned) {
+    await expect(plannedRows.filter({ hasText: path }), path).toContainText(`${bytes(sizeOf(path))} · ${fileCount(1)}`)
+  }
+  // The backup is blocked as a whole, and shows the kept file inside it.
+  const blockedRows = preview
+    .getByRole('list', { name: en.cleanup.preview.groups.blocked, exact: true })
+    .locator(':scope > li')
+  await expect(blockedRows).toHaveCount(1)
+  await expect(blockedRows).toContainText(backup)
+  await expect(blockedRows).toContainText(`${bytes(backupBytes)} · ${fileCount(backupFiles.length)}`)
+  await expect(blockedRows).toContainText(en.organize.reason.holds_kept)
+  await blockedRows.getByRole('button', { name: plural(en.cleanup.kept, 'show', 1) }).click()
+  await expect(
+    blockedRows.getByRole('list', { name: en.cleanup.kept.list, exact: true }).getByRole('listitem'),
+  ).toHaveText([thesis])
+  await expect(preview.getByRole('link', { name: en.cleanup.export })).toHaveAttribute(
+    'href',
+    `/api/history/${action.id}/export.csv`,
+  )
+  // Drafting changed nothing on the disk.
+  expect([...planned, backup, thesis].every(onDisk)).toBe(true)
+  expect(onDisk(quarantineDir)).toBe(false)
+
+  await preview.getByRole('button', { name: en.cleanup.preview.run, exact: true }).click()
+  await expect(preview).toBeHidden()
+  const outcome = region.getByRole('status').filter({ hasText: en.organize.status.done.cleanup })
+  await expect(outcome).toBeVisible()
+  // The blocked backup stayed, so not everything was changed.
+  await expect(outcome).toContainText(en.organize.status.notAll)
+  expect(await actionOf(action.id)).toMatchObject({ state: 'done', entries: { done: planned.length, blocked: 1 } })
+
+  // Each planned item is at .precious-quarantine/<plan>/<seq>/<name>, in
+  // path order, with its origin record <seq>.json beside it, and keeps its
+  // ID.
+  const moves = (await allPages<PlanItem>(`/api/history/${action.id}/items`, { op: 'rename', state: 'done' })).items
+  expect(moves.map((m) => m.from?.path)).toEqual(planned)
+  const at = new RegExp(`^${quarantineDir}/${action.id}/(\\d+)/([^/]+)$`)
+  for (const [index, move] of moves.entries()) {
+    const from = move.from?.path ?? ''
+    const to = move.to?.path ?? ''
+    expect(at.exec(to)?.slice(1), to).toEqual([String(index + 1), from.split('/').at(-1)])
+    expect([onDisk(from), onDisk(to)], from).toEqual([false, true])
+    expect(move.entry).toMatchObject({ id: ids.get(from), path: to })
+    const record: unknown = JSON.parse(readFileSync(join(corpusPath(), `${parent(to)}.json`), 'utf8'))
+    expect(record).toMatchObject({
+      version: 1,
+      source_id: (await corpusSource()).id,
+      entry_id: ids.get(from),
+      plan_id: action.id,
+      original: { path: from },
+    })
+  }
+  // The blocked backup is untouched, still discarded, and its file kept.
+  expect([onDisk(backup), onDisk(thesis)]).toEqual([true, true])
+  expect(await entryId(backup)).toBe(ids.get(backup))
+  expect((await intentOf(backup)).decision).toBe('discard')
+  expect((await intentOf(thesis)).decision).toBe('keep')
+
+  // History lists the cleanup first, with no Undo, and its export.
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.history }).click()
+  const first = page.getByRole('list', { name: en.history.list }).locator(':scope > li').first()
+  await expect(first).toContainText(en.organize.titleNoDestination.cleanup)
+  const card = page.getByRole('article', { name: en.organize.titleNoDestination.cleanup })
+  await expect(card).toContainText(en.history.state.done)
+  await expect(card.getByRole('list', { name: en.history.counts, exact: true }).getByRole('listitem')).toHaveText([
+    fill(en.history.count.done, { formatted: count(planned.length) }),
+    fill(en.history.count.blocked, { formatted: count(1) }),
+  ])
+  await expect(card.getByRole('button', { name: en.history.undo, exact: true })).toHaveCount(0)
+  await expect(card.getByRole('link', { name: en.history.export })).toHaveAttribute(
+    'href',
+    `/api/history/${action.id}/export.csv`,
+  )
+})
+
+test('R4.3: the quarantine lists each item with where it came from, and a restore puts one back with its ID', async () => {
+  const cleanup = await newestAction('cleanup')
+  const quarantine = await quarantineOf()
+  expect(quarantine.items.length).toBe(cleanup.entries.done)
+  expect(quarantine.total.files).toBe(quarantine.items.reduce((sum, i) => sum + i.files, 0))
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.cleanup }).click()
+  const region = page.getByRole('region', { name: sourceLabel })
+  await expect(region).toContainText(
+    fill(en.cleanup.quarantine.total, { files: fileCount(quarantine.total.files), bytes: bytes(quarantine.total.bytes) }),
+  )
+  const rows = region.getByRole('list', { name: fill(en.cleanup.quarantine.list, { source: sourceLabel }) }).locator(':scope > li')
+  const row = (origin: string) => rows.filter({ has: page.getByRole('checkbox', { name: origin, exact: true }) })
+  await expect(rows).toHaveCount(quarantine.items.length)
+  for (const item of quarantine.items) {
+    expect(item.plan_id).toBe(cleanup.id)
+    const origin = item.original?.path ?? ''
+    await expect(row(origin), origin).toContainText(`${bytes(item.bytes)} · ${fileCount(item.files)}`)
+    await expect(row(origin), origin).toContainText(en.cleanup.quarantine.notChecked)
+  }
+
+  const item = quarantine.items.find((i) => i.original?.path === restored)
+  if (item === undefined) {
+    throw new Error(`${restored} is not in quarantine`)
+  }
+  const at = item.entry.path
+  expect([onDisk(restored), onDisk(at), onDisk(`${parent(at)}.json`)]).toEqual([false, true, true])
+  await region.getByRole('checkbox', { name: restored, exact: true }).check()
+  await expect(region).toContainText(plural(en.cleanup.quarantine, 'selected', 1))
+  await region.getByRole('button', { name: en.cleanup.quarantine.restore, exact: true }).click()
+  const preview = page.getByRole('alertdialog', { name: en.organize.titleNoDestination.restore })
+  const counts = preview.getByRole('list', { name: en.cleanup.preview.counts, exact: true })
+  await expect(counts.getByRole('listitem')).toHaveText([
+    plural(en.cleanup.preview.restore, 'planned', 1),
+    fill(en.organize.preview.total, { files: fileCount(item.files), bytes: bytes(item.bytes) }),
+  ])
+  const planned = preview
+    .getByRole('list', { name: en.cleanup.preview.groups.planned, exact: true })
+    .locator(':scope > li')
+  await expect(planned).toHaveCount(1)
+  await expect(planned).toContainText(restored)
+  // Nothing moved before the owner confirms.
+  expect([onDisk(restored), onDisk(at)]).toEqual([false, true])
+  await preview.getByRole('button', { name: en.cleanup.preview.runRestore, exact: true }).click()
+  await expect(region.getByRole('status').filter({ hasText: en.organize.status.done.restore })).toBeVisible()
+
+  // It is back at its path with its ID and decision, and its item folder
+  // and record are gone.
+  expect([onDisk(restored), onDisk(at), onDisk(parent(at)), onDisk(`${parent(at)}.json`)]).toEqual([
+    true,
+    false,
+    false,
+    false,
+  ])
+  expect(await entryId(restored)).toBe(item.entry.id)
+  expect((await intentOf(restored)).decision).toBe('discard')
+  await expect(rows).toHaveCount(quarantine.items.length - 1)
+  await expect(row(restored)).toHaveCount(0)
+})
+
+test('R4.6, R4.7, R4.5: a check reads the set, the likely junk and each file with no copy are confirmed, and the purge frees the space', async () => {
+  // Everything in quarantine but one item, which stays for Home.
+  const before = await quarantineOf()
+  const set = before.items.filter((i) => i.original?.path !== leftInQuarantine)
+  expect(set.length).toBe(before.items.length - 1)
+  const origins = new Map(set.map((i) => [i.entry.path, i.original?.path ?? '']))
+  // Every item of the set is one file here: its own path is the file's.
+  expect(set.every((i) => i.files === 1)).toBe(true)
+  const setBytes = set.reduce((sum, i) => sum + i.bytes, 0)
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.cleanup }).click()
+  const region = page.getByRole('region', { name: sourceLabel })
+  await region.getByRole('button', { name: en.cleanup.quarantine.selectShown }).click()
+  await region.getByRole('checkbox', { name: leftInQuarantine, exact: true }).uncheck()
+  await expect(region).toContainText(plural(en.cleanup.quarantine, 'selected', set.length))
+  await region.getByRole('button', { name: en.cleanup.quarantine.check }).click()
+  await expect(page).toHaveURL(/\/cleanup\/checks\/\d+$/)
+  await expect(page.getByRole('heading', { name: en.cleanup.check.title, level: 1 })).toBeVisible()
+  const checkId = new URL(page.url()).pathname.split('/').at(-1) ?? ''
+  await expect
+    .poll(async () => (await checkOf(checkId)).state, { message: `check ${checkId} ends`, timeout: 60_000 })
+    .toBe('ready')
+
+  // R4.6: every file of the set is recorded once. A file with a copy left
+  // outside the set and the quarantine names it; a file whose ground-truth
+  // copies are all in the set has none.
+  const check = await checkOf(checkId)
+  expect(check.items).toBe(set.length)
+  const files = (await allPages<CheckFile>(`/api/checks/${checkId}/files`, {})).items
+  expect(files.map((f) => f.path).toSorted()).toEqual([...origins.keys()].toSorted())
+  for (const file of files) {
+    const origin = origins.get(file.path) ?? ''
+    const others = (corpus.duplicates.find((d) => d.copies.some((c) => c.path === origin))?.copies ?? [])
+      .map((c) => c.path)
+      .filter((p) => p !== origin && !p.includes('!'))
+    const outside = others.filter((p) => ![...origins.values()].includes(p) && p !== leftInQuarantine)
+    if (file.verdict === 'safe') {
+      expect(others, origin).toContain(file.copy?.path)
+      expect([...origins.values()], origin).not.toContain(file.copy?.path)
+    } else {
+      expect(file, origin).toMatchObject({ verdict: 'unique', copy: null })
+      expect(outside, origin).toEqual([])
+    }
+  }
+  const amount = (list: CheckFile[]) => ({ files: list.length, bytes: list.reduce((sum, f) => sum + f.size, 0) })
+  for (const verdict of Object.keys(en.cleanup.verdict) as Verdict[]) {
+    expect(check.counts.verdict[verdict], verdict).toEqual(amount(files.filter((f) => f.verdict === verdict)))
+  }
+  const unique = files.filter((f) => f.verdict === 'unique')
+  for (const name of Object.keys(en.cleanup.class) as CheckClass[]) {
+    expect(check.counts.class[name], name).toEqual(amount(unique.filter((f) => f.class === name)))
+  }
+  // The set gives both kinds of confirmation: the likely junk as a group,
+  // and each other file with no copy on its own, the old curriculum among
+  // them.
+  const junk = unique.filter((f) => f.class === 'likely_junk')
+  const own = unique.filter((f) => f.class !== 'likely_junk')
+  expect(junk.length).toBeGreaterThan(0)
+  expect(own.map((f) => origins.get(f.path))).toContain(oldCv)
+  expect(own.find((f) => origins.get(f.path) === oldCv)?.class).toBe('possibly_valuable')
+  expect(check).toMatchObject({ unconfirmed: amount(unique), junk_confirmed: false, allowed: false })
+
+  // The report shows the counts.
+  await expect(page.getByRole('list', { name: en.cleanup.check.verdicts }).getByRole('listitem')).toHaveText(
+    (Object.keys(en.cleanup.verdict) as Verdict[]).map((v) => amountLine(en.cleanup.verdict[v], check.counts.verdict[v])),
+  )
+  await expect(page.getByRole('list', { name: en.cleanup.check.classes }).getByRole('listitem')).toHaveText(
+    (Object.keys(en.cleanup.class) as CheckClass[]).map((c) => amountLine(en.cleanup.class[c], check.counts.class[c])),
+  )
+  const unconfirmed = (a: Amount) => fill(en.cleanup.check.unconfirmed, { files: fileCount(a.files), bytes: bytes(a.bytes) })
+  await expect(page.getByText(unconfirmed(check.unconfirmed))).toBeVisible()
+  const fileRows = page.getByRole('list', { name: en.cleanup.files.title, exact: true }).locator(':scope > li')
+  await expect(fileRows).toHaveCount(files.length)
+  for (const file of junk) {
+    await expect(fileRows.filter({ hasText: file.path })).toContainText(en.cleanup.files.junkGroup)
+  }
+
+  // R4.7: nothing is deleted while a file is unconfirmed.
+  const purgeStart = page.getByRole('button', { name: en.cleanup.purge.start })
+  await expect(purgeStart).toBeDisabled()
+  await expect(page.getByText(en.cleanup.purge.notAllowed)).toBeVisible()
+  expect(await command('plan-purge', { check_id: checkId })).toMatchObject({ status: 409, code: 'purge_not_allowed' })
+  await page
+    .getByRole('button', {
+      name: fill(en.cleanup.check.confirmJunk, { files: fileCount(junk.length), bytes: bytes(amount(junk).bytes) }),
+    })
+    .click()
+  await expect(page.getByText(en.cleanup.check.junkConfirmed)).toBeVisible()
+  for (const file of junk) {
+    await expect(fileRows.filter({ hasText: file.path })).toContainText(en.cleanup.files.junkConfirmed)
+  }
+  await expect(page.getByText(unconfirmed(amount(own)))).toBeVisible()
+  // The files to confirm on their own are named.
+  const refused = await command<{ error: { message: string } }>('plan-purge', { check_id: checkId })
+  expect(refused).toMatchObject({ status: 409, code: 'purge_not_allowed' })
+  for (const file of own) {
+    expect(refused.body.error.message).toContain(file.path)
+  }
+  await expect(purgeStart).toBeDisabled()
+  for (const file of own) {
+    const row = fileRows.filter({ hasText: file.path })
+    await expect(row).toContainText(`${en.cleanup.verdict.unique} · ${en.cleanup.class[file.class ?? 'uncertain']}`)
+    await row.getByRole('button', { name: en.cleanup.files.confirm, exact: true }).click()
+    await expect(row).toContainText(en.cleanup.files.isConfirmed)
+    await expect(row.getByRole('button', { name: en.cleanup.files.confirm, exact: true })).toHaveCount(0)
+  }
+  await expect(page.getByText(unconfirmed({ files: 0, bytes: 0 }))).toBeVisible()
+  expect(await checkOf(checkId)).toMatchObject({ junk_confirmed: true, allowed: true })
+
+  // R4.5: the purge asks once more, deletes the set, and reports the space
+  // freed: the blocks of each file whose last name it removed.
+  let freed = 0
+  for (const item of set) {
+    const stat = statSync(join(corpusPath(), item.entry.path))
+    freed += stat.nlink === 1 ? stat.blocks * 512 : 0
+  }
+  const planned = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/commands/plan-purge')
+  await purgeStart.click()
+  const plan: { action: ActionState } = await (await planned).json()
+  expect(plan.action).toMatchObject({ kind: 'purge', check_id: checkId, files: set.length, bytes: setBytes })
+  const dialog = page.getByRole('alertdialog', { name: en.cleanup.purge.confirmTitle })
+  await expect(dialog).toContainText(
+    fill(en.cleanup.purge.confirmBody, {
+      items: plural(en.cleanup.check, 'items', set.length),
+      files: fileCount(set.length),
+      bytes: bytes(setBytes),
+    }),
+  )
+  expect(set.every((i) => onDisk(i.entry.path))).toBe(true)
+  await dialog.getByRole('button', { name: en.cleanup.purge.confirm, exact: true }).click()
+  const outcome = page.getByRole('status').filter({ hasText: en.organize.status.done.purge })
+  await expect(outcome).toBeVisible()
+  const purge = await actionOf(plan.action.id)
+  expect(purge).toMatchObject({
+    state: 'done',
+    deleted_files: set.length,
+    deleted_bytes: setBytes,
+    freed_bytes: freed,
+  })
+  await expect(outcome).toContainText(
+    fill(en.cleanup.purge.deleted, { files: fileCount(set.length), bytes: bytes(setBytes) }),
+  )
+  await expect(outcome).toContainText(fill(en.cleanup.purge.freed, { bytes: bytes(freed) }))
+  // The files, their item folders, and their records are gone; the item
+  // left out stays.
+  for (const item of set) {
+    const at = item.entry.path
+    expect([onDisk(at), onDisk(parent(at)), onDisk(`${parent(at)}.json`)], at).toEqual([false, false, false])
+  }
+  const kept = before.items.find((i) => i.original?.path === leftInQuarantine)?.entry.path ?? ''
+  expect([onDisk(kept), onDisk(`${parent(kept)}.json`)]).toEqual([true, true])
+  expect((await quarantineOf()).items.map((i) => i.original?.path)).toEqual([leftInQuarantine])
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.history }).click()
+  const first = page.getByRole('list', { name: en.history.list }).locator(':scope > li').first()
+  await expect(first).toContainText(en.organize.titleNoDestination.purge)
+  await expect(first).toContainText(
+    fill(en.history.purged, { files: fileCount(set.length), bytes: bytes(setBytes), freed: bytes(freed) }),
+  )
+  await expect(first.getByRole('button', { name: en.history.undo, exact: true })).toHaveCount(0)
+})
+
+test('R4.9: the cleanup exports every step as CSV, the blocked folder with its reason', async () => {
+  const cleanup = await newestAction('cleanup')
+  const items = (await allPages<PlanItem>(`/api/history/${cleanup.id}/items`, {})).items
+  const operations: Record<string, string> = { mkdir: 'create_folder', rename: 'quarantine', record: 'write_record' }
+  const quoted = (cell: string) => `"${cell.replaceAll('"', '""')}"`
+  const rows = items.map((i) => {
+    expect(Object.keys(operations), i.op).toContain(i.op)
+    const path = i.from?.path ?? i.to?.path ?? ''
+    return [path, String(i.bytes), operations[i.op] ?? '', i.state, i.reason ?? ''].map(quoted).join(',')
+  })
+  const expected = ['path,size,operation,state,reason', ...rows].map((line) => `${line}\r\n`).join('')
+  const backupBytes = filesBelow(backup).reduce((sum, e) => sum + (e.size ?? 0), 0)
+  expect(rows).toContain(`"${backup}","${backupBytes}","quarantine","blocked","holds_kept"`)
+
+  const resp = await page.request.get(`/api/history/${cleanup.id}/export.csv`)
+  expect(resp.status()).toBe(200)
+  expect(resp.headers()['content-type']).toBe('text/csv; charset=utf-8')
+  expect(resp.headers()['content-disposition']).toBe(`attachment; filename="precious-cleanup-${cleanup.id}.csv"`)
+  expect(await resp.text()).toBe(expected)
+
+  // History's Export CSV downloads the same file.
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.history }).click()
+  const card = page.getByRole('article', { name: en.organize.titleNoDestination.cleanup })
+  const downloading = page.waitForEvent('download')
+  await card.getByRole('link', { name: en.history.export }).click()
+  const download = await downloading
+  expect(download.suggestedFilename()).toBe(`precious-cleanup-${cleanup.id}.csv`)
+  expect(readFileSync(await download.path(), 'utf8')).toBe(expected)
+})
+
+test('Home shows what is in quarantine beside the decisions', async () => {
+  const quarantine = await quarantineOf()
+  expect(quarantine.items.map((i) => i.original?.path)).toEqual([leftInQuarantine])
+  expect(quarantine.total.bytes).toBeGreaterThanOrEqual(quarantine.items[0]?.bytes ?? Number.NaN)
+  const home: { decisions: Record<string, Amount> } = await (await page.request.get('/api/home')).json()
+  expect(home.decisions.quarantine).toEqual(quarantine.total)
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home' }).click()
+  const decisions = page.getByRole('list', { name: 'Decisions' })
+  await expect(decisions.getByRole('listitem').filter({ hasText: new RegExp(`^${en.home.inQuarantine}`) })).toHaveText(
+    spaced(`${en.home.inQuarantine} ${bytes(quarantine.total.bytes)} · ${fileCount(quarantine.total.files)}`),
+  )
+})
+
 // spaced matches text, ignoring the whitespace between its words, so a list
 // item whose parts are separate elements matches what it reads as.
 function spaced(text: string): RegExp {
@@ -1696,6 +2108,148 @@ async function overrideAndScan(act: () => Promise<unknown>) {
       { message: `scan ${job} ends`, timeout: 60_000 },
     )
     .toBe('succeeded')
+}
+
+// fill puts values into a catalog template's {{name}} placeholders.
+function fill(template: string, values: Record<string, string>): string {
+  return template.replaceAll(/\{\{(\w+)\}\}/g, (_, name: string) => values[name] ?? `{{${name}}}`)
+}
+
+// plural reads the catalog's key_one or key_other form for n, as i18next
+// does in English, with n formatted.
+function plural(forms: Record<string, unknown>, key: string, n: number): string {
+  const form = forms[`${key}_${n === 1 ? 'one' : 'other'}`]
+  if (typeof form !== 'string') {
+    throw new Error(`the catalog has no plural ${key}`)
+  }
+  return fill(form, { formatted: count(n) })
+}
+
+// amountLine matches a line of the check report's counts: its label, then
+// its files and bytes.
+function amountLine(label: string, amount: Amount): RegExp {
+  return spaced(`${label} ${fileCount(amount.files)} · ${bytes(amount.bytes)}`)
+}
+
+// discardedItems lists what a cleanup plan of the corpus would take, from
+// the read API: the topmost entries with a discard of their own, in path
+// order, apart into those planned and those blocked by an entry kept
+// inside them.
+async function discardedItems(): Promise<{ planned: string[]; blocked: string[] }> {
+  const own = async (decision: string) =>
+    (await allPages<{ path: string; decision: string | null }>('/api/search', { decision })).items
+      .filter((i) => i.decision === decision)
+      .map((i) => i.path)
+  const discarded = await own('discard')
+  const kept = await own('keep')
+  const topmost = discarded.filter((p) => !discarded.some((d) => p.startsWith(`${d}/`))).toSorted()
+  const blocked = topmost.filter((p) => kept.some((k) => k.startsWith(`${p}/`)))
+  return { planned: topmost.filter((p) => !blocked.includes(p)), blocked }
+}
+
+// ItemPath is a path in display form.
+interface ItemPath {
+  path: string
+}
+
+// PlanItem is an item of an action: one step.
+interface PlanItem {
+  id: string
+  op: string
+  state: string
+  reason: string | null
+  entry: { id: string; path: string } | null
+  from: ItemPath | null
+  to: ItemPath | null
+  bytes: number
+  files: number
+}
+
+// ActionState is what the cleanup tests read of an action.
+interface ActionState {
+  id: string
+  kind: string
+  state: string
+  entries: Record<string, number>
+  files: number
+  bytes: number
+  deleted_files: number
+  deleted_bytes: number
+  freed_bytes: number
+}
+
+// CleanupPlan is the answer of plan-cleanup.
+interface CleanupPlan {
+  action: ActionState
+  items: PlanItem[]
+  summary: { with_copy_bytes: number; no_copy_bytes: number; unchecked_bytes: number; personal_items: number }
+}
+
+// actionOf reads the action with ID id from the read API.
+async function actionOf(id: string): Promise<ActionState> {
+  const resp = await page.request.get(`/api/history/${id}`)
+  expect(resp.status()).toBe(200)
+  const action: ActionState = await resp.json()
+  return action
+}
+
+// newestAction reads the newest action of a kind from History.
+async function newestAction(kind: string): Promise<ActionState> {
+  const action = (await allPages<ActionState>('/api/history', {})).items.find((a) => a.kind === kind)
+  if (action === undefined) {
+    throw new Error(`History has no ${kind}`)
+  }
+  return action
+}
+
+// Quarantined is an item of the quarantine read.
+interface Quarantined {
+  entry: { id: string; path: string }
+  original: ItemPath | null
+  plan_id: string | null
+  bytes: number
+  files: number
+}
+
+// quarantineOf reads every item of the corpus source's quarantine, and its
+// total.
+async function quarantineOf(): Promise<{ items: Quarantined[]; total: Amount }> {
+  const source = (await corpusSource()).id
+  const items = (await allPages<Quarantined>('/api/quarantine', { source })).items
+  const first: { total: Amount } = await (await page.request.get(`/api/quarantine?source=${source}`)).json()
+  return { items, total: first.total }
+}
+
+type Verdict = keyof typeof en.cleanup.verdict
+type CheckClass = keyof typeof en.cleanup.class
+
+// Check is what the tests read of a check before deleting.
+interface Check {
+  state: string
+  items: number
+  counts: { verdict: Record<Verdict, Amount>; class: Record<CheckClass, Amount> }
+  unconfirmed: Amount
+  junk_confirmed: boolean
+  allowed: boolean
+}
+
+// CheckFile is a file a check recorded.
+interface CheckFile {
+  id: string
+  path: string
+  size: number
+  verdict: Verdict
+  class: CheckClass | null
+  copy: { path: string } | null
+  confirmed: boolean
+}
+
+// checkOf reads the check with ID id from the read API.
+async function checkOf(id: string): Promise<Check> {
+  const resp = await page.request.get(`/api/checks/${id}`)
+  expect(resp.status()).toBe(200)
+  const check: Check = await resp.json()
+  return check
 }
 
 // expectNoScriptRan checks that no fixture script set its flag in any frame

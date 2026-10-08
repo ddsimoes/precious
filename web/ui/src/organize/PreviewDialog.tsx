@@ -48,7 +48,7 @@ export function PreviewDialog({
 
   const pages = useInfiniteQuery({
     queryKey: [...actionItemsQueryKey(action.id), 'preview'],
-    queryFn: ({ pageParam, signal }) => fetchActionItems(action.id, [], pageParam, signal),
+    queryFn: ({ pageParam, signal }) => fetchActionItems(action.id, {}, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.next_cursor,
     initialData: { pages: [{ items: current.items, next_cursor: current.next_cursor }], pageParams: [null] },

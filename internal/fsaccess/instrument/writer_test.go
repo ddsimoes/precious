@@ -130,13 +130,106 @@ func TestWriterWithoutInnerWriter(t *testing.T) {
 		w.Mkdir([]byte("novo")),
 		w.Rmdir([]byte("novo")),
 		w.Sync(),
+		w.CreateExclusive([]byte("novo"), []byte("x")),
+		w.Unlink([]byte("a.jpg")),
 	} {
 		if !errors.Is(err, fsaccess.ErrNoReplaceUnsupported) {
 			t.Errorf("err = %v, want ErrNoReplaceUnsupported", err)
 		}
 	}
-	if n := rec.Count(instrument.OpRename) + rec.Count(instrument.OpMkdir) + rec.Count(instrument.OpRmdir) + rec.Count(instrument.OpSync); n != 4 {
-		t.Errorf("%d writes logged, want 4", n)
+	n := 0
+	for _, op := range []instrument.Op{instrument.OpRename, instrument.OpMkdir, instrument.OpRmdir, instrument.OpSync,
+		instrument.OpCreate, instrument.OpUnlink} {
+		n += rec.Count(op)
+	}
+	if n != 6 {
+		t.Errorf("%d writes logged, want 6", n)
+	}
+}
+
+// r4 task 1.3: CreateExclusive and Unlink are counted and logged like the
+// other writes (a create with N = len(data)), hooks run before them, and an
+// injected error stops them before the filesystem.
+func TestQuarantineWritesRecorded(t *testing.T) {
+	fsys := synthfs.New()
+	root := fsys.Root("/src")
+	q := root.Dir(".precious-quarantine")
+	q.File("velho.jpg", 1, time.Time{})
+	rec := instrument.Wrap(fsys)
+	d, err := rec.OpenRoot("/src")
+	must(t, err)
+	info, err := d.Lstat([]byte(".precious-quarantine"))
+	must(t, err)
+	qd, err := d.OpenDir([]byte(".precious-quarantine"), info)
+	must(t, err)
+	w, ok := fsaccess.AsWriter(qd)
+	if !ok {
+		t.Fatalf("%T has no Writer", qd)
+	}
+	var hooked []string
+	rec.SetBeforeCall(func(c instrument.Call) {
+		if c.Op == instrument.OpCreate || c.Op == instrument.OpUnlink {
+			hooked = append(hooked, string(c.Op)+" "+c.FullPath())
+		}
+	})
+	rec.Reset()
+
+	must(t, w.CreateExclusive([]byte("record.json"), []byte("{}\n")))
+	must(t, w.Unlink([]byte("velho.jpg")))
+	if q.Child("record.json") == nil || q.Child("velho.jpg") != nil {
+		t.Fatal("the writes did not reach the filesystem")
+	}
+	want := []string{
+		"CreateExclusive /src/.precious-quarantine/record.json",
+		"Unlink /src/.precious-quarantine/velho.jpg",
+	}
+	if !slices.Equal(hooked, want) {
+		t.Errorf("hooks saw %q, want %q", hooked, want)
+	}
+	calls := rec.Calls()
+	var logged []string
+	for _, c := range calls {
+		logged = append(logged, string(c.Op)+" "+c.FullPath())
+	}
+	if !slices.Equal(logged, want) {
+		t.Fatalf("logged %q, want %q", logged, want)
+	}
+	if calls[0].N != 3 || calls[0].Err != nil || calls[1].Err != nil {
+		t.Errorf("logged calls = %+v, want a 3-byte create and both without error", calls)
+	}
+	if rec.Count(instrument.OpCreate) != 1 || rec.Count(instrument.OpUnlink) != 1 {
+		t.Errorf("counts = %v, want one create and one unlink", rec.Counts())
+	}
+
+	injected := &fsaccess.Error{Op: "Unlink", Name: []byte("record.json"), Err: errors.Join(fsaccess.ErrReadOnly, syscall.EROFS)}
+	rec.InjectError(instrument.OpCreate, "/src/.precious-quarantine/outro.json", injected)
+	rec.InjectError(instrument.OpUnlink, "/src/.precious-quarantine/record.json", injected)
+	for _, err := range []error{
+		w.CreateExclusive([]byte("outro.json"), []byte("{}")),
+		w.Unlink([]byte("record.json")),
+	} {
+		if err != injected {
+			t.Errorf("err = %v, want the injected error", err)
+		}
+	}
+	if q.Child("outro.json") != nil || q.Child("record.json") == nil {
+		t.Error("an injected write reached the filesystem")
+	}
+	if c := rec.Calls()[len(rec.Calls())-1]; c.Op != instrument.OpUnlink || c.Err != injected {
+		t.Errorf("last call = %+v, want the failed Unlink", c)
+	}
+	if rec.Count(instrument.OpCreate) != 2 || rec.Count(instrument.OpUnlink) != 2 {
+		t.Errorf("counts = %v, want two creates and two unlinks", rec.Counts())
+	}
+
+	// Refusals of the wrapped directory are logged with their error.
+	rec.ClearErrors()
+	err = w.CreateExclusive([]byte("record.json"), nil)
+	if !errors.Is(err, fsaccess.ErrExist) {
+		t.Errorf("CreateExclusive over a taken name = %v, want ErrExist", err)
+	}
+	if c := rec.Calls()[len(rec.Calls())-1]; c.Op != instrument.OpCreate || c.Err != err {
+		t.Errorf("last call = %+v, want the failed CreateExclusive", c)
 	}
 }
 

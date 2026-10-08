@@ -3,6 +3,7 @@ package fsaccess
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -179,6 +180,124 @@ func (d *osDir) Sync() error {
 		return WriteError(op, d.self.Name, serr)
 	}
 	return nil
+}
+
+// CreateExclusive is openat(O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC)
+// with the parent's mode & 0666 read by fstat of the parent's descriptor,
+// then fchmod to that mode (defeating the umask), every byte written, fsync,
+// and close (r4 design D12).
+func (d *osDir) CreateExclusive(name, data []byte) error {
+	const op = opCreate
+	if err := ValidateName(op, name); err != nil {
+		return err
+	}
+	rc, err := d.writeConn(op)
+	if err != nil {
+		return err
+	}
+	var cerr error
+	if err := rc.Control(func(fd uintptr) { cerr = createAt(int(fd), string(name), data) }); err != nil {
+		return &Error{Op: op, Name: bytes.Clone(name), Outcome: domain.OutcomeUnavailable, Err: err}
+	}
+	if cerr != nil {
+		return WriteError(op, name, cerr)
+	}
+	return nil
+}
+
+func createAt(parent int, name string, data []byte) error {
+	var st unix.Stat_t
+	if err := fstat(parent, &st); err != nil {
+		return err
+	}
+	mode := st.Mode & 0o666
+	var fd int
+	err := retryEINTR(func() (err error) {
+		fd, err = unix.Openat(parent, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, mode)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	var made unix.Stat_t
+	err = fstat(fd, &made)
+	known := err == nil
+	if err == nil {
+		err = retryEINTR(func() error { return unix.Fchmod(fd, mode) })
+	}
+	if err == nil {
+		err = writeAll(fd, data)
+	}
+	if err == nil {
+		err = retryEINTR(func() error { return unix.Fsync(fd) })
+	}
+	// close is not retried: the descriptor is released even when it fails.
+	if cerr := unix.Close(fd); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		// Take the partial file away, so a failed CreateExclusive leaves
+		// nothing behind (best effort), but never another entry that took
+		// the name meanwhile.
+		var now unix.Stat_t
+		if !known || (unix.Fstatat(parent, name, &now, unix.AT_SYMLINK_NOFOLLOW) == nil &&
+			now.Dev == made.Dev && now.Ino == made.Ino) {
+			_ = retryEINTR(func() error { return unix.Unlinkat(parent, name, 0) })
+		}
+		return err
+	}
+	return nil
+}
+
+// writeAll writes all of data to fd, looping over short writes.
+func writeAll(fd int, data []byte) error {
+	for len(data) > 0 {
+		var n int
+		err := retryEINTR(func() (err error) {
+			n, err = unix.Write(fd, data)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
+}
+
+// Unlink is unlinkat(fd, name, 0). Linux answers EISDIR for a folder; a
+// filesystem answering EPERM instead is told apart by fstatat of the name.
+func (d *osDir) Unlink(name []byte) error {
+	const op = opUnlink
+	if err := ValidateName(op, name); err != nil {
+		return err
+	}
+	rc, err := d.writeConn(op)
+	if err != nil {
+		return err
+	}
+	var uerr error
+	isDir := false
+	if err := rc.Control(func(fd uintptr) {
+		uerr = retryEINTR(func() error { return unix.Unlinkat(int(fd), string(name), 0) })
+		if uerr == unix.EPERM {
+			var st unix.Stat_t
+			isDir = unix.Fstatat(int(fd), string(name), &st, unix.AT_SYMLINK_NOFOLLOW) == nil &&
+				st.Mode&unix.S_IFMT == unix.S_IFDIR
+		}
+	}); err != nil {
+		return &Error{Op: op, Name: bytes.Clone(name), Outcome: domain.OutcomeUnavailable, Err: err}
+	}
+	switch {
+	case uerr == nil:
+		return nil
+	case isDir:
+		return isDirError(name, uerr)
+	}
+	return WriteError(op, name, uerr)
 }
 
 // controlBoth runs fn with the descriptors of a and b, both held valid; a and

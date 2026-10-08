@@ -369,7 +369,7 @@ func TestPlanCap(t *testing.T) {
 		t.Fatalf("a refused plan left %d actions", n)
 	}
 	const n = itemsDefaultLimit + 50
-	var res planResponse
+	var res PlanResponse
 	decode(t, w.ok(http.StatusCreated, "plan-move", fmt.Sprintf(`{"selection_id":%q,"destination_id":%q}`,
 		selection(n), dest)), &res)
 	if res.Action.Counts["planned"] != n || len(res.Items) != itemsDefaultLimit || res.NextCursor == nil {

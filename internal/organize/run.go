@@ -50,7 +50,8 @@ func (s *Service) runAction(ctx context.Context, tx *jobs.Tx, rawID string) (int
 		return 0, nil, err
 	}
 	if state == "expired" || state == "planned" && expires.Valid && expires.Int64 <= clock.Millis(now) {
-		return 0, nil, domain.Errorf(domain.CodeActionExpired, "this change was planned over an hour ago; plan it again")
+		return 0, nil, domain.Errorf(domain.CodeActionExpired,
+			"this plan expired (an organizing plan runs for an hour, a cleanup plan for a day); plan it again")
 	}
 	if state != "planned" {
 		return 0, nil, domain.Errorf(domain.CodeActionNotRunnable, "action %d is %s, not planned", id, state)
@@ -62,6 +63,9 @@ func (s *Service) runAction(ctx context.Context, tx *jobs.Tx, rawID string) (int
 	}
 	if !runnable {
 		return 0, nil, domain.Errorf(domain.CodeActionNotRunnable, "action %d has nothing to run", id)
+	}
+	if err := gateAction(ctx, q, id); err != nil {
+		return 0, nil, err
 	}
 	if err := s.checkSource(ctx, q, src); err != nil {
 		return 0, nil, err

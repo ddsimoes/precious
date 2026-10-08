@@ -305,7 +305,12 @@ func (s *Service) SetWrites(ctx context.Context, tx *sql.Tx, id domain.SourceID,
 //     an action of the source is queued or running;
 //   - recovery_needed while an item of the source's actions has its intent
 //     recorded or awaits manual recovery, so the only record of a step in
-//     flight is never deleted.
+//     flight is never deleted;
+//   - quarantine_not_empty while the quarantine Precious made at the
+//     source's top (sources.quarantine_entry_id) holds an item that is not
+//     missing (r4 D14, S1): an entry at .precious-quarantine/<plan>/<seq>/
+//     <name>, whose index is what restores or purges those files. Plan and
+//     <seq> folders and records left without an item do not count (r4 G8).
 //
 // Any other active job of the source (its hashing) is cancelled, a running
 // attempt as soon as tx commits, and goes away with it; relations are marked
@@ -344,6 +349,21 @@ func (s *Service) Remove(ctx context.Context, tx *jobs.Tx, id domain.SourceID) e
 	switch {
 	case err == nil:
 		return domain.Errorf(domain.CodeRecoveryNeeded, "source %q has the change %d awaiting recovery; resolve it first", id, item)
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	var held []byte
+	err = tx.SQL().QueryRowContext(ctx, `SELECT e.path FROM sources s JOIN entries q ON q.id = s.quarantine_entry_id
+		JOIN entries p ON p.parent_id = q.id AND p.kind = 'directory'
+		JOIN entries sq ON sq.parent_id = p.id AND sq.kind = 'directory'
+		JOIN entries e ON e.parent_id = sq.id AND e.state <> 'missing'
+		WHERE s.id = ? AND q.source_id = s.id AND q.path = ? ORDER BY e.path LIMIT 1`,
+		string(id), []byte(quarantineName)).Scan(&held)
+	switch {
+	case err == nil:
+		return domain.Errorf(domain.CodeQuarantineNotEmpty,
+			"source %q still holds items in its quarantine, such as %q; restore or delete them first", id,
+			domain.DisplayName(held))
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}

@@ -40,13 +40,15 @@ func (s *Service) planMove(ctx context.Context, tx *jobs.Tx, req planMoveRequest
 	if err := s.checkSource(ctx, q, d.source); err != nil {
 		return 0, nil, err
 	}
-	if err := prune(ctx, q, now); err != nil {
+	if err := Prune(ctx, q, now); err != nil {
 		return 0, nil, err
 	}
 	p, err := newPlan(ctx, q, d.source, req.EntryID == "")
 	if err != nil {
 		return 0, nil, err
 	}
+	// One entry_id may move a quarantined entry out (r4 D13).
+	p.moveOut = req.EntryID != ""
 	if err := p.moveAll(cs, folderDest(d)); err != nil {
 		return 0, nil, err
 	}
@@ -83,7 +85,7 @@ func (s *Service) finish(ctx context.Context, tx *jobs.Tx, p *plan, kind string,
 	if err != nil {
 		return 0, nil, err
 	}
-	res, err := planResult(ctx, tx.SQL(), id, tx.Now())
+	res, err := ReadPlan(ctx, tx.SQL(), id, tx.Now())
 	if err != nil {
 		return 0, nil, err
 	}
@@ -195,6 +197,9 @@ func (s *Service) planRescue(ctx context.Context, tx *jobs.Tx, req planRescueReq
 	if !f.dir() {
 		return 0, nil, domain.Errorf(domain.CodeInvalidRequest, "folder_id %s is not a folder", req.FolderID)
 	}
+	if err := frozen("folder_id", req.FolderID, f); err != nil {
+		return 0, nil, err
+	}
 	d, err := folderArg(ctx, q, "destination_id", req.DestinationID)
 	if err != nil {
 		return 0, nil, err
@@ -231,7 +236,7 @@ func (s *Service) planRescue(ctx context.Context, tx *jobs.Tx, req planRescueReq
 	if err := s.checkSource(ctx, q, d.source); err != nil {
 		return 0, nil, err
 	}
-	if err := prune(ctx, q, now); err != nil {
+	if err := Prune(ctx, q, now); err != nil {
 		return 0, nil, err
 	}
 	p, err := newPlan(ctx, q, d.source, true)

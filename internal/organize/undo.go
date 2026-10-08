@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/jobs"
 )
 
@@ -22,7 +23,8 @@ type done struct {
 // planUndo plans plan-undo (r3 design D11): the reverse of the action's done
 // items that no undo has reversed yet, in reverse seq order. A rename goes
 // back from wherever its entry is now to its previous folder and name; a
-// folder the action created is removed. An item whose previous name is
+// folder the action created is removed. Either is refused in_quarantine
+// while its entry is in the quarantine (r4 D13). An item whose previous name is
 // taken, or whose previous folder is gone, is a conflict, unless
 // destination_id names a folder for those items, which then go there under
 // their previous names. An undo is an individual action: it may take an
@@ -40,6 +42,14 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 	if state != "done" && state != "stopped" {
 		return 0, nil, domain.Errorf(domain.CodeActionNotUndoable, "action %d is %s; only a change that ran can be undone",
 			action, state)
+	}
+	var kind string
+	if err := q.QueryRowContext(ctx, `SELECT kind FROM actions WHERE id = ?`, action).Scan(&kind); err != nil {
+		return 0, nil, err
+	}
+	if !undoable(kind) {
+		return 0, nil, domain.Errorf(domain.CodeActionNotUndoable,
+			"a %s is not undone: a cleanup is reversed by restoring its items, and a purge cannot be reversed", kind)
 	}
 	var alt *dest
 	if req.DestinationID != "" {
@@ -63,7 +73,7 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 	if err := s.checkSource(ctx, q, src); err != nil {
 		return 0, nil, err
 	}
-	if err := prune(ctx, q, now); err != nil {
+	if err := Prune(ctx, q, now); err != nil {
 		return 0, nil, err
 	}
 	p, err := newPlan(ctx, q, src, false)
@@ -81,8 +91,13 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 		if it.op == opMkdir {
 			rm := &item{op: opRmdir, entry: n.id, fromParent: n.parent, fromName: n.name, fromPath: n.path,
 				state: statePlanned, reverses: it.id}
-			if n.source != src || n.state == "missing" || !n.dir() {
+			switch {
+			case n.source != src || n.state == "missing" || !n.dir():
 				rm.state, rm.reason = stateRefused, reasonMissing
+			case index.IsQuarantinePath(n.path):
+				// A created folder since quarantined is restored or purged,
+				// never removed by an undo (r4 D13).
+				rm.state, rm.reason = stateRefused, reasonInQuarantine
 			}
 			if err := p.push(rm); err != nil {
 				return 0, nil, err
@@ -104,8 +119,15 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 }
 
 // reverse plans the rename of n back to the previous place of done item it,
-// or into alt under its previous name when that place is taken or gone.
+// or into alt under its previous name when that place is taken or gone. A
+// quarantined entry is refused, and a previous folder in the quarantine is
+// gone (r4 D13).
 func (p *plan) reverse(n *node, it done, alt *dest) error {
+	if index.IsQuarantinePath(n.path) {
+		return p.refused(&item{op: opRename, entry: n.id, fromParent: n.parent, fromName: n.name, fromPath: n.path,
+			toName: it.fromName, toPath: it.fromPath, bytes: n.bytes, files: n.files, reverses: it.id},
+			reasonInQuarantine)
+	}
 	var prev *node
 	if it.fromParent != 0 {
 		var err error
@@ -113,7 +135,7 @@ func (p *plan) reverse(n *node, it done, alt *dest) error {
 			return err
 		}
 	}
-	if prev == nil || prev.source != p.src || !prev.presentFolder() {
+	if prev == nil || prev.source != p.src || !prev.presentFolder() || index.IsQuarantinePath(prev.path) {
 		if alt != nil {
 			_, err := p.move(n, *alt, it.fromName, it.id)
 			return err
@@ -162,4 +184,15 @@ func reversible(ctx context.Context, tx *sql.Tx, action int64) ([]done, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// undoable reports whether an action of kind can be undone: a cleanup is
+// reversed by restoring its items, and a restore or a purge has no undo
+// (r4 D13).
+func undoable(kind string) bool {
+	switch kind {
+	case "cleanup", "restore", "purge":
+		return false
+	}
+	return true
 }

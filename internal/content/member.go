@@ -39,41 +39,20 @@ var errFound = errors.New("content: member found")
 // the archive no longer matches is invalid_entry_state; an offline source is
 // source_offline.
 func (s *Service) OpenMember(ctx context.Context, q store.Queryer, ref domain.Ref) (Opened, error) {
-	if !ref.IsMember() {
-		return Opened{}, domain.Errorf(domain.CodeInvalidRequest, "%s is not an archive member", ref)
-	}
-	var (
-		archiveID      int64
-		kind           string
-		path, target   []byte
-		size           int64
-		mtime, locator sql.NullInt64
-	)
-	err := q.QueryRowContext(ctx, `SELECT m.archive_id, m.kind, m.path, coalesce(t.path, m.path), m.size, m.mtime_ns,
-			coalesce(t.locator, m.locator)
-		FROM archive_members m LEFT JOIN archive_members t ON t.id = m.link_member WHERE m.id = ?`, int64(ref.Member)).
-		Scan(&archiveID, &kind, &path, &target, &size, &mtime, &locator)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Opened{}, domain.Errorf(domain.CodeNotFound, "member %s not found", ref)
-	}
+	lm, err := lookupMember(ctx, q, ref)
 	if err != nil {
-		return Opened{}, fmt.Errorf("content: read member %s: %w", ref, err)
+		return Opened{}, err
 	}
-	if kind != string(domain.MemberFile) {
-		return Opened{}, domain.Errorf(domain.CodeInvalidEntryState, "member %s is a %s, not a file", ref, kind)
-	}
-	a, err := OpenArchive(ctx, q, s.src, domain.EntryID(archiveID))
+	target, size, locator := lm.target, lm.size, lm.locator
+	a, err := OpenArchive(ctx, q, s.src, lm.archive)
 	if err != nil {
 		return Opened{}, err
 	}
 	o := Opened{Size: size, ModTime: a.Info.ModTime}
-	if mtime.Valid {
-		o.ModTime = time.Unix(0, mtime.Int64)
+	if lm.mtime.Valid {
+		o.ModTime = time.Unix(0, lm.mtime.Int64)
 	}
-	changed := func() error {
-		return domain.Errorf(domain.CodeInvalidEntryState,
-			"%s no longer matches its listing; a rescan updates it", domain.DisplayName(a.Row.Path))
-	}
+	changed := func() error { return listingChanged(a.Row.Path) }
 	if a.Format.Streamed() {
 		o.Content = s.streamMember(ctx, a, target, changed)
 		return o, nil
@@ -128,6 +107,53 @@ func (s *Service) OpenMember(ctx context.Context, q store.Queryer, ref domain.Re
 	r := bytes.NewReader(data)
 	o.Content, o.Seeker = io.NopCloser(r), r
 	return o, nil
+}
+
+// listedMember is a file member as its listing records it, for a read: a
+// hard link stands for the file member it names, which holds the bytes.
+type listedMember struct {
+	archive domain.EntryID
+	// target is the path of the member holding the bytes, locator its
+	// central-directory index in a zip.
+	target         []byte
+	size           int64
+	mtime, locator sql.NullInt64
+}
+
+// lookupMember reads the listing of the file member ref. A ref that is not
+// a member is invalid_request, an unknown member not_found, and a member
+// that is not a file invalid_entry_state.
+func lookupMember(ctx context.Context, q store.Queryer, ref domain.Ref) (listedMember, error) {
+	if !ref.IsMember() {
+		return listedMember{}, domain.Errorf(domain.CodeInvalidRequest, "%s is not an archive member", ref)
+	}
+	var (
+		m         listedMember
+		archiveID int64
+		kind      string
+	)
+	err := q.QueryRowContext(ctx, `SELECT m.archive_id, m.kind, coalesce(t.path, m.path), m.size, m.mtime_ns,
+			coalesce(t.locator, m.locator)
+		FROM archive_members m LEFT JOIN archive_members t ON t.id = m.link_member WHERE m.id = ?`, int64(ref.Member)).
+		Scan(&archiveID, &kind, &m.target, &m.size, &m.mtime, &m.locator)
+	if errors.Is(err, sql.ErrNoRows) {
+		return listedMember{}, domain.Errorf(domain.CodeNotFound, "member %s not found", ref)
+	}
+	if err != nil {
+		return listedMember{}, fmt.Errorf("content: read member %s: %w", ref, err)
+	}
+	if kind != string(domain.MemberFile) {
+		return listedMember{}, domain.Errorf(domain.CodeInvalidEntryState, "member %s is a %s, not a file", ref, kind)
+	}
+	m.archive = domain.EntryID(archiveID)
+	return m, nil
+}
+
+// listingChanged is the error of an archive at path that no longer reads as
+// its listing records it.
+func listingChanged(path []byte) error {
+	return domain.Errorf(domain.CodeInvalidEntryState,
+		"%s no longer matches its listing; a rescan updates it", domain.DisplayName(path))
 }
 
 // streamMember streams the member at target of the streamed archive a: the
