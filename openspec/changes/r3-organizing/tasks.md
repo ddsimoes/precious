@@ -41,7 +41,7 @@
 
   Owns `internal/index/move_test.go`. Verify: `go test -race ./internal/index`, within 60 s.
 - [ ] 2.3 A slow-tagged test that moves a folder holding 100,000 entries through `MoveEntry` and `Refold` within 10 s on the development machine. Owns `internal/index/move_slow_test.go`. Verify: `go test -tags slow -run TestMoveAtScale ./internal/index`.
-- [ ] 2.4 Path guards for content (design D18): the hashing `apply` guard and the archive listing's `entryLive` also compare the path that was read with the entry's current path. Owns the guards in `internal/content`. Verify with a test of the scenario "Hashing a moved folder's files": a batch loaded before its folder's path changes commits no `changed` row; `go test -race ./internal/content`.
+- [x] 2.4 Path guards for content (design D18): the hashing `apply` guard and the archive listing's `entryLive` also compare the path that was read with the entry's current path. Owns the guards in `internal/content`. Verify with a test of the scenario "Hashing a moved folder's files": a batch loaded before its folder's path changes commits no `changed` row; `go test -race ./internal/content`.
 - [ ] 2.5 Executor slice. Write `internal/executor` (design D3–D5, D7, D9 Cancelling, D10, D11's `reversed_by`, D14's run-time re-check, Interfaces):
   - one `organize` job per action, which sweeps and waits its turn;
   - the intent, step, sync, confirm, and outcome sequence;
@@ -76,7 +76,7 @@
   - a cancelled queued action is swept to `stopped` and never runs.
 
   Owns `internal/executor/r3_7_test.go`. Verify: `go test -race ./internal/executor`.
-- [ ] 2.9 Sources slice:
+- [x] 2.9 Sources slice:
   - the `set-source-writes` command, with its audit event;
   - `writes` in `GET /api/sources`;
   - `no_replace_rename` in the source JSON;
@@ -84,7 +84,7 @@
   - `kind=directory` in `GET /api/entries/{id}/children`.
 
   Owns `internal/sources` (commands, http, manage), `internal/web/api` (children), and the `docs/operator.md` Sources section and API rows. Verify: `go test -race ./internal/sources ./internal/web/api`.
-- [ ] 2.10 Test of R3.7 at the source level:
+- [x] 2.10 Test of R3.7 at the source level:
   - `allow_writes = false` gives `forbidden_by_config`, and enabling fails with `409 writes_unavailable`;
   - a read-only mount gives `read_only`;
   - turning writes on and off writes one audit event each;
