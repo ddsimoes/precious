@@ -2,11 +2,11 @@
 
 ## 1. Foundation (one slice, merged first)
 
-- [ ] 1.1 Migration `0006_organize.sql`: `sources.write_enabled`, `actions`, and `action_items`, exactly as in design Interfaces. Owns `migrations/` and `internal/store/*schema_test.go`. Verify with a store schema test of the version, columns, checks, and cascades: `go test -race ./internal/store`.
-- [ ] 1.2 `[sources] allow_writes` (boolean, default `true`) in `internal/config`, with its validation, a row in `deploy/examples/precious.toml`, a row in the configuration table of `docs/operator.md`, and the `check-config` output. Owns `internal/config`, `deploy/examples`, and `cmd/precious/checkconfig*`. Verify: `go test -race ./internal/config ./cmd/precious`.
-- [ ] 1.3 The domain codes of design Interfaces in `internal/domain`, and their 409 statuses in `internal/web/apierr`. Owns those two packages. Verify with a test of the status map: `go test -race ./internal/domain ./internal/web/apierr`.
-- [ ] 1.4 `no_replace_rename` in `fsaccess.Capabilities`, from the Linux type table (design D2), and false in the portable backend. Update every test's exact capability JSON and key lists, and the capabilities table in `docs/operator.md`. Owns `internal/fsaccess` (capabilities) and the tests that pin capability JSON. Verify: a table test for the scenario "Which filesystems have a no-replace rename"; `go test -race ./...`.
-- [ ] 1.5 `fsaccess.Writer` (design D3):
+- [x] 1.1 Migration `0006_organize.sql`: `sources.write_enabled`, `actions`, and `action_items`, exactly as in design Interfaces. Owns `migrations/` and `internal/store/*schema_test.go`. Verify with a store schema test of the version, columns, checks, and cascades: `go test -race ./internal/store`.
+- [x] 1.2 `[sources] allow_writes` (boolean, default `true`) in `internal/config`, with its validation, a row in `deploy/examples/precious.toml`, a row in the configuration table of `docs/operator.md`, and the `check-config` output. Owns `internal/config`, `deploy/examples`, and `cmd/precious/checkconfig*`. Verify: `go test -race ./internal/config ./cmd/precious`.
+- [x] 1.3 The domain codes of design Interfaces in `internal/domain`, and their 409 statuses in `internal/web/apierr`. Owns those two packages. Verify with a test of the status map: `go test -race ./internal/domain ./internal/web/apierr`.
+- [x] 1.4 `no_replace_rename` in `fsaccess.Capabilities`, from the Linux type table (design D2), and false in the portable backend. Update every test's exact capability JSON and key lists, and the capabilities table in `docs/operator.md`. Owns `internal/fsaccess` (capabilities) and the tests that pin capability JSON. Verify: a table test for the scenario "Which filesystems have a no-replace rename"; `go test -race ./...`.
+- [x] 1.5 `fsaccess.Writer` (design D3):
   - **Linux.**
     - `renameat2` with `RENAME_NOREPLACE`.
     - `mkdirat` with 0700, then `fchmodat` to the parent's `mode & 02777`.
@@ -22,7 +22,7 @@
   Owns `internal/fsaccess/...`. Verify:
   - unit tests on synthfs;
   - `e2e && linux` tests on a temporary directory: renaming onto an existing name fails with `ErrExist` and leaves both files; renaming across a mount fails with `ErrCrossDevice`; `Rmdir` of a non-empty folder fails with `ErrNotEmpty`; a folder made under umask 0077 inside a 0755 parent ends 0755.
-- [ ] 1.6 `sources.Source.WriteEnabled`, read from `write_enabled`, plus `sources.WritesUnavailable` and `sources.CheckWrites` (design Interfaces). Owns `internal/sources/writes.go` and its test. Verify with unit tests of each reason and its order: `go test -race ./internal/sources`.
+- [x] 1.6 `sources.Source.WriteEnabled`, read from `write_enabled`, plus `sources.WritesUnavailable` and `sources.CheckWrites` (design Interfaces). Owns `internal/sources/writes.go` and its test. Verify with unit tests of each reason and its order: `go test -race ./internal/sources`.
 
 ## 2. Index, executor, sources, and interface (parallel slices after group 1)
 
@@ -92,7 +92,7 @@
   - the scenario "Folders only".
 
   Owns `internal/sources/r3_7_test.go` and `internal/web/api/children_kind_test.go`. Verify: `go test -race ./internal/sources ./internal/web/api`.
-- [ ] 2.11 Interface slice, all built against design Interfaces:
+- [x] 2.11 Interface slice, all built against design Interfaces:
   - Sources: the Changes by Precious row, with its confirmation dialog;
   - the detail panel's Organize section: Rename, Move to…, New folder, Rescue kept items;
   - the destination chooser (`kind=directory`);
@@ -104,7 +104,7 @@
   - the new error codes and item reasons in the catalog.
 
   Owns `web/ui/src`, and the interface paragraphs of `docs/operator.md`. Verify: `cd web/ui && npm run -s lint && npx vitest run && npm run -s build`.
-- [ ] 2.12 Interface tests (Vitest):
+- [x] 2.12 Interface tests (Vitest):
   - R3.7: cancelling the confirmation sends no command, and an unavailable source shows its reason with no control;
   - a one-item rename runs at once and offers Undo;
   - R3.4: a bulk move shows every item, conflict, and refused item with its reason, and sends `run-action` only after confirming;
