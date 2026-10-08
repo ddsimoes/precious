@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useSearchParams } from 'react-router'
 
@@ -74,16 +74,31 @@ export function DatesList({ source }: { source: Source }) {
     queryFn: ({ signal }) => fetchEntry(filter.within ?? '', signal),
     enabled: filter.within !== null,
   })
+  // A folder of another source, or not a folder, in the address limits
+  // nothing: it leaves the address. The folder is offered as a target only
+  // once it is known to be one of this source's.
+  const withinEntry = within.data?.entry
+  const withinOk = withinEntry !== undefined && withinEntry.source_id === source.id && withinEntry.kind === 'directory'
+  const withinForeign = filter.within !== null && withinEntry !== undefined && !withinOk
+  useEffect(() => {
+    if (withinForeign) {
+      setParams(
+        (current) => {
+          const next = new URLSearchParams(current)
+          next.delete('within')
+          return next
+        },
+        { replace: true },
+      )
+    }
+  }, [withinForeign, setParams])
   const withinFolder: ChosenFolder | null =
-    filter.within === null
+    filter.within === null || !withinOk
       ? null
       : {
           id: filter.within,
           // Named from the source, as the folder chooser's trail.
-          path:
-            within.data === undefined
-              ? filter.within
-              : [source.label, ...within.data.entry.path.split('/').filter((part) => part !== '')].join(' / '),
+          path: [source.label, ...withinEntry.path.split('/').filter((part) => part !== '')].join(' / '),
         }
 
   return (
@@ -122,10 +137,14 @@ export function DatesList({ source }: { source: Source }) {
             </Button>
           )}
         </div>
-        {withinFolder !== null && (
+        {filter.within !== null && !withinForeign && (
           <p className="flex flex-wrap items-center gap-2 rounded-md border bg-card px-3 py-2">
             <span className="break-all">
-              <Trans i18nKey="dates.list.within" values={{ path: withinFolder.path }} components={{ strong: <strong /> }} />
+              <Trans
+                i18nKey="dates.list.within"
+                values={{ path: withinFolder?.path ?? filter.within }}
+                components={{ strong: <strong /> }}
+              />
             </span>
             <Button variant="outline" size="sm" onClick={() => setFilter('within', null)}>
               {t('dates.list.everywhere')}
@@ -223,6 +242,9 @@ function DatesRows({ source, filter, within }: { source: Source; filter: DatesFi
   // A selected row that left the list is no longer selected.
   const chosen = rows.filter((row) => selected.has(row.entry.id)).map((row) => row.entry.id)
   const writable = source.writes.enabled && source.state === 'online'
+  // A list that failed, such as one inside a folder the server does not
+  // know, offers nothing to act on.
+  const actionable = !pages.isError
 
   const toggle = (id: string) =>
     setSelected((current) => {
@@ -256,18 +278,23 @@ function DatesRows({ source, filter, within }: { source: Source; filter: DatesFi
             {t('dates.list.clear')}
           </Button>
         )}
-        <Button size="sm" variant="outline" onClick={() => setDialog('correct')}>
+        <Button size="sm" variant="outline" disabled={!actionable} onClick={() => setDialog('correct')}>
           {t('dates.actions.correct')}
         </Button>
         <Button
           size="sm"
           variant="outline"
-          disabled={!writable || organize.pending}
+          disabled={!actionable || !writable || organize.pending}
           onClick={() => setDialog('setFileDates')}
         >
           {t('dates.actions.setFileDates')}
         </Button>
-        <Button size="sm" variant="outline" disabled={!writable || organize.pending} onClick={() => setDialog('organize')}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!actionable || !writable || organize.pending}
+          onClick={() => setDialog('organize')}
+        >
           {t('dates.actions.organize')}
         </Button>
       </div>

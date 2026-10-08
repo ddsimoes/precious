@@ -183,7 +183,11 @@ export type Correction =
   | { kind: 'use_name' }
   | { kind: 'use_folder' }
 
-export type SkipReason = 'not_media' | 'no_name_date' | 'no_folder_date' | 'in_future'
+// SkipReason is why a bulk correction left a target as it was: not a photo
+// or video, no date in its name or folders, a date it would put after
+// tomorrow, no date to shift, or, for a camera's photos, the owner's own
+// correction, which a camera's shift keeps.
+export type SkipReason = 'not_media' | 'no_name_date' | 'no_folder_date' | 'in_future' | 'no_date' | 'has_correction'
 
 export interface SkippedDate {
   entry_id: string
