@@ -40,7 +40,8 @@ func wantKeys(t *testing.T, what string, v any, want ...string) map[string]any {
 
 var (
 	sourceKeys = []string{"id", "label", "state", "state_reason", "mount_point", "path", "rel_root", "volume", "capabilities",
-		"root_entry_id", "totals", "last_scan_at", "active_job", "schedule", "next_scan_at", "schedule_skipped", "writes"}
+		"root_entry_id", "totals", "last_scan_at", "active_job", "schedule", "next_scan_at", "schedule_skipped", "writes",
+		"quarantine"}
 	volumeKeys = []string{"kind", "id", "label", "fs_type", "strong"}
 	capsKeys   = []string{"known", "read_only", "case_sensitive", "normalization_sensitive", "stable_identity",
 		"local_time", "hard_links", "time_resolution_ns", "no_replace_rename"}
@@ -109,6 +110,10 @@ func TestSourcesEndpoint(t *testing.T) {
 	tot := wantKeys(t, "fotos totals", s["totals"], "bytes", "files", "dirs")
 	if tot["bytes"] != 1024.0 || tot["files"] != 2.0 || tot["dirs"] != 1.0 {
 		t.Fatalf("fotos totals = %v", tot)
+	}
+	if q := wantKeys(t, "fotos quarantine", s["quarantine"], "files", "bytes", "name_taken"); q["files"] != 0.0 ||
+		q["bytes"] != 0.0 || q["name_taken"] != false {
+		t.Fatalf("fotos quarantine = %v", q)
 	}
 	a := wantKeys(t, "fotos active_job", s["active_job"], "job_id", "state", "progress")
 	p := a["progress"].(map[string]any)

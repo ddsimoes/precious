@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"time"
 
 	"precious/internal/archive"
+	"precious/internal/clock"
 	"precious/internal/decisions"
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/search"
 )
 
@@ -33,6 +37,26 @@ type entryBody struct {
 	// archive.
 	OnlyFolder  *string      `json:"only_folder"`
 	ArchiveNote *archiveNote `json:"archive_note"`
+	// InQuarantine is set for an entry at or below its source's quarantine
+	// folder (r4 design D13), null otherwise.
+	InQuarantine *inQuarantine `json:"in_quarantine"`
+}
+
+// inQuarantine tells where a quarantined entry came from: the cleanup plan
+// whose rename moved its top item (.precious-quarantine/<plan>/<seq>/<name>)
+// into the quarantine, when that rename was done, and the top item's
+// original path. Each is null when no cleanup item moved it there: the
+// quarantine's own folders and records, and an item a scan found there by
+// hand (unknown origin, r4 design D4).
+type inQuarantine struct {
+	PlanID        *string    `json:"plan_id"`
+	QuarantinedAt *time.Time `json:"quarantined_at"`
+	Original      *pathJSON  `json:"original"`
+}
+
+type pathJSON struct {
+	Path    string `json:"path"`
+	PathB64 []byte `json:"path_b64"`
 }
 
 type ancestor struct {
@@ -311,7 +335,72 @@ func (h *handler) readEntry(ctx context.Context, tx *sql.Tx, id domain.EntryID) 
 		}
 		body.Stats = stats
 	}
+	if index.IsQuarantinePath(e.Path) {
+		if body.InQuarantine, err = readInQuarantine(ctx, tx, e.Source, e.Path); err != nil {
+			return nil, err
+		}
+	}
 	return body, nil
+}
+
+// quarantineTopDepth is the number of path components of a quarantined top
+// item: .precious-quarantine/<plan>/<seq>/<name> (r4 design D1).
+const quarantineTopDepth = 4
+
+// readInQuarantine reads the origin of the entry at path, at or below the
+// quarantine of source src: the done cleanup rename, on that source, of the
+// entry at its top item's path into that path. The top item keeps its ID
+// through the move, so the rename is found by its entry_id index; matching
+// to_path picks the move into this plan's folder of an entry quarantined
+// more than once.
+func readInQuarantine(ctx context.Context, tx *sql.Tx, src domain.SourceID, path []byte) (*inQuarantine, error) {
+	q := &inQuarantine{}
+	top, ok := quarantineTop(path)
+	if !ok {
+		return q, nil
+	}
+	var (
+		plan     int64
+		finished sql.NullInt64
+		from     []byte
+	)
+	err := tx.QueryRowContext(ctx, `SELECT a.id, i.finished_at, i.from_path
+		FROM entries t JOIN action_items i ON i.entry_id = t.id JOIN actions a ON a.id = i.action_id
+		WHERE t.source_id = ? AND t.path = ? AND i.op = 'rename' AND i.state = 'done' AND i.to_path = ?
+			AND a.kind = 'cleanup' AND a.source_id = t.source_id
+		ORDER BY i.id DESC LIMIT 1`, string(src), top, top).Scan(&plan, &finished, &from)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return q, nil
+	case err != nil:
+		return nil, fmt.Errorf("api: quarantine origin of %q: %w", domain.DisplayName(path), err)
+	}
+	id := strconv.FormatInt(plan, 10)
+	q.PlanID = &id
+	if finished.Valid {
+		t := clock.FromMillis(finished.Int64).UTC()
+		q.QuarantinedAt = &t
+	}
+	if from != nil {
+		q.Original = &pathJSON{Path: domain.DisplayName(from), PathB64: from}
+	}
+	return q, nil
+}
+
+// quarantineTop returns the first quarantineTopDepth components of a path
+// at or below the quarantine: its top item's path; ok is false above that
+// depth (the quarantine, a plan folder, a <seq> folder, or a record).
+func quarantineTop(path []byte) ([]byte, bool) {
+	n := 0
+	for i, c := range path {
+		if c != '/' {
+			continue
+		}
+		if n++; n == quarantineTopDepth {
+			return path[:i], true
+		}
+	}
+	return path, n == quarantineTopDepth-1
 }
 
 // readOwner reads the owner's override of entry id.
@@ -349,7 +438,8 @@ func ancestors(ctx context.Context, tx *sql.Tx, id domain.EntryID) ([]ancestor, 
 			UNION ALL
 			SELECT e.parent_id, e.id, u.depth + 1 FROM up u JOIN entries e ON e.id = u.id WHERE e.parent_id IS NOT NULL
 		)
-		SELECT e.id, e.name, NOT EXISTS (SELECT 1 FROM entries c WHERE c.parent_id = u.id AND c.id <> u.child)
+		SELECT e.id, e.name, NOT EXISTS (SELECT 1 FROM entries c WHERE c.parent_id = u.id AND c.id <> u.child
+			AND `+index.NotQuarantined("c")+`)
 		FROM up u JOIN entries e ON e.id = u.id ORDER BY u.depth DESC`, int64(id))
 	if err != nil {
 		return nil, fmt.Errorf("api: ancestors of %s: %w", id, err)
@@ -378,10 +468,12 @@ func ancestors(ctx context.Context, tx *sql.Tx, id domain.EntryID) ([]ancestor, 
 
 // onlyFolder returns the ID of the only child of folder id when it holds
 // exactly one entry, in any state, and that entry is a folder; nil
-// otherwise (r2b design D9). It reads at most two children by the
-// children index.
+// otherwise (r2b design D9). The quarantine is no child (r4 design D2), so
+// a top holding one folder besides it still has an only folder. It reads at
+// most two children by the children index.
 func onlyFolder(ctx context.Context, tx *sql.Tx, id domain.EntryID) (*string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, kind FROM entries WHERE parent_id = ? LIMIT 2`, int64(id))
+	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.kind FROM entries e WHERE e.parent_id = ? AND `+
+		index.NotQuarantined("e")+` LIMIT 2`, int64(id))
 	if err != nil {
 		return nil, fmt.Errorf("api: children of %s: %w", id, err)
 	}
