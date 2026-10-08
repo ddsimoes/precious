@@ -26,7 +26,7 @@
 
 ## 2. Index, executor, sources, and interface (parallel slices after group 1)
 
-- [ ] 2.1 Index slice:
+- [x] 2.1 Index slice:
   - in `internal/index`: `MoveEntry` (design D6 steps 1–5, including the `dir_stats` JSON path rewrite and `entry_names`), `MissingIntentAt`, `InsertFolder` and `RemoveFolder` (with their `entry_names` rows), and `Refolder.Refold`, with one fold function shared with the scan's `finish`;
   - indicators ordered by path in both the scan and the refold;
   - `Handler.DeferWhile` and `DeferOrganizing` (design D10);
@@ -34,15 +34,15 @@
   - the `EXPLAIN QUERY PLAN` guards, extended to the new statements.
 
   Owns `internal/index`, `internal/decisions/reinherit*.go`, and the `docs/operator.md` paragraph on how the index follows a move. Verify: `go test -race ./internal/index ./internal/decisions`.
-- [ ] 2.2 Test of R3.5 at the index level:
+- [x] 2.2 Test of R3.5 at the index level:
   - a property test runs random renames and moves of files and folders on the corpus through `MoveEntry`, `Reinherit`, and `Refold`, then a full rescan. The rescan adds no entry, marks none missing, and writes no aggregate, `dir_stats`, classification, or `entry_names` change;
   - moved entries keep their IDs, own decisions, tags, overrides, `file_content`, and `archives` rows, and their effective decisions come from the new parent;
   - a missing row with owner intent at the destination is reported by `MissingIntentAt`, and one without intent is deleted with its name rows.
 
   Owns `internal/index/move_test.go`. Verify: `go test -race ./internal/index`, within 60 s.
-- [ ] 2.3 A slow-tagged test that moves a folder holding 100,000 entries through `MoveEntry` and `Refold` within 10 s on the development machine. Owns `internal/index/move_slow_test.go`. Verify: `go test -tags slow -run TestMoveAtScale ./internal/index`.
+- [x] 2.3 A slow-tagged test that moves a folder holding 100,000 entries through `MoveEntry` and `Refold` within 10 s on the development machine. Owns `internal/index/move_slow_test.go`. Verify: `go test -tags slow -run TestMoveAtScale ./internal/index`.
 - [x] 2.4 Path guards for content (design D18): the hashing `apply` guard and the archive listing's `entryLive` also compare the path that was read with the entry's current path. Owns the guards in `internal/content`. Verify with a test of the scenario "Hashing a moved folder's files": a batch loaded before its folder's path changes commits no `changed` row; `go test -race ./internal/content`.
-- [ ] 2.5 Executor slice. Write `internal/executor` (design D3–D5, D7, D9 Cancelling, D10, D11's `reversed_by`, D14's run-time re-check, Interfaces):
+- [x] 2.5 Executor slice. Write `internal/executor` (design D3–D5, D7, D9 Cancelling, D10, D11's `reversed_by`, D14's run-time re-check, Interfaces):
   - one `organize` job per action, which sweeps and waits its turn;
   - the intent, step, sync, confirm, and outcome sequence;
   - preflight through rooted handles, comparing identity under capabilities and devices from the live handles;
@@ -55,13 +55,13 @@
   - `CancelAction`, deferring while a scan runs, `OrganizeActive`, and `Enqueue`.
 
   Index updates go through `executor.Index`, with a fake in the tests. Owns `internal/executor` and the `docs/operator.md` section on how Precious changes a disk (guarantees, recovery). Verify: `go test -race ./internal/executor`.
-- [ ] 2.6 Test of R3.1 in the executor, driving actions by inserting `queued` rows:
+- [x] 2.6 Test of R3.1 in the executor, driving actions by inserting `queued` rows:
   - with synthfs and an instrument hook, a file created at the destination of the second item, after intent and before its rename, ends that item `conflict`, with both files unchanged and the other items moved;
   - a rename onto an existing name never replaces it;
   - the same first case in an `e2e && linux` test on a temporary directory, with the real `renameat2`.
 
   Owns `internal/executor/r3_1*_test.go`. Verify: `go test -race ./internal/executor` and `scripts/e2e-docker.sh -run R3_1`.
-- [ ] 2.7 Test of R3.2 in the executor, driving actions by inserting `queued` rows:
+- [x] 2.7 Test of R3.2 in the executor, driving actions by inserting `queued` rows:
   - with `Hooks`, a crash after the intent and before the step leads, on a new executor over the same database, to exactly one rename recorded by instrument;
   - a crash after the step and before the outcome leads to no second rename, with the item done and the index updated;
   - instrument records the folder syncs before the outcome;
@@ -70,7 +70,7 @@
   - a scan that is running delays reconciliation.
 
   Owns `internal/executor/r3_2*_test.go`. Verify: `go test -race ./internal/executor`.
-- [ ] 2.8 Test of R3.7 in the executor:
+- [x] 2.8 Test of R3.7 in the executor:
   - writes turned off after an action is queued and before its first item lead to no rename, mkdir, or rmdir recorded by instrument, and the item ends `not_permitted`;
   - the same holds for `allow_writes = false`;
   - a cancelled queued action is swept to `stopped` and never runs.
