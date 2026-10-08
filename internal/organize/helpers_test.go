@@ -18,6 +18,7 @@ import (
 	"precious/internal/commands"
 	"precious/internal/config"
 	"precious/internal/content"
+	"precious/internal/dates"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/executor"
@@ -80,6 +81,7 @@ type world struct {
 	r       *jobs.Runner
 	clk     *testClock
 	org     *Service
+	dates   *dates.Service
 	scanner *index.Handler
 	hashing *content.Service
 	mux     *http.ServeMux
@@ -119,7 +121,8 @@ func newWorld(t *testing.T) *world {
 		w.hashing.AfterScan(ctx, src)
 		_ = r.Write(ctx, relations.RequestRefresh)
 	})
-	w.org = New(Options{Store: w.st, Policy: pol, AllowWrites: true, Clock: w.clk, Logger: log})
+	w.dates = dates.New(dates.Options{Store: w.st, Runner: r, Sources: srcs, Zone: time.UTC, Clock: w.clk, Logger: log})
+	w.org = New(Options{Store: w.st, Policy: pol, AllowWrites: true, Clock: w.clk, Logger: log, Dates: w.dates})
 	ex := executor.New(executor.Options{Store: w.st, Sources: srcs, Index: w.org.Index(), AllowWrites: true,
 		Clock: w.clk, Logger: log, Content: w.hashing})
 	ex.Register(r)

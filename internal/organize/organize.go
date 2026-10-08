@@ -25,6 +25,7 @@ import (
 
 	"precious/internal/auth"
 	"precious/internal/clock"
+	"precious/internal/dates"
 	"precious/internal/domain"
 	"precious/internal/index"
 	"precious/internal/rules"
@@ -71,6 +72,10 @@ type Options struct {
 	// the history; commands use their transaction's time.
 	Clock  clock.Clock
 	Logger *slog.Logger
+	// Dates derives the effective dates the date plans read (r5 D14, D16):
+	// plan-set-mtime and plan-date-organize re-derive their targets with it
+	// first.
+	Dates *dates.Service
 }
 
 // Service serves the organize commands and the history.
@@ -80,11 +85,13 @@ type Service struct {
 	allowWrites bool
 	clk         clock.Clock
 	log         *slog.Logger
+	dates       *dates.Service
 }
 
 // New returns the organize service.
 func New(o Options) *Service {
-	s := &Service{st: o.Store, rf: index.NewRefolder(o.Policy), allowWrites: o.AllowWrites, clk: o.Clock, log: o.Logger}
+	s := &Service{st: o.Store, rf: index.NewRefolder(o.Policy), allowWrites: o.AllowWrites, clk: o.Clock, log: o.Logger,
+		dates: o.Dates}
 	if s.clk == nil {
 		s.clk = clock.Real{}
 	}
