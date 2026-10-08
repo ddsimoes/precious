@@ -49,14 +49,14 @@
 
 ## 2. Parallel slices (after group 1)
 
-- [ ] 2.1 Readers A (design Reader exclusion, slice 2.1):
+- [x] 2.1 Readers A (design Reader exclusion, slice 2.1):
   - `search` (`buildFilter` with the `InQuarantine` opt-in, and `dup.go`);
   - `web/api` (children, treemap, `onlyFolder`, members, and the entry detail's `in_quarantine`);
   - `decisions.Totals`, and Home's quarantine bucket;
   - the source JSON's `quarantine`.
 
   Owns those read paths, and the docs on views and Home. Verify with a test of the scenario "Home after quarantining a folder" through the API (Map, Search with count and select-all, Home, sources) and the existing plan guards: `go test -race ./internal/search ./internal/web/api ./internal/decisions ./internal/sources`.
-- [ ] 2.2 Readers B (design Reader exclusion, slice 2.2): `content`, `review`, and `relations`. Owns those read paths, and the docs on copies and cards. Verify with tests of the scenario "Quarantining one of two copies" (content `Copies`, a review refresh, a relate pass), and of review cards leaving a quarantined row out, with the existing plan guards: `go test -race ./internal/content ./internal/review ./internal/relations`.
+- [x] 2.2 Readers B (design Reader exclusion, slice 2.2): `content`, `review`, and `relations`. Owns those read paths, and the docs on copies and cards. Verify with tests of the scenario "Quarantining one of two copies" (content `Copies`, a review refresh, a relate pass), and of review cards leaving a quarantined row out, with the existing plan guards: `go test -race ./internal/content ./internal/review ./internal/relations`.
 - [ ] 2.3 Executor slice (design D3–D5, D10–D13). Owns `internal/executor` and the `docs/operator.md` section on how Precious changes a disk:
   - the ops `record`, `unlink`, `purge`, and `verify`;
   - the cleanup order (mkdir, rename, record) and the whole-item re-check at the first step (draft identity, own decision, inclusive keeps, D5 copies verified outside transactions);
