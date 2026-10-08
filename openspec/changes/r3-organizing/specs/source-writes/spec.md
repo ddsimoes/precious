@@ -70,9 +70,9 @@ The executor SHALL be the only code that renames an entry, creates a folder, or 
 - **THEN** the item ends `no_safe_rename`, nothing is moved, the remaining items are not attempted, and the source's write permission is off with an audit event
 
 ### Requirement: Intent is journaled and a crash is reconciled
-Before each filesystem step, the executor SHALL commit the step's intent: the operation, the entry, both folders and names, and the entry's identity. After the step, the executor SHALL confirm it by looking at both paths. In one transaction it SHALL then record the outcome and update the index.
+Before each filesystem step, the executor SHALL commit the step's intent: the operation, the entry, both folders and names, and the entry's identity. After the step, it SHALL fsync every folder the step changed, then confirm the step by looking at both paths. Only then SHALL it record the outcome and update the index, in one transaction. When the index update fails, the item SHALL be marked `manual_recovery`, never left with its intent recorded. Identity SHALL compare under the source's capabilities: device and inode only where identity is stable, and times within the filesystem's resolution.
 
-Before an organize job does anything else, and when the server starts, the executor SHALL reconcile every step left with its intent recorded:
+An organize job SHALL reconcile every step of its source left with its intent recorded before it runs any item, and only while no scan of that source is running. When the server starts, Precious SHALL enqueue that reconciliation for every source that needs it, without touching the disk outside a job. Reconciling sorts each step:
 - **Not done.** The entry is at its old path with its identity, and the new path is free. The step SHALL go back to pending, to run once.
 - **Done.** The entry is at its new path with its identity, and the old path is free. The step SHALL be recorded as done, and the index SHALL be updated without renaming again.
 - **Anything else** SHALL be marked `manual_recovery`, and the action's remaining items SHALL not be attempted.
