@@ -2,26 +2,26 @@
 
 ## 1. Foundation (merged first; 1.1–1.3 and 1.5 independent, 1.4 after 1.1, 1.6 after 1.1–1.5, 1.7 after 1.5)
 
-- [ ] 1.1 Migration `0008_media.sql`, exactly as in design Interfaces: it rebuilds `actions` and `action_items` (items dropped first, IDs kept, every 0007 index recreated) with the new kinds, op, and columns, and adds `media_meta`, `media_dates` with its seven indexes, `date_corrections`, `media_cameras`, and `media_sources`. Owns `migrations/`, `internal/store/*schema_test.go`, and the `docs/operator.md` section "Upgrading from R4". Verify with a store test:
+- [x] 1.1 Migration `0008_media.sql`, exactly as in design Interfaces: it rebuilds `actions` and `action_items` (items dropped first, IDs kept, every 0007 index recreated) with the new kinds, op, and columns, and adds `media_meta`, `media_dates` with its seven indexes, `date_corrections`, `media_cameras`, and `media_sources`. Owns `migrations/`, `internal/store/*schema_test.go`, and the `docs/operator.md` section "Upgrading from R4". Verify with a store test:
   - a version-7 database with actions, items, and a purge check migrates with every row and ID kept;
   - each new CHECK rejects a bad value: `set_mtime` without `new_mtime_ns`, `prev_mtime_ns` on a rename, a `shift` without `shift_s`, a `set_local` of length 8, an offset on a date-only `set`, `offset` without a suggestion, flags 16, flag 8 with `meta_state` `pending`, and `dirty` 2;
   - deleting an entry cascades its media rows and nulls `copy_of`, and every foreign key into `entries`, `sources`, and `actions` is indexed.
 
   Run `go test -race ./internal/store`.
-- [ ] 1.2 `fsaccess.Writer.SetModTime` (design D12): Linux (`utimensat` on the folder's descriptor, `UTIME_OMIT` access time, `AT_SYMLINK_NOFOLLOW`), portable (refuses), synthfs (resolution, local time, change time now, and `EPERM` for a file marked foreign), instrument (`OpSetModTime`), the package doc, and the guard test's fixture. Owns `internal/fsaccess/...`. Verify with synthfs unit tests and an `e2e && linux` test on a tmpfs:
+- [x] 1.2 `fsaccess.Writer.SetModTime` (design D12): Linux (`utimensat` on the folder's descriptor, `UTIME_OMIT` access time, `AT_SYMLINK_NOFOLLOW`), portable (refuses), synthfs (resolution, local time, change time now, and `EPERM` for a file marked foreign), instrument (`OpSetModTime`), the package doc, and the guard test's fixture. Owns `internal/fsaccess/...`. Verify with synthfs unit tests and an `e2e && linux` test on a tmpfs:
   - the time is set, the access time and bytes are unchanged, and the change time advances;
   - a symlink's own time is set, never its target's;
   - an absent name is absent, a read-only remount gives `ErrReadOnly`, and a file owned by another user, set by an unprivileged process, gives `ErrPermission`;
   - on a synthfs FAT device, the time is truncated to 2 s and read back in its zone.
 
   Run `go test -race ./internal/fsaccess/...` and `scripts/e2e-docker.sh`.
-- [ ] 1.3 `[dates] time_zone` (design D7): `config.Dates`, `Location()`, validation naming `dates.time_zone`, and `check-config` printing the effective zone and warning when it is unset. No zone-database work: `cmd/precious` already embeds it. Owns:
+- [x] 1.3 `[dates] time_zone` (design D7): `config.Dates`, `Location()`, validation naming `dates.time_zone`, and `check-config` printing the effective zone and warning when it is unset. No zone-database work: `cmd/precious` already embeds it. Owns:
   - `internal/config` and `cmd/precious/checkconfig.go`;
   - `time_zone` set in `deploy/examples/precious.toml` and `deploy/compose.precious.toml`;
   - the `docs/operator.md` Configuration reference entry, with the FAT mount-zone note.
 
   Verify with tests of "An unknown zone" and "An unset zone"; the existing `cmd/precious/tzdata_test.go` covers "A zone on a host without zone files". Run `go test -race ./internal/config ./cmd/precious`.
-- [ ] 1.4 The index side (design D3, D11, D15):
+- [x] 1.4 The index side (design D3, D11, D15):
   - `stDropMedia` beside `stDropContent`;
   - `keepContent` also carries `media_meta`;
   - `intentCond` counts a `date_corrections` row;
