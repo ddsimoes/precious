@@ -38,6 +38,7 @@ import (
 	"strings"
 
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/store"
 )
 
@@ -110,9 +111,9 @@ type Row struct {
 	Relation int64
 	// Content is the content of a duplicate group row.
 	Content int64
-	// Copy is one present copy of a duplicate group row's content (the
-	// lowest entry, else the lowest member), the ref content.Copies lists
-	// the group from; zero when no copy is left.
+	// Copy is one present copy of a duplicate group row's content outside
+	// the quarantine (the lowest entry, else the lowest member), the ref
+	// content.Copies lists the group from; zero when no copy is left.
 	Copy domain.Ref
 	// Group is the outermost programs or disposable group of a rescue row,
 	// and the folder an unpacked_archives row's archive was unpacked into.
@@ -138,15 +139,26 @@ const copyKeySQL = `CASE WHEN e.nlink > 1 AND e.ino IS NOT NULL AND e.dev IS NOT
 	AND (SELECT json_extract(s.capabilities, '$.stable_identity') FROM sources s WHERE s.id = e.source_id) = 1
 	THEN 'h' || e.source_id || '/' || e.dev || '/' || e.ino ELSE e.id END`
 
+// The quarantine residuals (r4 design D2) on the entries rows the queries
+// alias e, ae, ea, and eb, rendered once: no card, row, or copy counts or
+// shows what lies in a quarantine.
+var (
+	notQuarantinedE  = index.NotQuarantined("e")
+	notQuarantinedAE = index.NotQuarantined("ae")
+	notQuarantinedEA = index.NotQuarantined("ea")
+	notQuarantinedEB = index.NotQuarantined("eb")
+)
+
 // openSQL holds for an open row rr (D12): a rescue row until the owner
 // decides its file or the file is kept (r2c D2), so that a decision it
 // inherits from the group around it does not hide it; another entry row
 // while its entry is undecided; a relation row while both sides are; a
-// duplicate group row while at least two of its present copies are (a
-// member reads its archive's decision, a hard-link set is one copy). The
-// undecided file copies are counted distinct only when one of them has hard
-// links, which saves a temporary table per row otherwise.
-const openSQL = `(CASE
+// duplicate group row while at least two of its present copies outside the
+// quarantine are (a member reads its archive's decision, a hard-link set is
+// one copy; r4 design D2). The undecided file copies are counted distinct
+// only when one of them has hard links, which saves a temporary table per
+// row otherwise.
+var openSQL = `(CASE
 	WHEN rr.list = 'rescue' THEN
 		(SELECT e.eff_decision <> 'keep' AND coalesce(e.decision, 'undecided') = 'undecided'
 			FROM entries e WHERE e.id = rr.entry_id)
@@ -160,15 +172,17 @@ const openSQL = `(CASE
 			WHEN max(coalesce(e.nlink, 1)) <= 1 AND count(*) >= 2 THEN 1
 			ELSE CASE WHEN max(coalesce(e.nlink, 1)) > 1 THEN
 					(SELECT count(DISTINCT ` + copyKeySQL + `) FROM file_content fc JOIN entries e ON e.id = fc.entry_id
-						WHERE fc.content_id = rr.content_id AND e.state = 'present' AND e.eff_decision = 'undecided')
+						WHERE fc.content_id = rr.content_id AND e.state = 'present' AND e.eff_decision = 'undecided'
+							AND ` + notQuarantinedE + `)
 					ELSE count(*) END
 				+ (SELECT count(*) FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id
 					JOIN entries ae ON ae.id = a.entry_id
 					WHERE m.content_id = rr.content_id AND a.state = 'complete' AND ae.state = 'present'
-						AND ae.eff_decision = 'undecided') >= 2
+						AND ae.eff_decision = 'undecided' AND ` + notQuarantinedAE + `) >= 2
 			END
 		FROM file_content fc JOIN entries e ON e.id = fc.entry_id
-		WHERE fc.content_id = rr.content_id AND e.state = 'present' AND e.eff_decision = 'undecided')
+		WHERE fc.content_id = rr.content_id AND e.state = 'present' AND e.eff_decision = 'undecided'
+			AND ` + notQuarantinedE + `)
 	END)`
 
 // sourceSQL holds for a row rr touching source :src (empty: every source): an
@@ -262,10 +276,11 @@ func Rows(ctx context.Context, q store.Queryer, list List, src domain.SourceID, 
 			coalesce(rr.relation_id, 0), coalesce(rr.content_id, 0), coalesce(rr.group_id, 0), rr.bytes, rr.files, rr.sort_key,
 			CASE WHEN rr.content_id IS NOT NULL THEN coalesce(
 				(SELECT min(fc.entry_id) FROM file_content fc JOIN entries e ON e.id = fc.entry_id
-					WHERE fc.content_id = rr.content_id AND e.state = 'present'), 0) END,
+					WHERE fc.content_id = rr.content_id AND e.state = 'present' AND `+notQuarantinedE+`), 0) END,
 			CASE WHEN rr.content_id IS NOT NULL THEN coalesce(
 				(SELECT min(m.id) FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id
-					WHERE m.content_id = rr.content_id AND a.state = 'complete'), 0) END
+					JOIN entries ae ON ae.id = a.entry_id
+					WHERE m.content_id = rr.content_id AND a.state = 'complete' AND `+notQuarantinedAE+`), 0) END
 		FROM review_rows rr
 		WHERE rr.gen = `+genSQL+` AND rr.list = :list AND `+sourceSQL+` AND `+open+after+`
 		ORDER BY rr.sort_key DESC, rr.id DESC

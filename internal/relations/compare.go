@@ -308,6 +308,12 @@ func (s side) files(ctx context.Context, q store.Queryer) ([]cfile, error) {
 		query := `SELECT e.id, e.path, e.size, COALESCE(fc.state, ''), COALESCE(fc.content_id, 0)
 			FROM entries e LEFT JOIN file_content fc ON fc.entry_id = e.id
 			WHERE e.source_id = ? AND e.path >= ? AND e.kind = 'file' AND e.state = 'present'`
+		if !isQuarantinePath(s.path) {
+			// A side outside the quarantine never lists what lies in it, a
+			// source's top included (r4 design D2); a quarantined folder
+			// still compares with its own files.
+			query += ` AND ` + notQuarantinedE
+		}
 		args := []any{string(s.source), from}
 		if to != nil {
 			query += ` AND e.path < ?`

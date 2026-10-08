@@ -223,7 +223,8 @@ type candidate struct {
 
 // ruleRows returns the rows of the five rule cards: per card, the
 // outermost entries that match it, so that no byte counts twice in a card
-// (D12). Missing entries and source roots are never rows.
+// (D12). Missing entries, source roots, and what lies in a quarantine (r4
+// design D2) are never rows.
 func ruleRows(ctx context.Context, tx *sql.Tx) ([]newRow, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.source_id, e.path, e.kind, coalesce(e.category, ''),
 			e.total_bytes, e.total_files,
@@ -235,7 +236,7 @@ func ruleRows(ctx context.Context, tx *sql.Tx) ([]newRow, error) {
 			e.category IN ('system_junk', 'installer_download', 'application_installation', 'os_installation',
 				'cache', 'temporary_data', 'generated_artifacts')
 			OR (e.kind = 'file' AND e.size = 0)
-			OR (e.kind = 'directory' AND e.total_files = 0))`, partialDownloadRule)
+			OR (e.kind = 'directory' AND e.total_files = 0)) AND `+notQuarantinedE, partialDownloadRule)
 	if err != nil {
 		return nil, err
 	}
@@ -302,6 +303,8 @@ type relation struct {
 	redundant, aFiles int64
 }
 
+// loadRelations reads the relations of generation gen whose sides are both
+// present and outside the quarantine (r4 design D2).
 func loadRelations(ctx context.Context, tx *sql.Tx, gen int64) ([]relation, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT r.id, r.kind, r.redundant_bytes, r.a_files,
 			r.a_entry, coalesce(r.a_member, 0), ea.source_id, ea.path, ea.kind, ea.total_bytes,
@@ -312,6 +315,7 @@ func loadRelations(ctx context.Context, tx *sql.Tx, gen int64) ([]relation, erro
 			EXISTS (SELECT 1 FROM archives x WHERE x.entry_id = r.b_entry)
 		FROM relations r JOIN entries ea ON ea.id = r.a_entry JOIN entries eb ON eb.id = r.b_entry
 		WHERE r.gen = ? AND ea.state = 'present' AND eb.state = 'present'
+			AND `+notQuarantinedEA+` AND `+notQuarantinedEB+`
 		ORDER BY r.id`, gen)
 	if err != nil {
 		return nil, err
@@ -345,19 +349,19 @@ type aCopy struct {
 
 // contentCopies are the copies of every content with at least two physical
 // copies among present files and members of complete archives, on any
-// source (D8), by content.
+// source and outside the quarantine (D8, r4 design D2), by content.
 type contentCopies map[int64][]aCopy
 
 func loadCopies(ctx context.Context, tx *sql.Tx) (contentCopies, error) {
 	rows, err := tx.QueryContext(ctx, `WITH copies(content_id, k, src, path, archive, member_path) AS (
 			SELECT fc.content_id, `+copyKeySQL+`, e.source_id, e.path, 0, X''
 				FROM file_content fc JOIN entries e ON e.id = fc.entry_id
-				WHERE fc.content_id IS NOT NULL AND e.state = 'present'
+				WHERE fc.content_id IS NOT NULL AND e.state = 'present' AND `+notQuarantinedE+`
 			UNION ALL
 			SELECT m.content_id, 'm' || m.id, ae.source_id, ae.path, ae.id, m.path
 				FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id AND a.state = 'complete'
 				JOIN entries ae ON ae.id = a.entry_id
-				WHERE m.content_id IS NOT NULL AND ae.state = 'present'),
+				WHERE m.content_id IS NOT NULL AND ae.state = 'present' AND `+notQuarantinedAE+`),
 		multi AS (SELECT content_id FROM copies GROUP BY content_id HAVING count(DISTINCT k) >= 2)
 		SELECT c.content_id, ct.size, c.k, c.src, c.path, c.archive, c.member_path
 		FROM copies c JOIN multi USING (content_id) JOIN contents ct ON ct.id = c.content_id
@@ -511,10 +515,13 @@ type group struct {
 	indicators string
 }
 
+// loadGroups reads the programs and disposable groups outside the
+// quarantine (r4 design D2).
 func loadGroups(ctx context.Context, tx *sql.Tx) ([]group, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.source_id, e.path, coalesce(d.indicators, '[]')
 		FROM entries e LEFT JOIN dir_stats d ON d.entry_id = e.id
-		WHERE e.is_group = 1 AND e.family IN ('programs', 'disposable') AND e.state <> 'missing'`)
+		WHERE e.is_group = 1 AND e.family IN ('programs', 'disposable') AND e.state <> 'missing'
+			AND `+notQuarantinedE)
 	if err != nil {
 		return nil, err
 	}

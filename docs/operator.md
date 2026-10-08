@@ -668,6 +668,8 @@ Each job starts by grouping, without reading anything, every present non-empty f
 
 A digest stays valid until a rescan finds that the file's size, modification time, change time, or identity changed; the rescan then discards it. A file that did not change is never read again, across jobs and restarts.
 
+Nothing in a source's quarantine (see [The quarantine folder](#the-quarantine-folder)) is grouped or read: a file there is never enrolled, a file moved there while still to read stays unread, and its size no longer keeps another file's size group alive, so a file left alone in its size outside the quarantine is no longer read. A file moved there keeps the digest it had, so a restore brings it back already checked.
+
 ### Reading order
 
 1. The source's zip archives that are not listed yet: only their central directories (see [Archives](#archives)).
@@ -696,6 +698,8 @@ Coverage is published per source and for all sources together (Home, and the det
 | unreadable | files that could not be read |
 
 A file inside a listed archive counts under the archive's source. A file with no other copy by size is not in these figures: its claim needs no read. Every "no other copy" claim states the checked share of all sources, because a copy can be anywhere. Archives Precious does not open (7z, rar, partly read or damaged ones) count as plain files, so a file inside them is never seen as a copy.
+
+Files in quarantine are not in these figures, nor are the members of an archive in quarantine. The figures are recomputed whenever a hashing job groups the files, so a cleanup or a restore shows in them from the next hashing job.
 
 ### Check now
 
@@ -892,6 +896,8 @@ A group's **redundant bytes** are its size times the number of copies minus one:
 
 A file is said to have **no other copy** only when that is known: no other file anywhere has its size, its 64 KiB samples differ from every file of its size, or it was read in full and no other file has its digest. The claim always comes with the share of the content that could have a copy and was checked, across every source, because a copy could sit on any of them. Archives that are not opened (7z, rar, encrypted zips, archives inside archives, and archives that went over a budget) count as plain files: a copy inside one is not seen.
 
+A copy in quarantine is no copy. The detail panel's **Copies**, the duplicate groups, and every "other copy" count only files and members outside every source's quarantine: once one of two identical files moves to quarantine, the other has no copy left, and its group is gone. The quarantined file itself still lists the copies outside, which are what a cleanup verified before moving it.
+
 ### Folder relations
 
 Folders and opened archives are related by the digests of the files they hold, whatever the names and layout:
@@ -907,6 +913,8 @@ Each relation records its matched bytes, its redundant bytes, and the files and 
 A folder that holds a file not checked yet, a file that could not be read, an unreadable folder, or a mount point is never claimed `same` or `inside`: something in it might exist nowhere else. It can still `overlap`. Files that are empty count for nothing, and symbolic links match by their target text.
 
 Each copy is listed once, at its highest related folder: when `Fotos - Copia` overlaps `Fotos` and their `2004` folders are the same, the list holds those two relations, and none for the folders inside `2004`. Folders that hold nothing but one folder are named by it in a `same` relation, so a copied program folder pairs with the original even when it sits alone in its parent; a folder that holds nothing but an archive is named by the archive.
+
+No relation has a side in quarantine, and nothing in quarantine matches anything: the relations leave the quarantine folder out with everything below it, as they leave out what lies below a folder that is gone. Moving one side of a `same` relation to quarantine therefore ends that relation at the next `relate` run, and what is left of the other side is related again as it now stands.
 
 ### Percent duplicated
 
@@ -936,6 +944,8 @@ Compare opens on the first group that holds files, in this order: only on the le
 Each file shows its path inside each side whenever the two paths differ: when `fotos-b/2002/12/img_0001.jpg` is identical to `fotos/2014/celular/IMG_0001.jpg`, the item reads `2002/12/img_0001.jpg` on the left and `2014/celular/IMG_0001.jpg` on the right. When one side holds more copies of a content than the other, the identical group pairs them in path order and lists each copy left over on its own as an **extra copy**, naming the file on the other side that holds the same content ("Extra copy, same as … on the left"). The groups' counts and bytes are unchanged by this: an item counts once, at its left file's size, else its right file's.
 
 When one side holds nothing but a single folder, such as `emule-0.47c/` inside a zip, and dropping it lines up the paths with the other side, Compare drops it. The two sides cannot contain each other: comparing `Fotos` with `Fotos/2005`, or a file, is refused with `400 invalid_request`.
+
+A side never lists what is in its source's quarantine, so comparing a source's top folder with a folder on another source leaves the quarantine out. A folder inside the quarantine, compared on its own, lists its own files.
 
 ### When relations are recomputed
 
@@ -970,6 +980,7 @@ How the bytes are counted:
 - **A duplicates row** is a relation (its bytes are one side's worth of redundant bytes), or a group of identical files with at least one copy outside every listed relation. A group's bytes are its size times its copies outside the listed relations, less one when none of its copies is inside a relation: the relation already counts the copies inside it. Hard links to one file are one copy. Files inside archives count as copies; the archive itself does not.
 - **Only open rows count.** A row is open while its entry's effective decision is undecided. A duplicates row is open while at least two of its copies are undecided (for a relation, both sides). A row of **Your files inside programs** is open until you decide the file itself or it is kept (see below). Deciding an entry, or the folder above it, closes its row at once and shrinks the card by the row's bytes. A card's bytes are always the sum of its list's open rows, read through every page.
 - **Decided rows show as progress.** Besides its open rows, each card and each list's header shows how many rows are no longer open and what they hold, such as "20 decided (4.4 GiB)"; these equal the list of decided rows. A card with no open row left reads **Nothing left to review** instead of zero.
+- **Nothing in quarantine is a row.** No card counts an entry in a source's quarantine, a relation with a side there, a rescue row inside a group there, or a duplicate group whose copies outside the quarantine are fewer than two; a copy in quarantine is never offered as a group's copy. Until the next `relate` run rewrites the rows, a duplicates row with a copy just moved to quarantine is no longer open when fewer than two copies outside it are undecided, and the entries moved there carry the discard they were moved with, so their rows are closed too.
 
 The rows are recomputed by the `relate` job (see Duplicates and Compare), after each scan and as hashing advances, so the classification and duplicates they show are as current as that job's last run. Decisions are never stored in them: they are read live.
 
