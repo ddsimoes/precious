@@ -396,6 +396,7 @@ Durations are strings such as `"30s"`, `"15m"`, or `"12h"`.
 | `jobs.event_retention_rows` | integer | `10000` | Job events kept for reconnecting browsers. At least 1. |
 | `jobs.event_retention_age` | duration | `"24h"` | Job events older than this are discarded. Must be positive. |
 | `sources.allowed_roots` | array of strings | `[]` | Folders the picker offers, and below which sources may be added. Each entry must be the absolute path of an existing directory; entries are cleaned. Empty selects the platform defaults: on Linux the service account's home, `/media`, `/mnt`, `/run/media`, and `/srv`, those that exist. |
+| `sources.allow_writes` | boolean | `true` | Whether any source may be changed. `false` forbids writes on every source, whatever its own write permission, which then reads as unavailable with the reason `forbidden_by_config`. Every source starts with writes off either way; the owner turns them on per source. |
 | `scan.batch_size` | integer | `1000` | Most row changes a scan commits in one write transaction, 1 to 10000. |
 | `scan.list_batch` | integer | `256` | Most directory entries one directory read returns, 1 to 4096. |
 | `hashing.read_chunk_bytes` | integer | `1048576` | Bytes one read call takes when Precious reads a file's content to compare it, 65536 (64 KiB) to 16777216 (16 MiB). |
@@ -443,14 +444,15 @@ Precious learns all this by reading `/proc/self/mountinfo`, `/dev/disk/by-uuid`,
 
 Each source records the capabilities of its filesystem, detected when the source is added and on every availability check. On Linux they follow the filesystem type:
 
-| Filesystem type | Names | Stable file identity | Time resolution | Local time | Read-only |
-|---|---|---|---|---|---|
-| ext2, ext3, ext4, xfs, btrfs, zfs, f2fs, tmpfs | case-sensitive | yes | 1 ns | no | as mounted |
-| vfat (FAT) | case-insensitive | no | 2 s | yes | as mounted |
-| exfat | case-insensitive | no | 10 ms | no | as mounted |
-| ntfs, ntfs3, NTFS through ntfs-3g (`fuseblk`) | case-insensitive | yes | 100 ns | no | as mounted |
-| iso9660, udf (optical discs) | case-sensitive | yes | 1 s | no | always |
-| anything else, and every filesystem on macOS and Windows | case-insensitive | no | 2 s | no | as mounted (Linux only) |
+| Filesystem type | Names | Stable file identity | Time resolution | Local time | Read-only | No-replace rename |
+|---|---|---|---|---|---|---|
+| ext2, ext3, ext4, xfs, btrfs, zfs, f2fs, tmpfs | case-sensitive | yes | 1 ns | no | as mounted | yes |
+| vfat (FAT) | case-insensitive | no | 2 s | yes | as mounted | yes |
+| exfat | case-insensitive | no | 10 ms | no | as mounted | yes |
+| ntfs3 | case-insensitive | yes | 100 ns | no | as mounted | yes |
+| ntfs, NTFS through ntfs-3g (`fuseblk`) | case-insensitive | yes | 100 ns | no | as mounted | no |
+| iso9660, udf (optical discs) | case-sensitive | yes | 1 s | no | always | no |
+| anything else, and every filesystem on macOS and Windows | case-insensitive | no | 2 s | no | as mounted (Linux only) | no |
 
 The last row is the conservative set, reported with `known: false`: Precious assumes the least it can rely on. NTFS is treated as case-insensitive because Windows treats its names that way. An NTFS volume mounted through ntfs-3g shows the type `fuseblk`, which other drivers use too; Precious recognizes it by its NTFS volume serial (16 hexadecimal digits in `/dev/disk/by-uuid`), and gives any other `fuseblk` filesystem the conservative set. No filesystem normalizes Unicode in names, so two names that differ only in Unicode composition stay two names everywhere.
 
@@ -460,7 +462,8 @@ What the capabilities change:
 - **Time resolution.** A rescan treats a file as unchanged when its size is the same and its modification time differs by no more than the resolution. A FAT memory card, which stores times in 2-second steps, therefore does not show every file as modified, while on ext4 a change of a microsecond is a change.
 - **Local time.** FAT stores times in local time, without a time zone, so after a daylight-saving change every time on the card can move by an hour. On a local-time filesystem a difference of one hour (within the resolution) also counts as unchanged. A card read in another time zone shows its files as changed: Precious does not hide edits made within the same hour.
 - **Stable file identity.** Where it is missing (FAT, exFAT, and the conservative set), device and inode numbers change between mounts, so Precious does not rely on them and matches a file by its path, size, and modification time.
-- **Read-only.** Follows the mount; optical discs always report read-only. Precious never writes to a source either way.
+- **Read-only.** Follows the mount; optical discs always report read-only. Precious never writes to a read-only source.
+- **No-replace rename.** Whether the filesystem's driver can rename an entry only when the new name is free, failing instead of replacing what holds it (`RENAME_NOREPLACE` on Linux). Precious changes a source only where it can, so a move or a rename can never overwrite a file; without it, writes on that source are unavailable. Should a filesystem refuse the flag at run time even so (old OpenZFS releases do), Precious stops, moves nothing, and turns that source's write permission off.
 
 ## Sources
 

@@ -68,14 +68,15 @@ func checkEffective(t *testing.T, path string, wantText ...string) {
 }
 
 // server-config "Valid configuration accepted", "Scan defaults", "Hashing
-// defaults printed", and "Archive defaults printed": check-config exits 0 on
-// the shipped example and prints effective settings, the [scan], [hashing],
-// [archives], and [duplicates] defaults and the empty allowed roots included,
+// defaults printed", "Archive defaults printed", and "Writes can be forbidden
+// by the configuration": check-config exits 0 on the shipped example and
+// prints effective settings, the [scan], [hashing], [archives], and
+// [duplicates] defaults, the empty allowed roots, and allow_writes included,
 // that load back to the same configuration.
 func TestCheckConfigAcceptsShippedExample(t *testing.T) {
 	checkEffective(t, shippedExampleConfig,
 		`state_dir = "/var/lib/precious"`, "trusted_proxies = []",
-		"[sources]\n  allowed_roots = []", "picker offers the platform default roots",
+		"[sources]\n  allowed_roots = []\n  allow_writes = true", "picker offers the platform default roots",
 		"[scan]\n  batch_size = 1000\n  list_batch = 256",
 		"[hashing]\n  read_chunk_bytes = 1048576\n  yield_bytes = 67108864",
 		"[archives]\n  max_members = 1000000\n  max_unpacked_bytes = 1099511627776\n  max_ratio = 100\n"+
@@ -83,8 +84,8 @@ func TestCheckConfigAcceptsShippedExample(t *testing.T) {
 		"[duplicates]\n  refresh_interval = \"10m0s\"")
 }
 
-// check-config prints configured allowed roots, cleaned, and changed scan
-// settings.
+// check-config prints configured allowed roots, cleaned, forbidden writes,
+// and changed scan settings.
 func TestCheckConfigPrintsSourcesAndScan(t *testing.T) {
 	base := t.TempDir()
 	if err := os.Mkdir(filepath.Join(base, "media"), 0o755); err != nil {
@@ -95,10 +96,11 @@ func TestCheckConfigPrintsSourcesAndScan(t *testing.T) {
 external_origin = "https://precious.example.net"
 [sources]
 allowed_roots = ["`+base+`/media/"]
+allow_writes = false
 [scan]
 batch_size = 500
 `)
-	checkEffective(t, path, `allowed_roots = ["`+base+`/media"]`, "batch_size = 500", "list_batch = 256")
+	checkEffective(t, path, `allowed_roots = ["`+base+`/media"]`, "allow_writes = false", "batch_size = 500", "list_batch = 256")
 	if _, stdout, _ := runCheckConfigCmd(t, "check-config", "--config", path); strings.Contains(stdout, "platform default roots") {
 		t.Errorf("output mentions the default roots although roots are configured:\n%s", stdout)
 	}
