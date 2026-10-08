@@ -375,6 +375,15 @@ func (p *progress) publish()                { p.rt.Progress(p.c) }
 // deriveWindow is the number of entries pass 3 derives per write.
 const deriveWindow = 256
 
+// deriveWindowSQL reads pass 3's next window. entries is read NOT INDEXED,
+// by its rowid range, because the store never runs ANALYZE: without
+// statistics SQLite rates source_id = ? on an index of entries as highly
+// selective and would walk the whole source in it, then sort, per window
+// (Addendum G1).
+var deriveWindowSQL = `SELECT e.id FROM entries e NOT INDEXED WHERE e.id > ? AND e.source_id = ?
+		AND (` + MediaCond("e") + ` OR EXISTS (SELECT 1 FROM media_dates d WHERE d.entry_id = e.id))
+		ORDER BY e.id LIMIT ?`
+
 // deriveAll is pass 3 (D4, D9): Rederive over every media entry of src,
 // and every entry of src that still holds a media_dates row though
 // MediaCond no longer holds it (Addendum C6), in windows of deriveWindow
@@ -388,14 +397,11 @@ func (s *Service) deriveAll(ctx context.Context, src domain.SourceID, p *progres
 	}
 	p.set(progOfMedia, total)
 	p.publish()
-	query := `SELECT e.id FROM entries e WHERE e.source_id = ? AND e.id > ?
-		AND (` + MediaCond("e") + ` OR EXISTS (SELECT 1 FROM media_dates d WHERE d.entry_id = e.id))
-		ORDER BY e.id LIMIT ?`
 	var after int64
 	for {
 		var n int
 		err := s.st.Write(ctx, func(tx *sql.Tx) error {
-			rows, err := tx.QueryContext(ctx, query, string(src), after, deriveWindow)
+			rows, err := tx.QueryContext(ctx, deriveWindowSQL, after, string(src), deriveWindow)
 			if err != nil {
 				return err
 			}
