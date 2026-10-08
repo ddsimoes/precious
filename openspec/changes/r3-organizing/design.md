@@ -336,7 +336,7 @@ func WritesUnavailable(src Source, allowWrites bool) string // "", "forbidden_by
 // unknown_source, source_offline, writes_unavailable, writes_disabled.
 func CheckWrites(ctx context.Context, q store.Queryer, id domain.SourceID, allowWrites bool) error
 
-// internal/index (slice 2.1)
+// internal/index (types PostFacts, Move, NewFolder land with group 1 in internal/index/move.go; functions are slice 2.1)
 type PostFacts struct { Dev, Ino uint64; MtimeNs, CtimeNs int64 }
 type Move struct {
 	Source domain.SourceID; Entry, NewParent domain.EntryID; NewName []byte
@@ -365,6 +365,8 @@ type Index interface { // implemented by organize from index + decisions + Refol
 	ApplyMkdir(ctx context.Context, tx *sql.Tx, f index.NewFolder) (domain.EntryID, error)
 	ApplyRmdir(ctx context.Context, tx *sql.Tx, src domain.SourceID, id domain.EntryID, parentFacts index.PostFacts) error
 	ActionDone(ctx context.Context, tx *jobs.Tx, src domain.SourceID) error // RequestRefresh
+	// MissingIntentAt is index.MissingIntentAt, so the executor builds before slice 2.1 lands.
+	MissingIntentAt(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error)
 }
 type Options struct { Store *store.Store; Sources *sources.Service; Index Index; AllowWrites bool; Clock clock.Clock; Logger *slog.Logger; Hooks Hooks }
 type Hooks struct { BeforeStep, AfterStep func(itemID int64) error } // tests only: an error simulates a crash at that point
