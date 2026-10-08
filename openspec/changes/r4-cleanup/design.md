@@ -403,7 +403,10 @@ The gate needs a confirmation for every `unique`, `copy_offline`, `unreadable` (
   `CheckFile {id, item: EntryRow, entry_id|null, path, path_b64, member, kind, size, verdict, class, copy: {source_id, path, path_b64, hard_link}|null, confirmed}`.
 - **`GET /api/history/{id}/items/{item}/kept?cursor=`** → `{count, items: EntryRow[], next_cursor}`, 100 to a page.
 - **`GET /api/history/{id}/export.csv`**, as in D16.
-- **The Action JSON** gains `ground`, `list`, `check_id`, `deleted_files`, `deleted_bytes`, and `freed_bytes`. The Item JSON gains `kept_count` for `blocked` items, and the undo reason `not_undoable_kind`.
+- **The Action JSON** gains `ground`, `list`, `check_id`, `deleted_files`, `deleted_bytes`, and `freed_bytes`. For kinds `cleanup`, `restore`, and `purge` it also gains `entries`: counts by item state of the steps that stand for an entry, `{"planned":n,"blocked":n,"refused":n,"done":n,…}`. Those steps are the `rename` steps for cleanup and restore, and the `purge` steps for purge.
+- **The Item JSON** gains `kept_count` for `blocked` items, and the undo reason `not_undoable_kind`.
+- **`GET /api/history/{id}/items`** accepts a repeated `op=` filter. The interface lists `op=rename` (cleanup, restore) or `op=purge`, one row per entry.
+- **Refused and blocked entries.** A refused or blocked entry of a cleanup plan is a single `rename` row, in state `refused` or `blocked` with its reason, and no `mkdir` or `record` rows.
 - **Other reads.**
   - `GET /api/home` decisions gain `quarantine {files, bytes}`.
   - `GET /api/entries/{id}` gains `in_quarantine`.
