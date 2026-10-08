@@ -301,6 +301,8 @@ func TestWritesOnStaleHandles(t *testing.T) {
 	root.Remove("velho")
 	root.Dir("velho")
 	wantWriteErr(t, writer(t, old).Mkdir([]byte("x")), "Mkdir", syscall.ENOENT, domain.OutcomeAbsent)
+	wantWriteErr(t, writer(t, old).CreateExclusive([]byte("x"), nil), "CreateExclusive", syscall.ENOENT, domain.OutcomeAbsent)
+	wantWriteErr(t, writer(t, old).Unlink([]byte("x")), "Unlink", syscall.ENOENT, domain.OutcomeAbsent)
 	wantWriteErr(t, writer(t, d).RenameNoReplace([]byte("a.jpg"), old, []byte("a.jpg")), "RenameNoReplace",
 		syscall.ENOENT, domain.OutcomeAbsent)
 	if root.Child("a.jpg") == nil {
@@ -311,5 +313,145 @@ func TestWritesOnStaleHandles(t *testing.T) {
 	wantWriteErr(t, writer(t, old).Sync(), "Sync", nil, domain.OutcomeUnavailable)
 	fsys.Vanish("/src")
 	wantWriteErr(t, writer(t, d).Mkdir([]byte("x")), "Mkdir", nil, domain.OutcomeUnavailable)
+	wantWriteErr(t, writer(t, d).Unlink([]byte("a.jpg")), "Unlink", nil, domain.OutcomeUnavailable)
 	wantWriteErr(t, writer(t, d).Sync(), "Sync", nil, domain.OutcomeUnavailable)
+}
+
+// r4 task 1.3, design D12: CreateExclusive writes a new file holding exactly
+// the data, with its parent's permission bits & 0666, a new inode, and later
+// parent times; a taken name, whatever holds it, fails with ErrExist and
+// leaves the entry as it was.
+func TestCreateExclusive(t *testing.T) {
+	const op = "CreateExclusive"
+	fsys := synthfs.New()
+	root := fsys.Root("/src")
+	root.Dir("privado").Perm(0o750)
+	root.File("a.jpg", 8, synthfs.DefaultModTime).Content([]byte("ORIGINAL"))
+	root.Symlink("link", "nowhere")
+	root.Generated("gerado", 30, 5)
+	d := open(t, fsys, "/src")
+	priv := openDir(t, d, "privado")
+	privBefore := lstat(t, d, "privado")
+
+	data := []byte("DADOS")
+	must(t, writer(t, priv).CreateExclusive([]byte("novo.bin"), data))
+	data[0] = 'X' // the file holds a copy
+	got := lstat(t, priv, "novo.bin")
+	if got.Kind != domain.EntryFile || got.Size != 5 || got.Mode.Perm() != 0o640 || got.Ino == privBefore.Ino {
+		t.Errorf("new file = %+v, want a 5-byte file with mode 0640 and its own inode", got)
+	}
+	if b := readAll(t, openFile(t, priv, "novo.bin")); string(b) != "DADOS" {
+		t.Errorf("new file holds %q, want %q", b, "DADOS")
+	}
+	if now := lstat(t, d, "privado"); !now.ModTime.After(privBefore.ModTime) || !now.Ctime.After(privBefore.Ctime) {
+		t.Errorf("parent after CreateExclusive = %+v, want later times than %+v", now, privBefore)
+	}
+	must(t, writer(t, d).CreateExclusive([]byte("vazio"), nil))
+	if got := lstat(t, d, "vazio"); got.Size != 0 || got.Mode.Perm() != 0o644 {
+		t.Errorf("empty file made in a default folder = %+v, want 0 bytes with mode 0644", got)
+	}
+
+	before := lstat(t, d, "a.jpg")
+	gen := openDir(t, d, "gerado")
+	for _, tc := range []struct {
+		d    fsaccess.Dir
+		name string
+	}{{d, "a.jpg"}, {d, "privado"}, {d, "link"}, {priv, "novo.bin"}, {gen, "dir-0000000"}} {
+		wantWriteErr(t, writer(t, tc.d).CreateExclusive([]byte(tc.name), []byte("NOVO")), op, fsaccess.ErrExist, "")
+	}
+	if after := lstat(t, d, "a.jpg"); after.Ino != before.Ino || after.Size != before.Size || !after.Ctime.Equal(before.Ctime) {
+		t.Errorf("a.jpg after a refused create = %+v, want %+v", after, before)
+	}
+	if b := readAll(t, openFile(t, d, "a.jpg")); string(b) != "ORIGINAL" {
+		t.Errorf("a.jpg holds %q after a refused create, want ORIGINAL", b)
+	}
+	if b := readAll(t, openFile(t, priv, "novo.bin")); string(b) != "DADOS" {
+		t.Errorf("novo.bin holds %q after a refused create, want DADOS", b)
+	}
+	wantWriteErr(t, writer(t, openDir(t, gen, "dir-0000000")).CreateExclusive([]byte("x"), nil), op, nil,
+		domain.OutcomeUnavailable)
+	for _, bad := range []string{"", ".", "..", "a/b", "a\x00b"} {
+		wantWriteErr(t, writer(t, d).CreateExclusive([]byte(bad), nil), op, fsaccess.ErrInvalidName, "")
+	}
+
+	ro := ext4Caps
+	ro.ReadOnly = true
+	fsys.SetCapabilities(d.Self().Dev, ro)
+	wantWriteErr(t, writer(t, d).CreateExclusive([]byte("novo"), []byte("x")), op, fsaccess.ErrReadOnly, "")
+	absent(t, d, "novo")
+}
+
+// r4 task 1.3, design D12: Unlink removes a file or a symlink and advances
+// the parent's times; a folder, empty or not, fails with ErrIsDir and stays;
+// a missing name is absent; a hard link's other name reports one link fewer.
+func TestUnlink(t *testing.T) {
+	const op = "Unlink"
+	fsys := synthfs.New()
+	root := fsys.Root("/src")
+	root.File("a.jpg", 1, synthfs.DefaultModTime)
+	root.Dir("cheia").File("b.jpg", 1, synthfs.DefaultModTime)
+	root.Dir("vazia")
+	root.Symlink("link", "a.jpg")
+	orig := root.File("orig.jpg", 4, synthfs.DefaultModTime).Content([]byte("ORIG"))
+	root.HardLink("copia.jpg", orig)
+	root.Generated("gerado", 30, 5)
+	root.Generated("plano", 4, 10)
+	d := open(t, fsys, "/src")
+	w := writer(t, d)
+	before := root.Info()
+
+	must(t, w.Unlink([]byte("a.jpg")))
+	absent(t, d, "a.jpg")
+	if now := root.Info(); !now.ModTime.After(before.ModTime) || !now.Ctime.After(before.Ctime) {
+		t.Errorf("parent after Unlink = %+v, want later times than %+v", now, before)
+	}
+	must(t, w.Unlink([]byte("link")))
+	absent(t, d, "link")
+
+	for _, name := range []string{"cheia", "vazia"} {
+		wantWriteErr(t, w.Unlink([]byte(name)), op, fsaccess.ErrIsDir, "")
+		if got := lstat(t, d, name); got.Kind != domain.EntryDirectory {
+			t.Errorf("%s after a refused Unlink = %+v", name, got)
+		}
+	}
+	if root.Child("cheia").Child("b.jpg") == nil {
+		t.Error("a refused Unlink changed the folder")
+	}
+	wantWriteErr(t, w.Unlink([]byte("a.jpg")), op, syscall.ENOENT, domain.OutcomeAbsent)
+
+	if n := lstat(t, d, "orig.jpg").Nlink; n != 2 {
+		t.Fatalf("orig.jpg has %d links before, want 2", n)
+	}
+	must(t, w.Unlink([]byte("orig.jpg")))
+	absent(t, d, "orig.jpg")
+	if got := lstat(t, d, "copia.jpg"); got.Nlink != 1 || got.Size != 4 {
+		t.Errorf("copia.jpg after unlinking its other name = %+v, want 1 link and 4 bytes", got)
+	}
+	if b := readAll(t, openFile(t, d, "copia.jpg")); string(b) != "ORIG" {
+		t.Errorf("copia.jpg holds %q, want ORIG", b)
+	}
+
+	gen := openDir(t, d, "gerado")
+	plano := openDir(t, d, "plano")
+	var genFile string
+	for _, e := range listAll(t, plano) {
+		if e.Kind == domain.EntryFile {
+			genFile = string(e.Name)
+			break
+		}
+	}
+	if genFile == "" {
+		t.Fatal("plano lists no generated file")
+	}
+	wantWriteErr(t, writer(t, plano).Unlink([]byte(genFile)), op, nil, domain.OutcomeUnavailable)
+	wantWriteErr(t, writer(t, gen).Unlink([]byte("dir-0000000")), op, fsaccess.ErrIsDir, "")
+	for _, bad := range []string{"", ".", "..", "a/b", "a\x00b"} {
+		wantWriteErr(t, w.Unlink([]byte(bad)), op, fsaccess.ErrInvalidName, "")
+	}
+
+	ro := ext4Caps
+	ro.ReadOnly = true
+	fsys.SetCapabilities(d.Self().Dev, ro)
+	wantWriteErr(t, w.Unlink([]byte("copia.jpg")), op, fsaccess.ErrReadOnly, "")
+	lstat(t, d, "copia.jpg")
 }

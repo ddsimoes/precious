@@ -35,6 +35,15 @@ func TestWriteErrorMapping(t *testing.T) {
 		{"Mkdir", syscall.ENOENT, nil, domain.OutcomeAbsent},
 		{"Rmdir", syscall.ENOTDIR, nil, domain.OutcomeUnavailable},
 		{"Sync", syscall.EIO, nil, domain.OutcomeUnavailable},
+		{"CreateExclusive", syscall.EEXIST, fsaccess.ErrExist, ""},
+		{"CreateExclusive", syscall.EROFS, fsaccess.ErrReadOnly, ""},
+		{"CreateExclusive", syscall.ENOENT, nil, domain.OutcomeAbsent},
+		{"CreateExclusive", syscall.EISDIR, nil, domain.OutcomeUnavailable},
+		{"Unlink", syscall.EISDIR, fsaccess.ErrIsDir, ""},
+		{"Unlink", syscall.EPERM, fsaccess.ErrPermission, ""},
+		{"Unlink", syscall.EROFS, fsaccess.ErrReadOnly, ""},
+		{"Unlink", syscall.ENOENT, nil, domain.OutcomeAbsent},
+		{"Rmdir", syscall.EISDIR, nil, domain.OutcomeUnavailable},
 	} {
 		err := fsaccess.WriteError(tc.op, []byte("a.jpg"), tc.errno)
 		var e *fsaccess.Error
@@ -46,7 +55,7 @@ func TestWriteErrorMapping(t *testing.T) {
 			t.Errorf("%s %v = %v, which lost the errno", tc.op, tc.errno, err)
 		}
 		for _, r := range []error{fsaccess.ErrExist, fsaccess.ErrNoReplaceUnsupported, fsaccess.ErrCrossDevice,
-			fsaccess.ErrNotEmpty, fsaccess.ErrReadOnly, fsaccess.ErrPermission, fsaccess.ErrIntoItself} {
+			fsaccess.ErrNotEmpty, fsaccess.ErrIsDir, fsaccess.ErrReadOnly, fsaccess.ErrPermission, fsaccess.ErrIntoItself} {
 			if got := errors.Is(err, r); got != (r == tc.refusal) {
 				t.Errorf("%s %v = %v: errors.Is(%v) = %v", tc.op, tc.errno, err, r, got)
 			}

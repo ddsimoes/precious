@@ -35,3 +35,17 @@ func (d *portableDir) Rmdir(name []byte) error {
 func (d *portableDir) Sync() error {
 	return &Error{Op: opSync, Name: d.self.Name, Err: ErrNoReplaceUnsupported}
 }
+
+func (d *portableDir) CreateExclusive(name, _ []byte) error {
+	if err := checkName(opCreate, name); err != nil {
+		return err
+	}
+	return &Error{Op: opCreate, Name: bytes.Clone(name), Err: ErrNoReplaceUnsupported}
+}
+
+func (d *portableDir) Unlink(name []byte) error {
+	if err := checkName(opUnlink, name); err != nil {
+		return err
+	}
+	return &Error{Op: opUnlink, Name: bytes.Clone(name), Err: ErrNoReplaceUnsupported}
+}

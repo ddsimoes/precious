@@ -22,9 +22,10 @@ import (
 // r3 task 1.5, design D3: only internal/executor (and fsaccess itself) may
 // write to a source. The guard type-checks every non-test package of the
 // module against the compiler's export data and fails on any use of
-// fsaccess.AsWriter or fsaccess.Writer, any call (or method value) of
-// RenameNoReplace, Mkdir, Rmdir, or Sync on a value implementing Writer, and
-// any type assertion that gives a Dir one of those methods.
+// fsaccess.AsWriter or fsaccess.Writer, any call (or method value) of a
+// Writer method (RenameNoReplace, Mkdir, Rmdir, Sync, and r4's
+// CreateExclusive and Unlink) on a value implementing Writer, and any type
+// assertion that gives a Dir one of those methods.
 
 // writeAllowed reports whether pkg may write: internal/executor and the
 // fsaccess packages, with their subpackages.
@@ -183,15 +184,21 @@ func f(d fsaccess.Dir, w fsaccess.Writer) {
 	mk := w.Mkdir
 	_ = mk
 	_ = d.(interface{ Rmdir([]byte) error }).Rmdir(nil)
+	_ = w.CreateExclusive(nil, nil)
+	un := w.Unlink
+	_ = un
+	_ = d.(interface{ Unlink([]byte) error })
 }`))
-	if len(bad) != 6 {
-		t.Errorf("fixture violations = %q, want 6 (AsWriter, Writer, Sync, RenameNoReplace, Mkdir, the assertion)", bad)
+	if len(bad) != 9 {
+		t.Errorf("fixture violations = %q, want 9 (AsWriter, Writer, Sync, RenameNoReplace, Mkdir, the Rmdir assertion, "+
+			"CreateExclusive, Unlink, the Unlink assertion)", bad)
 	}
 	if good := check("precious/internal/fixture/good", parse(`package good
 import ("io"; "os"; "precious/internal/fsaccess")
 func f(d fsaccess.Dir, w io.Writer, file *os.File) error {
 	_ = os.Mkdir("x", 0o700)
 	if s, ok := w.(interface{ Sync() error }); ok { _ = s.Sync() }
+	if u, ok := w.(interface{ Unlink([]byte) error }); ok { _ = u.Unlink(nil) }
 	_ = d.Self()
 	return file.Sync()
 }`)); len(good) != 0 {

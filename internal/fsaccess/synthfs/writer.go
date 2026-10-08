@@ -18,9 +18,10 @@ var (
 )
 
 // The Writer methods follow the Linux backend (renameat2 with
-// RENAME_NOREPLACE, mkdirat then fchmod, unlinkat with AT_REMOVEDIR, fsync)
-// and fail with the same errors, built by fsaccess.WriteError from the errno
-// Linux would give, checked in the kernel's order:
+// RENAME_NOREPLACE, mkdirat then fchmod, unlinkat with AT_REMOVEDIR, fsync,
+// openat with O_CREAT|O_EXCL, unlinkat without flags) and fail with the same
+// errors, built by fsaccess.WriteError from the errno Linux would give,
+// checked in the kernel's order:
 //
 //   - a folder whose root vanished, or a closed handle: unavailable;
 //   - a folder no longer in its tree (removed or replaced): absent;
@@ -30,6 +31,7 @@ var (
 //   - a folder moved into itself or below itself: fsaccess.ErrIntoItself;
 //   - a taken name, compared as Lstat compares (regardless of letter case on
 //     a case-insensitive device): ErrExist;
+//   - a folder to unlink: fsaccess.ErrIsDir;
 //   - a device given capabilities without NoReplaceRename: the rename fails
 //     with ErrNoReplaceUnsupported after the checks above, as an old driver
 //     does. A device without capabilities renames.
@@ -38,8 +40,11 @@ var (
 // times stay; its change time and both folders' modification and change
 // times advance. Mkdir creates an empty folder with its parent's permission
 // bits. Rmdir removes only an empty folder. Sync checks the handle and does
-// nothing else. Generated entries and folders cannot be changed: the call
-// fails with outcome unavailable.
+// nothing else. CreateExclusive adds a regular file with explicit content
+// and its parent's permission bits & 0666, never over a taken name. Unlink
+// removes any explicit entry but a folder (fsaccess.ErrIsDir), and lowers
+// the link count of a hard-linked file's other names. Generated entries and
+// folders cannot be changed: the call fails with outcome unavailable.
 
 // readOnly reports whether d's device is read-only. Callers hold fs.mu.
 func (d *dir) readOnly() bool {
@@ -232,4 +237,69 @@ func (d *dir) Sync() error {
 	d.fs.mu.RLock()
 	defer d.fs.mu.RUnlock()
 	return d.check("Sync")
+}
+
+func (d *dir) CreateExclusive(name, data []byte) error {
+	const op = "CreateExclusive"
+	if err := fsaccess.ValidateName(op, name); err != nil {
+		return err
+	}
+	f := d.fs
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := d.writable(op, name); err != nil {
+		return err
+	}
+	if d.readOnly() {
+		return fsaccess.WriteError(op, name, syscall.EROFS)
+	}
+	if _, _, _, taken := d.child(name); taken {
+		return fsaccess.WriteError(op, name, syscall.EEXIST)
+	}
+	c := &Node{fs: f, name: bytes.Clone(name), kind: domain.EntryFile, ino: f.allocIno(1), failAfter: -1,
+		perm: d.node.info().Mode.Perm() & 0o666, hasPerm: true,
+		content: bytes.Clone(data), hasContent: true, size: int64(len(data))}
+	c.changed()
+	d.node.attach(c)
+	d.node.changed()
+	return nil
+}
+
+func (d *dir) Unlink(name []byte) error {
+	const op = "Unlink"
+	if err := fsaccess.ValidateName(op, name); err != nil {
+		return err
+	}
+	f := d.fs
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := d.writable(op, name); err != nil {
+		return err
+	}
+	if d.readOnly() {
+		return fsaccess.WriteError(op, name, syscall.EROFS)
+	}
+	c, _, isDir, found := d.child(name)
+	switch {
+	case !found:
+		return fsaccess.WriteError(op, name, syscall.ENOENT)
+	case c == nil && isDir, c != nil && c.kind == domain.EntryDirectory:
+		return fsaccess.WriteError(op, name, syscall.EISDIR)
+	case c == nil:
+		return &fsaccess.Error{Op: op, Name: bytes.Clone(name), Outcome: domain.OutcomeUnavailable, Err: errGenerated}
+	case c.boundaryFrom(d.dev):
+		return fsaccess.WriteError(op, name, syscall.EBUSY)
+	}
+	d.node.detach(c)
+	// 1+links counts a file's names; its other names now report one fewer.
+	file := c
+	if c.inode != nil {
+		file = c.inode
+	}
+	if file.links > 0 {
+		file.links--
+		file.touch()
+	}
+	d.node.changed()
+	return nil
 }

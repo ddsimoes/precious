@@ -13,8 +13,12 @@
 // rename that never replaces an existing entry, creating and removing an
 // empty folder, and syncing a folder, each on the descriptors of Dir handles,
 // never by path. Only internal/executor uses it (§5 I2); a guard test fails
-// when any other non-test package calls a Writer method or AsWriter. Nothing
-// writes a file's content or metadata.
+// when any other non-test package calls a Writer method or AsWriter. Two
+// more primitives exist only for the quarantine (r4 design D12), which the
+// executor checks before calling them: CreateExclusive writes a new file
+// that never replaces an existing name, and Unlink removes a non-folder
+// entry. Nothing else writes a file's content, and nothing changes an
+// existing file's content or metadata.
 //
 // Names are raw bytes exactly as returned by the operating system. A name passed
 // to a Dir method must be a single path component: non-empty, not "." or "..",
