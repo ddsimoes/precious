@@ -4,11 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"precious/internal/domain"
 	"precious/internal/fsaccess/instrument"
 	"precious/internal/fsaccess/synthfs"
+	"precious/internal/index"
 )
 
 // r5 H1: the owner's 1975-06-01T12:00:00 on a scanned photo on a FAT card
@@ -124,4 +128,50 @@ func TestR5ReviewSiblingsLookAtTheirOwnStem(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// r5 H4: a written time costs only its folders' time figures, not a refold
+// reading and classifying every other child of each: the adapter's
+// ApplyModTime of a photo succeeds beside a sibling folder whose stored
+// figures cannot even be decoded (a refold of the photo's folder fails on
+// them), and the folders' newest times and by-year figures follow.
+func TestR5ReviewAWrittenTimeReadsNoSibling(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	t2004, t2006, t2010 := at(2004, 7, 1, 9, 0, 0), at(2006, 3, 4, 10, 0, 0), at(2010, 7, 17, 10, 0, 0)
+	root := w.disk("disk", "/disk", posix, func(root *synthfs.Node) {
+		fotos := root.Dir("Fotos")
+		fotos.File("a.jpg", 1000, t2004)
+		fotos.Dir("Outra").File("b.jpg", 2000, t2006)
+	})
+	w.exec(`UPDATE dir_stats SET signals = 'not json' WHERE entry_id = ?`, w.id("disk", "Fotos/Outra"))
+	a := root.Child("Fotos").Child("a.jpg").ModTime(t2010)
+	info := a.Info()
+	id, err := strconv.ParseInt(w.id("disk", "Fotos/a.jpg"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := index.ModTime{Source: "disk", Entry: domain.EntryID(id), Facts: index.PostFacts{Dev: info.Dev, Ino: info.Ino,
+		MtimeNs: info.ModTime.UnixNano(), CtimeNs: info.Ctime.UnixNano()}}
+	if err := w.st.Write(context.Background(), func(tx *sql.Tx) error {
+		return w.org.Index().ApplyModTime(context.Background(), tx, m)
+	}); err != nil {
+		t.Fatalf("ApplyModTime beside an unreadable sibling: %v", err)
+	}
+	for _, p := range []string{"Fotos", ""} {
+		var (
+			newest, oldest int64
+			byYear         string
+		)
+		if err := w.st.Reader().QueryRow(`SELECT e.newest_ns, e.oldest_ns, d.by_year FROM entries e
+			JOIN dir_stats d ON d.entry_id = e.id WHERE e.source_id = 'disk' AND e.path = ?`, []byte(p)).
+			Scan(&newest, &oldest, &byYear); err != nil {
+			t.Fatal(err)
+		}
+		want := `{"2006":{"files":1,"bytes":2000},"2010":{"files":1,"bytes":1000}}`
+		if newest != t2010.UnixNano() || oldest != t2006.UnixNano() || byYear != want {
+			t.Errorf("%q spans %v to %v, by year %s; want 2006 to 2010, %s", p, time.Unix(0, oldest).UTC(),
+				time.Unix(0, newest).UTC(), byYear, want)
+		}
+	}
 }

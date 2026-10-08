@@ -594,7 +594,8 @@ func (f *fakeIndex) ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.Sour
 }
 
 // ApplyModTime is organize's adapter: index.ApplyModTime, which writes the
-// entry's new facts and carries its content rows, then a refold of the entry.
+// entry's new facts, carries its content rows, and carries the time up its
+// folders' figures.
 func (f *fakeIndex) ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTime) error {
 	f.mu.Lock()
 	f.modTimes = append(f.modTimes, m)
@@ -602,10 +603,7 @@ func (f *fakeIndex) ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTim
 	if err := f.begin(); err != nil {
 		return err
 	}
-	if err := index.ApplyModTime(ctx, tx, m); err != nil {
-		return err
-	}
-	return index.NewRefolder(rules.Default()).Refold(ctx, tx, m.Source, []domain.EntryID{m.Entry})
+	return index.ApplyModTime(ctx, tx, m)
 }
 
 func (f *fakeIndex) counts() (renames, mkdirs, rmdirs, done int) {
