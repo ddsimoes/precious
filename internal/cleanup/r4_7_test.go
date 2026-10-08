@@ -1,6 +1,8 @@
 package cleanup
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
 	"maps"
 	"net/http"
@@ -413,5 +415,86 @@ func TestR4_7MovingThePhotosOutAllowsThePurge(t *testing.T) {
 		if !w.exists("casa", p) || !w.has("casa", p) {
 			t.Errorf("%s is gone after the purge", p)
 		}
+	}
+}
+
+// G12: the check's counts add up to what is in the set. A complete
+// archive is its members (C2): its own record stays no_content, listed
+// with the folders, but counts no bytes, so the zip's bytes are not counted
+// on top of its members'.
+func TestR4_7CountsOfASetHoldingAZip(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range map[string]string{"a.txt": strings.Repeat("alfa ", 40), "b.txt": strings.Repeat("beta ", 60)} {
+		f, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w := newWorld(t)
+	at := time.Date(2011, 2, 3, 4, 5, 6, 0, time.UTC)
+	w.disk("casa", "/casa", func(root *synthfs.Node) {
+		root.Dir("Velho").File("antigo.zip", 0, at).Content(buf.Bytes())
+	})
+	w.decide("casa", "Velho", "discard")
+	velho := staleQuarantineVelho(w)
+	_, c := w.checkPurge(velho)
+	if c.State != "ready" {
+		t.Fatalf("check %+v", c)
+	}
+	files := w.checkFiles(c.ID, "verdict=no_content")
+	var folder int64
+	for _, f := range files {
+		if f.Kind == "directory" {
+			folder += f.Size
+		}
+	}
+	if len(files) != 2 || folder == 0 {
+		t.Fatalf("no_content files %+v; want the folder Velho and the zip", files)
+	}
+	if got, want := c.Counts.Verdict, map[string]amount{"safe": {}, "copy_offline": {}, "unreadable": {},
+		"opaque_archive": {}, "unique": {2, 200 + 300}, "no_content": {2, folder}}; !maps.Equal(got, want) {
+		t.Errorf("counts by verdict %v; want %v", got, want)
+	}
+}
+
+// G15: each file of a check says whether its set item could be read. An
+// item holding a folder the scan could not read is never deleted (D11), so
+// the interface offers no confirmation for its files.
+func TestR4_7FilesOfAnUnreadableItem(t *testing.T) {
+	w := newWorld(t)
+	at := time.Date(2011, 2, 3, 4, 5, 6, 0, time.UTC)
+	w.disk("casa", "/casa", func(root *synthfs.Node) {
+		v := root.Dir("Velho")
+		v.File("carta.txt", 300, at).Seed(1)
+		v.Dir("privado").Unreadable()
+		root.File("solto.bin", 200, at).Seed(2)
+	})
+	w.decide("casa", "Velho", "discard")
+	w.decide("casa", "solto.bin", "discard")
+	velho := staleQuarantineVelho(w)
+	solto := w.id("casa", ".precious-quarantine/1/2/solto.bin")
+	_, c := w.checkPurge(velho, solto)
+	if c.State != "ready" || c.Items != 2 {
+		t.Fatalf("check %+v", c)
+	}
+	got := map[string]bool{}
+	for _, f := range w.checkFiles(c.ID, "") {
+		got[f.Path] = f.ItemReadable
+	}
+	want := map[string]bool{
+		".precious-quarantine/1/1/Velho":           false,
+		".precious-quarantine/1/1/Velho/carta.txt": false,
+		".precious-quarantine/1/1/Velho/privado":   false,
+		".precious-quarantine/1/2/solto.bin":       true,
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("item_readable by path %v; want %v", got, want)
 	}
 }

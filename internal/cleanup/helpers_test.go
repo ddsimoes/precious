@@ -372,7 +372,8 @@ type (
 			Path     string `json:"path"`
 			HardLink bool   `json:"hard_link"`
 		} `json:"copy"`
-		Confirmed bool `json:"confirmed"`
+		Confirmed    bool `json:"confirmed"`
+		ItemReadable bool `json:"item_readable"`
 	}
 )
 

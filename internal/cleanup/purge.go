@@ -41,12 +41,22 @@ type checkStarted struct {
 }
 
 // checkPurge starts a pre-delete check of quarantined top items of one
-// source (D7): it settles checks whose job ended without them, refuses
-// while a check of the source runs, or while the source is offline, and
-// inserts the check, running, with its set, then enqueues its job.
+// source (D7): the items entry_ids names, or those of check_id's set still
+// in the quarantine (G11). It settles checks whose job ended without them,
+// refuses while a check of the source runs, or while the source is
+// offline, and inserts the check, running, with its set, then enqueues its
+// job.
 func (s *Service) checkPurge(ctx context.Context, tx *jobs.Tx, req checkPurgeRequest) (int, any, error) {
 	q, now := tx.SQL(), tx.Now()
-	tops, err := topItems(ctx, q, "entry_ids", req.EntryIDs)
+	var (
+		tops []*topItem
+		err  error
+	)
+	if req.CheckID != "" {
+		tops, err = checkLeft(ctx, q, req.CheckID)
+	} else {
+		tops, err = topItems(ctx, q, "entry_ids", req.EntryIDs)
+	}
 	if err != nil {
 		return 0, nil, err
 	}
@@ -83,6 +93,56 @@ func (s *Service) checkPurge(ctx context.Context, tx *jobs.Tx, req checkPurgeReq
 		return 0, nil, err
 	}
 	return http.StatusAccepted, checkStarted{CheckID: strconv.FormatInt(check, 10), JobID: rec.ID.String()}, nil
+}
+
+// checkLeft returns the items of check id's set that are still quarantined
+// top items of its source, by path: not_found for an unknown check, or one
+// with none left (each restored, moved out, or deleted for good).
+func checkLeft(ctx context.Context, q store.Queryer, checkID string) ([]*topItem, error) {
+	id, err := parseID("check", checkID)
+	if err != nil {
+		return nil, err
+	}
+	var src domain.SourceID
+	err = q.QueryRowContext(ctx, `SELECT source_id FROM purge_checks WHERE id = ?`, id).Scan(&src)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, notFound("check", checkID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT entry_id FROM purge_check_items WHERE check_id = ? ORDER BY path`, id)
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: items of check %d: %w", id, err)
+	}
+	var entries []int64
+	for rows.Next() {
+		var e int64
+		if err := rows.Scan(&e); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []*topItem
+	for _, e := range entries {
+		t, err := loadTop(ctx, q, e)
+		if err != nil {
+			return nil, err
+		}
+		if t != nil && t.n.source == src {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return nil, domain.Errorf(domain.CodeNotFound,
+			"no item of check %d is in the quarantine any more: each was restored, moved out, or deleted for good", id)
+	}
+	return out, nil
 }
 
 // confirmResponse answers confirm-purge.
@@ -235,6 +295,12 @@ func (s *Service) planPurge(ctx context.Context, tx *jobs.Tx, req planPurgeReque
 	if err := rows.Err(); err != nil {
 		return 0, nil, err
 	}
+	if len(set) == 0 {
+		// Every item was deleted for good (or went with its source): the
+		// set is gone, and there is nothing to plan (G10).
+		return 0, nil, domain.Errorf(domain.CodeCheckStale,
+			"nothing of check %d is left in the quarantine; every item of it is gone", id)
+	}
 	steps := []*step{{op: opVerify, state: statePlanned}}
 	var tops []*topItem
 	leaving := map[int64]map[int64]bool{}
@@ -365,8 +431,12 @@ func readCheck(ctx context.Context, q store.Queryer, id int64) (checkJSON, error
 	for _, k := range classes {
 		c.Counts.Class[k] = amount{}
 	}
+	// A file recorded no_content holds no bytes of its own: an empty file,
+	// or a complete archive, whose members carry its content and count it
+	// (C2, G12). A folder or a link counts its own size.
 	rows, err := q.QueryContext(ctx, `SELECT f.verdict, coalesce(f.class, ''), `+gatedSQL+`, `+confirmedSQL+`,
-			count(*), coalesce(sum(f.size), 0)
+			count(*), coalesce(sum(CASE WHEN f.verdict = 'no_content' AND f.kind = 'file' AND f.member_id IS NULL
+				THEN 0 ELSE f.size END), 0)
 		FROM purge_check_files f JOIN purge_checks c ON c.id = f.check_id WHERE f.check_id = ?
 		GROUP BY 1, 2, 3, 4`, id)
 	if err != nil {
@@ -402,6 +472,8 @@ func readCheck(ctx context.Context, q store.Queryer, id int64) (checkJSON, error
 	if err := rows.Err(); err != nil {
 		return checkJSON{}, err
 	}
-	c.Allowed = c.State == checkReady && c.Unconfirmed.Files == 0
+	// A check whose items were all deleted for good keeps its records but
+	// has nothing left to delete (G10).
+	c.Allowed = c.State == checkReady && c.Unconfirmed.Files == 0 && c.Items > 0
 	return c, nil
 }

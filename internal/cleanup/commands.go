@@ -42,7 +42,7 @@ const (
 //     "next_cursor","summary"};
 //   - plan-restore {"entry_ids"|"plan_id","destination_id"?}: 201
 //     {"action","items","next_cursor"};
-//   - check-purge {"entry_ids"}: 202 {"check_id","job_id"};
+//   - check-purge {"entry_ids"|"check_id"}: 202 {"check_id","job_id"};
 //   - confirm-purge {"check_id","file_ids"|"group":"likely_junk"}: 200
 //     {"check"};
 //   - plan-purge {"check_id"}: 201 {"action","items","next_cursor"}.
@@ -137,12 +137,23 @@ func (s *Service) decodePlanRestore(body []byte) (commands.Operation, error) {
 }
 
 type checkPurgeRequest struct {
-	EntryIDs []string `json:"entry_ids"`
+	EntryIDs []string `json:"entry_ids,omitempty"`
+	// CheckID checks again what is left in the quarantine of an earlier
+	// check's set (G11).
+	CheckID string `json:"check_id,omitempty"`
 }
 
 func (s *Service) decodeCheckPurge(body []byte) (commands.Operation, error) {
 	var req checkPurgeRequest
-	check := func() error { return idCount("entry_ids", req.EntryIDs, maxCheckIDs) }
+	check := func() error {
+		if (req.EntryIDs != nil) == (req.CheckID != "") {
+			return domain.Errorf(domain.CodeInvalidRequest, "name exactly one of entry_ids and check_id")
+		}
+		if req.EntryIDs != nil {
+			return idCount("entry_ids", req.EntryIDs, maxCheckIDs)
+		}
+		return nil
+	}
 	return newOp(body, &req, check, func(ctx context.Context, tx *jobs.Tx) (int, any, error) {
 		return s.checkPurge(ctx, tx, req)
 	})
