@@ -1222,6 +1222,8 @@ export const en = {
       title: 'Delete for good',
       help: 'Deleting for good frees the space and cannot be undone. Precious first compares every checked file and copy with the disk, and stops with nothing deleted if anything changed.',
       notAllowed: 'Confirm the files above, or take them out of the set, to delete for good.',
+      nothingReadable:
+        'Nothing left in this set can be deleted: its items could not be read. Restore them, or check them again.',
       start: 'Delete for good…',
       confirmTitle: 'Delete for good?',
       confirmBody: 'This deletes {{items}} from the quarantine, with {{files}} and {{bytes}}. It cannot be undone.',

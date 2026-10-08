@@ -512,6 +512,29 @@ describe('The check report', () => {
     expect(damagedRow.queryByText(/Stays in quarantine/)).not.toBeInTheDocument()
   })
 
+  it('offers no Delete for good when only items that could not be read are left, and says why', async () => {
+    const lost = checkFile('104', '.precious-quarantine/50/3/broken/b.raw', {
+      item: quarantined('64', 'Old/broken').entry,
+      verdict: 'unreadable',
+      class: null,
+      item_readable: false,
+    })
+    stubApi(
+      reportRoutes(
+        () => check({ items: 1, allowed: false, unconfirmed: { files: 0, bytes: 0 } }),
+        () => [lost],
+      ),
+    )
+    renderApp('/cleanup/checks/9')
+    expect(
+      await screen.findByText(
+        'Nothing left in this set can be deleted: its items could not be read. Restore them, or check them again.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete for good…' })).toBeDisabled()
+    expect(screen.queryByText(/Confirm the files above/)).not.toBeInTheDocument()
+  })
+
   it('offers nothing to confirm or delete once nothing of the set is left in quarantine', async () => {
     stubApi(reportRoutes(() => check({ items: 0, allowed: true }), () => [photo]))
     renderApp('/cleanup/checks/9')
