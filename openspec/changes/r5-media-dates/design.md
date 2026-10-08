@@ -705,3 +705,8 @@ Single and bulk: only the correction commands take `entry_id`; a single request 
 - **Rollback.** Restore the backup taken before deploying: an r4 binary refuses a newer schema.
 
 ## Addendum: decisions made during implementation
+
+- **Z1. `"Local"` is refused.** `time.LoadLocation("Local")` returns `time.Local`, so `time_zone = "Local"` would choose the server's zone while silencing the unset warning. `Dates.Location` refuses it, like an unknown name, with a problem naming `dates.time_zone`. Any name `time.LoadLocation` resolves, `"UTC"` included, is accepted; the config tests link `time/tzdata`, as the binary does, so they need no host zone files.
+- **Z2. Where check-config shows the zone.** The effective zone is a comment line above the TOML on standard output: `# Media dates are read in America/Sao_Paulo (-03, UTC-03:00).`, or `# dates.time_zone is unset: media dates are read in the server's local zone (UTC, UTC+00:00).` The abbreviation and offset are taken at the current time, since `time.Local`'s name is always "Local". The warning is one line on standard error and the exit status stays 0; the TOML prints `time_zone = ""`, so the output still loads back to the same configuration.
+- **Z3. The start warning is the first thing `serve` does.** A `WARN` record with the same text as check-config's warning and a `zone` attribute describing the local zone, logged before anything else starts. An unknown name stops `serve` in the shared `loadConfig`, before the state directory is touched, as it stops `check-config`.
+- **Z4. Example zone.** Both example configurations set `time_zone = "America/Sao_Paulo"`, the name the spec uses; the Compose steps (in `compose.yaml` and the operator guide) say to edit it with `external_origin`.

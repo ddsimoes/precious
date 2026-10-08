@@ -119,7 +119,7 @@ Inside the container Precious must listen on `0.0.0.0:8080`, because a published
 
 ```sh
 make ui
-$EDITOR deploy/compose.precious.toml    # external_origin
+$EDITOR deploy/compose.precious.toml    # external_origin, dates.time_zone
 $EDITOR deploy/compose.yaml             # one read-only bind per disk, below /sources
 docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml exec precious \
@@ -147,7 +147,7 @@ precious serve --config /etc/precious/precious.toml
 
 Then open the configured `server.external_origin` in a browser and sign in.
 
-- **`check-config`** validates the file without starting the server. On success it prints the effective configuration (your values over the defaults) as TOML and exits 0; on failure it prints every problem on standard error and exits 1. It does not create the state directory.
+- **`check-config`** validates the file without starting the server. On success it prints the effective configuration (your values over the defaults) as TOML, headed by the time zone media dates are read in, and exits 0; it also warns on standard error when `dates.time_zone` is unset. On failure it prints every problem on standard error and exits 1. It does not create the state directory.
 - **`admin set-password`** sets the password of the single administrator account. There is no default password and no web page that creates one. Run it on the server, as the user that owns the state directory, from an interactive terminal: the password is read twice without echo and must be 15 to 1024 bytes long, and piped or redirected input is refused. The same command resets a forgotten password, and the reset signs every browser out. It may run while the server is running.
 - **`serve`** runs the web server. It listens on `127.0.0.1:8080` by default, so only a browser on the same machine can reach it.
 
@@ -407,6 +407,9 @@ Durations are strings such as `"30s"`, `"15m"`, or `"12h"`.
 | `archives.max_time` | duration | `"4h"` | Longest time Precious spends reading one archive, from 1 minute to 7 days. A slower archive is left partial. |
 | `archives.view_max_bytes` | integer | `67108864` | Largest compressed zip member the viewer unpacks into memory to serve with ranges, 1048576 (1 MiB) to 1073741824 (1 GiB). A larger one is streamed without ranges. |
 | `duplicates.refresh_interval` | duration | `"10m"` | How often duplicate folders and the review lists are recomputed while hashing runs, from 1 minute to 24 hours. They are also recomputed when hashing ends and after each scan. |
+| `dates.time_zone` | string | `""` | The IANA time zone, such as `"America/Sao_Paulo"` or `"UTC"`, that photo and video dates without an offset are read in: most camera capture times, and dates in file and folder names. GPS, video container, and modification times, which are instants, are shown in it. Set it to the zone the cameras' clocks were set to. Every build carries the time zone database, so any IANA name works whatever the system has installed; an unknown name stops startup. Empty selects the server's local zone (UTC in the container image), and `check-config` and the server's start warn that it is unset. `check-config` prints the zone in use. Changing it, or the server's zone while it is unset, re-derives every date at the next `media` job. |
+
+**FAT sources and the time zone.** A FAT disk or memory card stores modification times as wall times without a zone, and Linux turns them into instants with the zone it is mounted with: the `vfat` option `time_offset=` (the minutes subtracted to reach UTC, so `time_offset=-180` for `America/Sao_Paulo`), `tz=UTC` for UTC, and otherwise the kernel's own zone, often UTC. When that zone differs from `dates.time_zone`, every modification time on the card is off by the difference: so are the dates taken from it, and the comparisons that refine a dated name and set the flags, which allow one hour on FAT and no more. Mount FAT sources in the configured zone. A fixed `time_offset` does not follow daylight saving time, which that one hour covers.
 
 ## Platform and supported systems
 

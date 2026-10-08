@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"precious/internal/config"
 )
@@ -32,24 +33,29 @@ func writeCheckConfigFile(t *testing.T, dir, name, body string) string {
 
 // checkEffective runs check-config on path, requires success, and checks
 // that the printed settings contain every string of wantText and load back
-// to the configuration path loads to.
+// to the configuration path loads to. Standard error must be empty, or only
+// the unset-zone warning when the file sets no dates.time_zone.
 func checkEffective(t *testing.T, path string, wantText ...string) {
 	t.Helper()
+	want, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	code, stdout, stderr := runCheckConfigCmd(t, "check-config", "--config", path)
 	if code != 0 {
 		t.Fatalf("exit %d, stderr:\n%s", code, stderr)
 	}
-	if stderr != "" {
-		t.Errorf("unexpected stderr:\n%s", stderr)
+	wantStderr := ""
+	if want.Dates.TimeZone == "" {
+		wantStderr = "precious check-config: warning: " + unsetZoneWarning + "\n"
+	}
+	if stderr != wantStderr {
+		t.Errorf("stderr:\n%s\nwant:\n%s", stderr, wantStderr)
 	}
 	for _, s := range wantText {
 		if !strings.Contains(stdout, s) {
 			t.Errorf("output lacks %q:\n%s", s, stdout)
 		}
-	}
-	want, err := config.Load(path)
-	if err != nil {
-		t.Fatal(err)
 	}
 	got, err := config.Load(writeCheckConfigFile(t, t.TempDir(), "effective.toml", stdout))
 	if err != nil {
@@ -71,8 +77,9 @@ func checkEffective(t *testing.T, path string, wantText ...string) {
 // defaults printed", "Archive defaults printed", and "Writes can be forbidden
 // by the configuration": check-config exits 0 on the shipped example and
 // prints effective settings, the [scan], [hashing], [archives], and
-// [duplicates] defaults, the empty allowed roots, and allow_writes included,
-// that load back to the same configuration.
+// [duplicates] defaults, the empty allowed roots, allow_writes, and the
+// example's time zone, without a warning, that load back to the same
+// configuration.
 func TestCheckConfigAcceptsShippedExample(t *testing.T) {
 	checkEffective(t, shippedExampleConfig,
 		`state_dir = "/var/lib/precious"`, "trusted_proxies = []",
@@ -81,7 +88,56 @@ func TestCheckConfigAcceptsShippedExample(t *testing.T) {
 		"[hashing]\n  read_chunk_bytes = 1048576\n  yield_bytes = 67108864",
 		"[archives]\n  max_members = 1000000\n  max_unpacked_bytes = 1099511627776\n  max_ratio = 100\n"+
 			"  max_time = \"4h0m0s\"\n  view_max_bytes = 67108864",
-		"[duplicates]\n  refresh_interval = \"10m0s\"")
+		"[duplicates]\n  refresh_interval = \"10m0s\"",
+		"# Media dates are read in America/Sao_Paulo (-03, UTC-03:00).\n",
+		"[dates]\n  time_zone = \"America/Sao_Paulo\"")
+}
+
+// server-config "An unset zone": with no [dates] section check-config
+// succeeds, prints the server's local zone with its abbreviation and offset
+// (time.Local, whatever the host's zone is), and warns on standard error that
+// dates.time_zone is unset.
+func TestCheckConfigUnsetTimeZone(t *testing.T) {
+	base := t.TempDir()
+	path := writeCheckConfigFile(t, base, "precious.toml", `state_dir = "`+base+`/state"
+[server]
+external_origin = "https://precious.example.net"
+`)
+	checkEffective(t, path, "# dates.time_zone is unset: media dates are read in the server's local zone (",
+		"[dates]\n  time_zone = \"\"")
+	if !strings.Contains(unsetZoneWarning, "dates.time_zone is unset") {
+		t.Errorf("warning %q does not name dates.time_zone", unsetZoneWarning)
+	}
+	// The described zone is time.Local's, at the time of the call.
+	at := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	if got, want := describeZone(time.Local, at), "the server's local zone ("+at.In(time.Local).Format("MST, UTC-07:00")+")"; got != want {
+		t.Errorf("describeZone(Local) = %q, want %q", got, want)
+	}
+	if got := describeZone(time.UTC, at); got != "UTC (UTC, UTC+00:00)" {
+		t.Errorf("describeZone(UTC) = %q", got)
+	}
+}
+
+// server-config "An unknown zone": check-config fails naming dates.time_zone,
+// and serve does not start, with the same message and no state directory.
+func TestUnknownTimeZoneRefused(t *testing.T) {
+	base := t.TempDir()
+	stateDir := filepath.Join(base, "state")
+	path := writeCheckConfigFile(t, base, "precious.toml", `state_dir = "`+stateDir+`"
+[server]
+external_origin = "https://precious.example.net"
+[dates]
+time_zone = "Mars/Olympus"
+`)
+	for _, cmd := range []string{"check-config", "serve"} {
+		code, stdout, stderr := runCheckConfigCmd(t, cmd, "--config", path)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, `dates.time_zone: "Mars/Olympus" is not a known IANA time zone`) {
+			t.Errorf("%s: exit %d, stdout %q, stderr:\n%s", cmd, code, stdout, stderr)
+		}
+	}
+	if _, err := os.Lstat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("state directory exists after the refusal (err=%v)", err)
+	}
 }
 
 // check-config prints configured allowed roots, cleaned, forbidden writes,

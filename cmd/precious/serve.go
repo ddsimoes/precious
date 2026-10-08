@@ -88,6 +88,9 @@ func runServe(ctx context.Context, e env, args []string) int {
 // serve runs the web server, the job runner, the source refresh loop, and the
 // rescan schedule loop until ctx is cancelled.
 func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps) error {
+	if cfg.Dates.TimeZone == "" {
+		log.Warn(unsetZoneWarning, "zone", describeZone(time.Local, d.Clock.Now()))
+	}
 	origin, err := middleware.ParseOrigin(cfg.Server.ExternalOrigin)
 	if err != nil {
 		return err
