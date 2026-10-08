@@ -149,7 +149,7 @@ const exportHeader = "path,size,operation,state,reason"
 
 // operation names an item's op in the export: a cleanup's rename
 // quarantines, a restore's restores, a rename action's renames, and every
-// other rename moves.
+// other rename, a date organize's included, moves (r5 Interfaces).
 func operation(kind, op string) string {
 	switch op {
 	case opRename:
@@ -171,7 +171,7 @@ func operation(kind, op string) string {
 	case opUnlink:
 		return "remove_record"
 	}
-	return op // purge, verify
+	return op // purge, verify, set_mtime
 }
 
 // csvCell quotes a cell, doubling its quotes, after a leading ' on a cell a

@@ -2,9 +2,11 @@
 // hands them to the executor (r3 design D7–D9, D11–D14, D17, Interfaces):
 //
 //   - the plan-* commands (plan-move, plan-rename, plan-create-folder,
-//     plan-rescue, plan-merge, plan-undo) read the index only, never a disk
-//     (D8), and write an action in state planned with its items: planned,
-//     refused with a reason, or in conflict. A plan expires after an hour;
+//     plan-rescue, plan-merge, plan-undo, and R5's plan-set-mtime and
+//     plan-date-organize, which re-derive their targets' dates first) read
+//     the index only, never a disk (D8), and write an action in state
+//     planned with its items: planned, refused with a reason, or in
+//     conflict. A plan expires after an hour;
 //   - run-action queues a planned action for its organize job, cancel-action
 //     stops a queued or running one, and resolve-recovery marks an item the
 //     owner checked by hand as resolved and scans its source again;

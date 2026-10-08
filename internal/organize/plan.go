@@ -21,15 +21,17 @@ import (
 )
 
 // Item operations and the states and reasons a plan writes (Interfaces).
-// record, unlink, purge, and verify are cleanup steps (r4 D3, D4, D10, D11).
+// record, unlink, purge, and verify are cleanup steps (r4 D3, D4, D10, D11);
+// set_mtime sets a file's modification time (r5 D13, D14).
 const (
-	opRename = "rename"
-	opMkdir  = "mkdir"
-	opRmdir  = "rmdir"
-	opRecord = "record"
-	opUnlink = "unlink"
-	opPurge  = "purge"
-	opVerify = "verify"
+	opRename   = "rename"
+	opMkdir    = "mkdir"
+	opRmdir    = "rmdir"
+	opRecord   = "record"
+	opUnlink   = "unlink"
+	opPurge    = "purge"
+	opVerify   = "verify"
+	opSetMtime = "set_mtime"
 
 	statePlanned  = "planned"
 	stateRefused  = "refused"
@@ -52,6 +54,14 @@ const (
 	// out, and the quarantine's reserved name at a source's top folder.
 	reasonInQuarantine = "in_quarantine"
 	reasonReservedName = "reserved_name"
+	// R5 (r5 D14, D16, D17): the date plans' refusals.
+	reasonNotDatedYet     = "not_dated_yet"
+	reasonDateTooCoarse   = "date_too_coarse"
+	reasonHardLink        = "hard_link"
+	reasonNotMedia        = "not_media"
+	reasonIdenticalCopy   = "identical_copy"
+	reasonInvalidName     = "invalid_name"
+	reasonIdentityChanged = "identity_changed"
 )
 
 const keep = string(domain.DecisionKeep)
@@ -228,19 +238,19 @@ func Prune(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	return nil
 }
 
-// sourceFS reads whether names on src differ by letter case, from its
-// recorded capabilities (D8), and its filesystem type.
-func sourceFS(ctx context.Context, tx *sql.Tx, src domain.SourceID) (sensitive bool, fsType string, err error) {
+// sourceFS reads src's recorded capabilities (D8): whether names differ by
+// letter case, and, for the date plans, its time resolution and local time
+// (r5 D14); and its filesystem type.
+func sourceFS(ctx context.Context, tx *sql.Tx, src domain.SourceID) (caps fsaccess.Capabilities, fsType string, err error) {
 	var raw string
 	if err := tx.QueryRowContext(ctx, `SELECT capabilities, fs_type FROM sources WHERE id = ?`, string(src)).
 		Scan(&raw, &fsType); err != nil {
-		return false, "", fmt.Errorf("organize: capabilities of %q: %w", src, err)
+		return caps, "", fmt.Errorf("organize: capabilities of %q: %w", src, err)
 	}
-	var caps fsaccess.Capabilities
 	if err := json.Unmarshal([]byte(raw), &caps); err != nil {
-		return false, "", fmt.Errorf("organize: capabilities of %q: %w", src, err)
+		return caps, "", fmt.Errorf("organize: capabilities of %q: %w", src, err)
 	}
-	return caps.CaseSensitive, fsType, nil
+	return caps, fsType, nil
 }
 
 // sameName compares two names as the source's filesystem does (D8): bytes,
@@ -340,6 +350,12 @@ type item struct {
 	bytes, files         int64
 	state, reason, after string
 	reverses             int64
+	// R5: a set_mtime's time to write (r5 D13), the entry a refused
+	// identical_copy duplicates (D17), and the detail a planned date
+	// organize item shows: the siblings it leaves behind (D16).
+	newMtime *int64
+	copyOf   int64
+	detail   string
 }
 
 // plan collects the items of one action on one source.
@@ -348,10 +364,15 @@ type plan struct {
 	tx   *sql.Tx
 	src  domain.SourceID
 	bulk bool
-	// sensitive is the source's case sensitivity; fsType its filesystem
-	// type.
+	// sensitive is the source's case sensitivity, caps its recorded
+	// capabilities, and fsType its filesystem type.
 	sensitive bool
+	caps      fsaccess.Capabilities
 	fsType    string
+	// template and rename are a date organize's (r5 D16), written with
+	// its action.
+	template string
+	rename   bool
 	// moveOut is set for an individual plan-move, the only plan that may
 	// take a quarantined entry out of the quarantine (r4 D13).
 	moveOut  bool
@@ -364,11 +385,11 @@ type plan struct {
 }
 
 func newPlan(ctx context.Context, tx *sql.Tx, src domain.SourceID, bulk bool) (*plan, error) {
-	sensitive, fsType, err := sourceFS(ctx, tx, src)
+	caps, fsType, err := sourceFS(ctx, tx, src)
 	if err != nil {
 		return nil, err
 	}
-	return &plan{ctx: ctx, tx: tx, src: src, bulk: bulk, sensitive: sensitive, fsType: fsType,
+	return &plan{ctx: ctx, tx: tx, src: src, bulk: bulk, sensitive: caps.CaseSensitive, caps: caps, fsType: fsType,
 		children: map[int64]*names{}, planned: map[int64]*names{}}, nil
 }
 
@@ -551,32 +572,38 @@ func (p *plan) refused(it *item, reason string) error {
 }
 
 // insert writes the action, in state planned and expiring after actionTTL,
-// with its items in order, and returns its ID.
+// with its items in order, and returns its ID. A date organize's template
+// and rename go with the action (r5 D16).
 func (p *plan) insert(tx *jobs.Tx, kind string, destination, undoOf int64) (int64, error) {
 	now := tx.Now()
 	var id int64
 	err := p.tx.QueryRowContext(p.ctx, `INSERT INTO actions (kind, source_id, state, bulk, destination_id, undo_of,
-		kept_lost, created_at, expires_at) VALUES (?, ?, 'planned', ?, ?, ?, ?, ?, ?) RETURNING id`,
+		kept_lost, created_at, expires_at, template, rename) VALUES (?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`,
 		kind, string(p.src), p.bulk, nullID(destination), nullID(undoOf), p.keptLost, clock.Millis(now),
-		clock.Millis(now.Add(actionTTL))).Scan(&id)
+		clock.Millis(now.Add(actionTTL)), nullString(p.template), p.rename).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("organize: insert action: %w", err)
 	}
 	stmt, err := p.tx.PrepareContext(p.ctx, `INSERT INTO action_items (action_id, seq, op, entry_id, from_parent,
 		from_name, from_path, to_parent, to_dir_seq, to_name, to_path, bytes, files, decision_after, reverses, state,
-		reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		reason, new_mtime_ns, copy_of, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
 	defer stmt.Close()
 	for i, it := range p.items {
-		var toSeq any
+		var toSeq, newMtime any
 		if it.toDirSeq != 0 {
 			toSeq = it.toDirSeq
 		}
+		if it.newMtime != nil {
+			newMtime = *it.newMtime
+		}
 		if _, err := stmt.ExecContext(p.ctx, id, i+1, it.op, nullID(it.entry), nullID(it.fromParent), it.fromName,
 			it.fromPath, nullID(it.toParent), toSeq, it.toName, it.toPath, it.bytes, it.files, nullString(it.after),
-			nullID(it.reverses), it.state, nullString(it.reason)); err != nil {
+			nullID(it.reverses), it.state, nullString(it.reason), newMtime, nullID(it.copyOf),
+			nullString(it.detail)); err != nil {
 			return 0, fmt.Errorf("organize: insert item %d: %w", i+1, err)
 		}
 	}
