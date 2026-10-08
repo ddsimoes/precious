@@ -238,7 +238,7 @@ After a failed sign-in, the next attempt is refused for 1 s, and each further co
 
 ### Audit trail
 
-Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, `tag_deleted`, `category_set`, and `group_set`. To read the latest ones, run this as the user that owns the state directory:
+Security events and every change you make are written to the `audit_events` table with the time and the client address, never a password, token, or file content: `password_set`, `sessions_revoked`, `login_succeeded`, `login_failed`, `login_throttled`, `logout`, `source_added`, `source_renamed`, `source_removed`, `source_schedule_set`, `source_writes_set`, `decision_set`, `tags_set`, `tag_created`, `tag_renamed`, `tag_deleted`, `category_set`, `group_set`, `action_run`, `action_cancelled`, and `recovery_resolved` (see [Organizing](#organizing)). To read the latest ones, run this as the user that owns the state directory:
 
 ```sh
 sqlite3 <state_dir>/precious.db \
@@ -1014,6 +1014,7 @@ The interface reads the index through a small JSON API under `/api`. The same en
 | `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
 | `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text` | A file's content, and its text decoded. See [Viewer safety](#viewer-safety). |
+| `GET /api/history`, `GET /api/history/{id}`, `GET /api/history/{id}/items` | The changes Precious made or planned on the disks, and their items. See [Organizing](#organizing). |
 
 Every entry row carries its name and path twice: `name` and `path` are the escaped display form, and `name_b64` and `path_b64` are the exact bytes on disk in base64. A name that is not valid UTF-8 is therefore never lost. For example, a Latin-1 `fé.txt` shows as `f\xE9.txt`, and its raw bytes are `ZukudHh0`. Times are in UTC, in RFC 3339 form, or `null` when unknown.
 
@@ -1190,6 +1191,94 @@ Each accepted request writes one audit event (`decision_set`, `tags_set`, `tag_c
 ## Changing disks
 
 Precious changes a disk only to organize it, when you ask: it moves and renames files and folders, creates folders, and removes an empty folder that one of its own changes created, when you undo that change. It never deletes a file, never writes into one, and never changes a file's times or permissions. Every change is listed in [History](#history). How the index follows a move, without a rescan, is described under [Scanning and the index](#scanning-and-the-index).
+
+### Organizing
+
+Every change Precious makes on a disk is an **action** that you plan first and then run. Planning reads only the index, never the disk, and changes nothing anywhere: it lists every step the action would take, its **items**, each with the path before and after. Running it queues an `organize` job that does exactly the steps that were planned, in order (see [How Precious changes a disk](#how-precious-changes-a-disk)). A plan can be run for one hour; after that it reads `expired`, running it is refused with `action_expired`, and you plan again. Expired plans are deleted a day later.
+
+**The actions:**
+
+- **Move** (`plan-move`) moves one entry, several ticked entries (up to 1,000), or all the results of a selection into one folder, under their names. An entry inside another entry of the same move goes with it, as one item. An action holds at most 10,000 items; a larger one is refused with `invalid_request`, so move a folder instead of its contents.
+- **Rename** (`plan-rename`) gives one entry a new name in its folder. **New folder** (`plan-create-folder`) creates an empty folder. When the name is already taken in that folder, by an entry the last scan saw or by a missing one that carries your decision, tags, or category, both are refused at once with `name_taken` and no action is made. A name is refused with `invalid_request` when it is empty, `.` or `..`, holds `/` or a NUL character, or is longer than 255 bytes, and so is the current name. On a disk that does not tell letter case apart (FAT, exFAT, NTFS), a rename that changes only the letter case, such as `FOTO.JPG` to `foto.jpg`, is refused too: that disk sees both as the same name and cannot make the change in one step.
+- **Rescue kept items** (`plan-rescue`) moves the items kept on their own inside a folder into another folder, so the folder can be discarded: only the outermost ones (a kept folder goes with everything in it), keeping their names, all into the chosen folder. A folder that is itself kept has nothing to rescue and is refused with `invalid_entry_state`, as is one with nothing kept on its own inside; a destination inside the folder is refused with `invalid_request`.
+- **Merge** (`plan-merge`) moves the files Compare lists as only on one side into the other folder, each to the same place it has on its side: `2006/Praia/DSC_editada.JPG` only in `Fotos - Copia` goes to `Fotos/2006/Praia/DSC_editada.JPG`. When Compare left out a single wrapper folder on the receiving side, such as `Fotos (copia)/Fotos/` against `Fotos/`, the files go inside that wrapper. Each folder missing on the way is created first, as its own item. Files with the same name and different content, and files not checked yet, are never moved. Both sides must be folders of the same source; an archive, or a folder inside one, is refused with `invalid_request`, since its files cannot be moved.
+- **Undo** (`plan-undo`) is described below.
+
+**What a plan leaves out.** An item that cannot be done is planned as **refused** (not included) or **conflict** (left as it is), with its reason, and the rest of the action still runs. Refused:
+
+| Reason | Meaning |
+|---|---|
+| `other_source` | The entry is on another source than the destination. Moves stay inside one source. |
+| `inside_archive` | The entry is a member of an archive. |
+| `missing` | The last scan did not find the entry. |
+| `source_root` | The entry is a source's top folder. |
+| `into_itself` | A folder would go into itself, or into a folder inside it. |
+| `already_there` | The entry is already in the destination under that name. |
+| `other_filesystem` | The entry is where another filesystem is mounted, or the destination is on another filesystem. |
+| `contains_mount` | Another filesystem is mounted somewhere inside the folder; moving it would leave that mount behind. |
+| `would_lose_keep` | A move of many entries would take away an entry's keep (see below). |
+
+In conflict:
+
+| Reason | Meaning |
+|---|---|
+| `name_taken` | An entry with that name is in the destination. On a disk that does not tell letter case apart, `Foto.jpg` and `foto.jpg` are the same name. For a merge, it also marks the files below a place where a folder is needed and a file is. |
+| `name_taken_in_plan` | An earlier item of the same action takes that name. |
+| `name_taken_by_missing` | A missing entry with that name carries your decision, tags, or category. Precious never lets a move take that place, so your intent is never lost; a missing entry without any gives way. |
+| `previous_folder_gone` | (Undo) the folder the item came from is no longer there. |
+
+A name taken on the disk but not yet indexed is found when the step runs: the item then ends `conflict`, and nothing is replaced. Items that changed between the plan and the run end `changed`, so a plan is only ever a preview of what the index shows.
+
+**Decisions follow the place, not the move.** A move never changes a decision. An entry with a decision of its own keeps it; one without takes the decision of its new folder, which the plan shows for each item as `decision_after`. A move of one entry, a rename, and an undo may take away a keep the entry had through its folder; the plan counts those items in `kept_lost`, and the interface warns "N kept items would no longer be kept" before it runs. A move of many entries (ticked entries, a selection, a rescue, or a merge) never takes away a keep: such an item is refused with `would_lose_keep`, and if the destination's decision changes before the item runs, it ends `changed` with that reason.
+
+**Undo.** Every action that ran can be undone from History while some of its done items are not undone yet. `plan-undo` plans the reverse of those items, last first: each moved or renamed entry goes from wherever it is now back to its previous folder and name, and each folder the action created is removed, if it is still empty (an `rmdir` item, which ends `not_empty` otherwise). An item whose previous name is taken now is a conflict (`name_taken`), as is one whose previous folder is gone (`previous_folder_gone`); planned again with `destination_id`, those items go into that folder under their previous names, still in conflict if taken there too. An item counts as undone only once its undo step is done, so an undo that stopped early, was cancelled, or expired leaves the rest undoable, and an undo planned twice does each item once (the second ends `changed`, `already_undone`). An undo is itself an action, which can be undone in turn. A move of many entries is one action and is undone as a whole.
+
+**Run and cancel.** `run-action` queues a planned action. It is refused with `action_expired` after the hour, with `action_not_runnable` when the action is not planned any more or has no item to run, and with the source's own refusals. `cancel-action` stops an action that is waiting or running: a waiting one stops at once and none of its items runs; a running one stops after the step in progress, which is confirmed and recorded. Its items not yet attempted end `not_attempted`, and a stopped action never runs later.
+
+**What every plan and run checks.** The source must allow changes now: refused with `source_offline` while its disk is not connected, `writes_unavailable` while changes cannot be allowed (see [Changes by Precious](#changes-by-precious)), and `writes_disabled` while its **Changes by Precious** is off. While one of the source's items needs your check (see [Recovery after an interruption](#recovery-after-an-interruption)), nothing can be planned or run on it: `recovery_needed`. Resolve it with `resolve-recovery`, which marks the item resolved and starts a scan of the source, so the index shows what you left on the disk; the source must be online for that scan.
+
+**Commands** (`POST /api/commands/{name}` with an `Idempotency-Key`; IDs are strings):
+
+| Command | Request | Response |
+|---|---|---|
+| `plan-move` | exactly one of `{"entry_id":"12"}`, `{"entry_ids":["12","13"]}` (1 to 1,000), or `{"selection_id":"…"}`, with `"destination_id":"40"` | 201 `{"action","items","next_cursor"}` |
+| `plan-rename` | `{"entry_id":"12","name":"curriculo 2005.doc"}` | 201, as above |
+| `plan-create-folder` | `{"parent_id":"40","name":"2006"}` | 201, as above |
+| `plan-rescue` | `{"folder_id":"30","destination_id":"40"}` | 201, as above |
+| `plan-merge` | `{"left_id":"50","right_id":"51","from":"right"}`: the files only on the `from` side go into the other one | 201, as above |
+| `plan-undo` | `{"action_id":"7"}`, optionally with `"destination_id":"40"` | 201, as above |
+| `run-action` | `{"action_id":"8"}` | 202 `{"action","job_id","state"}` |
+| `cancel-action` | `{"action_id":"8"}` | 200 `{"action"}` |
+| `resolve-recovery` | `{"item_id":"77"}` | 200 `{"action","scan":{"job_id","coalesced"}}` |
+
+A plan answers with the action and the first 200 of its items; `next_cursor` continues them through `GET /api/history/{id}/items`. A plan of one entry is individual; one of `entry_ids` or of a selection is bulk (`"bulk": true`), as are rescues and merges. An unknown entry, folder, action, item, or selection is `not_found`; a destination or parent that is not a folder the last scan saw (a file, an archive, a missing folder, an archive member) is `invalid_request`. `run-action`, `cancel-action`, and `resolve-recovery` each write an audit event (`action_run`, `action_cancelled`, `recovery_resolved`) with the action, its kind and source, and the job; plans write none, since they change nothing.
+
+**Read endpoints** (each needs a session, like every endpoint):
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/history?source=&cursor=&limit=` | The actions that ran (waiting, running, done, or stopped), newest first, 50 per page by default and at most 200: `{"items":[Action],"next_cursor"}`. An unknown `source` is `not_found`. |
+| `GET /api/history/{id}` | One action in any state, planned and expired ones included. |
+| `GET /api/history/{id}/items?state=&cursor=&limit=` | The action's items in order, 200 per page by default and at most 1,000; `state` repeats, such as `state=manual_recovery` or `state=done&state=conflict`. |
+
+An **action** has its `id`, `kind` (`move`, `rename`, `create_folder`, `rescue`, `merge`, or `undo`), `source_id`, `state` (`planned`, `queued`, `running`, `done`, `stopped`, or `expired`), `created_at`, `expires_at`, `started_at`, and `finished_at`, its `destination` as an entry row (`null` for a rename or an undo to the previous places), `job_id`, `undo_of` (the action an undo reverses), `bulk`, `counts` (its items in each state, every state listed), `bytes` and `files` (of the items planned, under way, or done), `kept_lost`, `reversed` (its items undone), and `undo`: `{"possible":true,"reason":null}`, or `possible` false with `not_done` (it did not run), `nothing_done` (no item was done), or `already_undone`.
+
+An **item** has its `id`, `seq`, `op` (`rename` for a move or rename, `mkdir`, or `rmdir`), `entry` (the entry's row as it is now, or `null`), `from` and `to` (`{"path","path_b64"}` or `null`), `state`, `reason` (from the tables above), `decision_after`, `detail` (the system's message of a `failed` item), `found` (for an item that needs your check, what was at each name: `{"from","to"}`, each `absent`, `same`, or `other`), `reversed`, `bytes`, and `files`. Item states are `planned`, `refused`, `conflict`, `intent` (started and not yet confirmed), `done`, `not_permitted`, `offline`, `changed`, `failed`, `no_safe_rename`, `not_empty`, `manual_recovery`, `not_attempted`, and `resolved`.
+
+**Errors** of the commands above, besides `invalid_request` and `not_found`:
+
+| Status | Code | When |
+|---|---|---|
+| 409 | `name_taken` | A rename or new folder whose name is taken in its folder. |
+| 409 | `action_expired` | Running a plan made over an hour ago. |
+| 409 | `action_not_runnable` | Running an action that is not planned, or has nothing to run; cancelling one that is not waiting or running. |
+| 409 | `action_not_undoable` | Undoing an action that did not run, or has nothing left to undo. |
+| 409 | `recovery_needed` | Planning or running on a source with an item that needs your check. |
+| 409 | `writes_disabled` | The source's **Changes by Precious** is off. |
+| 409 | `writes_unavailable` | Changes cannot be allowed on the source (see [Changes by Precious](#changes-by-precious)). |
+| 409 | `source_offline` | The source's disk is not connected. |
+| 409 | `selection_expired` | A selection older than an hour. |
+| 409 | `invalid_entry_state` | A rescue of a kept folder or of one with nothing kept inside; resolving an item that does not need your check. |
 
 ### How Precious changes a disk
 
