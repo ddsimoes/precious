@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 
 import { compareQueryRoot, opportunitiesQueryRoot } from '@/api/content'
+import { datesQueryRoot } from '@/api/dates'
 import { entriesQueryRoot, type EntryRow } from '@/api/entries'
 import { homeQueryRoot } from '@/api/home'
 import { isTerminal, organizeKind, type JobEvent, type JobState } from '@/api/jobs'
@@ -13,7 +14,9 @@ import { apiGet, postCommand } from '@/app/api'
 // that a plan-* command plans and run-action runs in an organize job. The
 // history lists the actions that were run, with their items. R4 adds the
 // cleanup kinds: a cleanup plan moves discarded items to quarantine, a
-// restore brings them back, and a purge deletes a checked set for good.
+// restore brings them back, and a purge deletes a checked set for good. R5
+// adds setting files' modification times to their dates, and organizing
+// photos and videos into folders by date.
 
 export type ActionKind =
   | 'move'
@@ -25,6 +28,8 @@ export type ActionKind =
   | 'cleanup'
   | 'restore'
   | 'purge'
+  | 'set_mtime'
+  | 'date_organize'
 
 // cleanupKinds are the kinds History offers no Undo for: a cleanup is
 // reversed by restoring its items, and a purge cannot be reversed.
@@ -82,6 +87,20 @@ export type ItemReason =
   | 'file_changed'
   | 'copy_changed'
   | 'reserved_name'
+  // The R5 reasons: a date not known precisely enough for the change, a
+  // file whose camera information is not read yet, a file with other names
+  // (hard links), a time the disk cannot tell from the current one, a file
+  // the service may not change the time of, an identical copy already at
+  // the name, a name the disk cannot hold, and a file that is not a photo
+  // or video.
+  | 'date_too_coarse'
+  | 'not_dated_yet'
+  | 'hard_link'
+  | 'no_change'
+  | 'not_owner'
+  | 'identical_copy'
+  | 'invalid_name'
+  | 'not_media'
 
 // Found is what was at one name when a step could not be confirmed: nothing,
 // the entry expected, or something else.
@@ -128,12 +147,31 @@ export interface Action {
   deleted_files: number
   deleted_bytes: number
   freed_bytes: number
+  // The R5 fields of an organize by date: its folder template, and whether
+  // it renames each file to its date and time.
+  template: string | null
+  rename: boolean
 }
 
 // ItemOp is what one step does. R4 adds writing an origin record, removing
 // one, deleting a checked item for good, and comparing a checked set with
-// the disk before a purge.
-export type ItemOp = 'rename' | 'mkdir' | 'rmdir' | 'record' | 'unlink' | 'purge' | 'verify'
+// the disk before a purge; R5 setting a file's modification time.
+export type ItemOp = 'rename' | 'mkdir' | 'rmdir' | 'record' | 'unlink' | 'purge' | 'verify' | 'set_mtime'
+
+// ItemTimes are a set_mtime step's modification times, RFC 3339 in UTC:
+// the one before (the time found on the disk once the step began, else the
+// index's) and the one it sets.
+export interface ItemTimes {
+  from: string | null
+  to: string
+}
+
+// CopyOf names the identical copy that already takes an item's name.
+export interface CopyOf {
+  entry: string
+  path: string
+  path_b64: string
+}
 
 export interface Item {
   id: string
@@ -145,15 +183,19 @@ export interface Item {
   state: ItemState
   reason: ItemReason | null
   decision_after: 'undecided' | 'keep' | 'discard' | 'later' | null
-  // detail is the system's error text of a failed item.
+  // detail is the system's error text of a failed item, or, for a file an
+  // organize by date plans, the files of the same name it leaves behind.
   detail: string | null
   // found is what a manual_recovery item found at its old and new name.
   found: { from: Found; to: Found } | null
   reversed: boolean
   bytes: number
   files: number
-  // kept_count is how many kept entries block a blocked cleanup item.
   kept_count?: number
+  // mtime is set for a set_mtime step, and copy_of for an item refused as
+  // an identical copy (R5).
+  mtime?: ItemTimes | null
+  copy_of?: CopyOf | null
 }
 
 // PlanResult is the 201 answer of every plan-* command: the planned action
@@ -346,8 +388,9 @@ export function isActive(action: Action): boolean {
 
 // refreshAfterMove refetches what a done move, rename, or new folder makes
 // stale: every entry and folder listing, search results, Compare, the
-// opportunity cards and lists, Home, the sources' totals, the history, and
-// the Map's start, whose chain of single folders may have changed.
+// opportunity cards and lists, Home, the sources' totals, the history, the
+// media dates (a name, a folder, or a modification time can date a file),
+// and the Map's start, whose chain of single folders may have changed.
 export async function refreshAfterMove(queryClient: QueryClient) {
   const roots = [
     entriesQueryRoot,
@@ -357,6 +400,7 @@ export async function refreshAfterMove(queryClient: QueryClient) {
     homeQueryRoot,
     sourcesQueryKey,
     historyQueryRoot,
+    datesQueryRoot,
     ['map-start'],
   ]
   await Promise.all(roots.map((queryKey) => queryClient.invalidateQueries({ queryKey })))

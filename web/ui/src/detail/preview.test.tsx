@@ -17,6 +17,8 @@ async function showPreview(file: EntryRow, { text, content }: { text?: Answer; c
     'GET /api/sources': () => jsonResponse(200, { sources: [fotosSource()] }),
     'GET /api/tags': () => jsonResponse(200, { tags: [] }),
     [`GET /api/entries/${file.id}`]: () => jsonResponse(200, entryDetail(file)),
+    // A photo or video has a Dates section; these have no dates.
+    [`GET /api/entries/${file.id}/dates`]: () => jsonResponse(200, { dates: null }),
   }
   if (text !== undefined) {
     routes[`GET /api/entries/${file.id}/text`] = text

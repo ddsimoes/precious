@@ -103,6 +103,7 @@ describe('The main menu', () => {
       'Map',
       'Search',
       'Opportunities',
+      'Dates',
       'Cleanup',
       'History',
       'Sources',

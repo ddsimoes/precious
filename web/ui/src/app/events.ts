@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 
 import { applyJobEventToCleanup, checksQueryRoot, quarantineQueryRoot } from '@/api/cleanup'
 import { applyJobEventToDuplicates, duplicatesQueryRoots } from '@/api/content'
+import { applyJobEventToDates, datesQueryRoot } from '@/api/dates'
 import { applyJobEventToEntries } from '@/api/entries'
 import { applyJobEventToHome } from '@/api/home'
 import type { JobEvent } from '@/api/jobs'
@@ -13,14 +14,15 @@ import { sessionQueryKey } from '@/app/session'
 // liveQueryRoots are the cached responses that job events keep current:
 // sources, everything built from the index and its duplicates (Home,
 // entries, Search, Opportunities, and Compare), the history of organizing,
-// and the quarantine and its checks. They are fetched again whenever events
-// may have been missed.
+// the quarantine and its checks, and the media dates. They are fetched
+// again whenever events may have been missed.
 const liveQueryRoots: QueryKey[] = [
   sourcesQueryKey,
   ...duplicatesQueryRoots,
   historyQueryRoot,
   quarantineQueryRoot,
   checksQueryRoot,
+  datesQueryRoot,
 ]
 
 const minRetryDelay = 1_000
@@ -92,6 +94,7 @@ export class JobEventStream {
       applyJobEventToDuplicates(this.queryClient, event)
       applyJobEventToHistory(this.queryClient, event)
       applyJobEventToCleanup(this.queryClient, event)
+      applyJobEventToDates(this.queryClient, event)
     })
     source.addEventListener('reset', (message: MessageEvent<string>) => {
       this.lastEventId = message.lastEventId
