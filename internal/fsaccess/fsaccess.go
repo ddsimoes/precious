@@ -1,14 +1,20 @@
 // Package fsaccess is the only way precious touches source filesystems (§5.4,
-// §12.2, design D3): rooted, read-only, bounded access that never follows
-// symlinks, never opens special files, never crosses mounts, and preserves
-// filename bytes exactly.
+// §12.2, design D3): rooted, bounded access that never follows symlinks,
+// never opens special files, never crosses mounts, and preserves filename
+// bytes exactly.
 //
-// The interfaces below are a shared contract. They deliberately have no method
-// that creates, writes, renames, removes, or changes metadata of any entry:
-// nothing writes to a source. File content is read only through Dir.OpenFile,
-// which opens a regular file for reading after checking it is the one the
-// caller observed, and only copy searches call it (M4 design D5). Every other
-// caller observes metadata alone.
+// The interfaces below are a shared contract. FS, Dir, and File deliberately
+// have no method that creates, writes, renames, removes, or changes metadata
+// of any entry. File content is read only through Dir.OpenFile, which opens a
+// regular file for reading after checking it is the one the caller observed
+// (M4 design D5). Every other caller observes metadata alone.
+//
+// Writes exist only through Writer (r3 design D3), reached with AsWriter: a
+// rename that never replaces an existing entry, creating and removing an
+// empty folder, and syncing a folder, each on the descriptors of Dir handles,
+// never by path. Only internal/executor uses it (§5 I2); a guard test fails
+// when any other non-test package calls a Writer method or AsWriter. Nothing
+// writes a file's content or metadata.
 //
 // Names are raw bytes exactly as returned by the operating system. A name passed
 // to a Dir method must be a single path component: non-empty, not "." or "..",
