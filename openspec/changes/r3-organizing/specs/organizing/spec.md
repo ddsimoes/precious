@@ -22,7 +22,7 @@ Each item names its entry, its path before and after, and its state. A planned a
 - **THEN** the folder stays at its path on disk and in the index, and after an hour `run-action` fails with `409 action_expired`
 
 ### Requirement: Single moves and renames run at once
-In the detail panel, the owner SHALL be able to rename an entry, move it to a chosen folder, and create a folder inside a folder. When the plan has one item and no conflict, the interface SHALL run it without a further confirmation. It SHALL then show the result, with an Undo control (§10.5 Execution). A conflict SHALL be shown at once, and nothing SHALL run.
+In the detail panel, the owner SHALL be able to rename an entry, move it to a chosen folder, and create a folder inside a folder. When the plan has one item and no conflict, the interface SHALL run it without a further confirmation. It SHALL then show the result, with an Undo control (§10.5 Execution). A conflict SHALL be shown at once, and nothing SHALL run. A new name that the source's filesystem cannot hold SHALL be refused before anything is planned: on a vfat, exfat, or NTFS source (`fs_type` `vfat`, `exfat`, `ntfs3`, `ntfs`, or `fuseblk`), a name with any of `" * : < > ? \ |`, a control character, or a trailing space or dot.
 
 #### Scenario: Renaming a file from the detail panel
 - **WHEN** the owner renames `Documentos/curriculo.doc` to `curriculo 2005.doc` on a source with writes on
@@ -35,6 +35,10 @@ In the detail panel, the owner SHALL be able to rename an entry, move it to a ch
 #### Scenario: A case-only rename on a case-insensitive disk
 - **WHEN** the owner renames `FOTO.JPG` to `foto.jpg` on a source whose capabilities report `case_sensitive: false`
 - **THEN** `plan-rename` fails with `400 invalid_request`, saying that only the letter case differs, and nothing changes
+
+#### Scenario: A name the disk cannot hold is refused
+- **WHEN** the owner renames a file to `Recibos: 2023`, `Novo.`, or `Novo ` on a source whose filesystem type is `exfat`
+- **THEN** `plan-rename` fails with `400 invalid_request`, saying what that disk cannot hold in a name, and nothing is planned
 
 ### Requirement: A bulk move shows every entry and conflict before it runs
 For a bulk move, from Search results or a selection, the interface SHALL show the planned action's items before anything runs. It SHALL show every item, with its path before and after, every conflict, and every refused item with its reason, and it SHALL run only after the owner confirms. Entries indexed after the plan SHALL NOT join it (§10.5 Execution).

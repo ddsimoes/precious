@@ -71,6 +71,10 @@ func (indexAdapter) MissingIntentAt(ctx context.Context, q store.Queryer, src do
 	return index.MissingIntentAt(ctx, q, src, path)
 }
 
+func (indexAdapter) IntentBelow(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error) {
+	return index.IntentBelow(ctx, q, src, path)
+}
+
 // parentOf returns the folder holding entry id.
 func parentOf(ctx context.Context, tx *sql.Tx, id domain.EntryID) (domain.EntryID, error) {
 	var parent sql.NullInt64

@@ -62,6 +62,8 @@ type env struct {
 	// allowWrites and hooks shape the next executor (executor()).
 	allowWrites bool
 	hooks       Hooks
+	// fsType is the filesystem type disk records ("" is ext4).
+	fsType string
 }
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -106,7 +108,8 @@ func (e *env) executor() *Executor {
 }
 
 // disk creates the synthfs root at path on its own device with caps and adds
-// it as srcID, writes allowed, root entry included, then scans it.
+// it as srcID (filesystem type e.fsType), writes allowed, root entry
+// included, then scans it.
 func (e *env) disk(path string, caps fsaccess.Capabilities, build func(root *synthfs.Node)) *synthfs.Node {
 	e.t.Helper()
 	root := e.sfs.Root(path)
@@ -114,7 +117,11 @@ func (e *env) disk(path string, caps fsaccess.Capabilities, build func(root *syn
 		build(root)
 	}
 	dev := root.Info().Dev
-	vol := fsaccess.Volume{Kind: fsaccess.VolumeUUID, ID: "uuid-disk", FSType: "ext4", DeviceKey: "dev:disk", Strong: true}
+	fsType := e.fsType
+	if fsType == "" {
+		fsType = "ext4"
+	}
+	vol := fsaccess.Volume{Kind: fsaccess.VolumeUUID, ID: "uuid-disk", FSType: fsType, DeviceKey: "dev:disk", Strong: true}
 	e.sfs.SetVolume(dev, vol)
 	e.sfs.SetCapabilities(dev, caps)
 	capsJSON, err := json.Marshal(caps)
@@ -122,8 +129,8 @@ func (e *env) disk(path string, caps fsaccess.Capabilities, build func(root *syn
 		e.t.Fatal(err)
 	}
 	e.exec(`INSERT INTO sources (id, label, volume_kind, volume_id, fs_type, strong, rel_root, device_key, capabilities,
-		state, mount_point, created_at, write_enabled) VALUES (?, ?, 'uuid', ?, 'ext4', 1, X'', ?, ?, 'online', ?, 0, 1)`,
-		string(srcID), string(srcID), vol.ID, vol.DeviceKey, string(capsJSON), []byte(path))
+		state, mount_point, created_at, write_enabled) VALUES (?, ?, 'uuid', ?, ?, 1, X'', ?, ?, 'online', ?, 0, 1)`,
+		string(srcID), string(srcID), vol.ID, fsType, vol.DeviceKey, string(capsJSON), []byte(path))
 	e.exec(`INSERT INTO entries (source_id, parent_id, name, path, kind, state, first_seen, last_seen, scan_gen)
 		VALUES (?, NULL, X'', X'', 'directory', 'present', 0, 0, 0)`, string(srcID))
 	e.scan()
@@ -504,6 +511,17 @@ func (f *fakeIndex) MissingIntentAt(ctx context.Context, q store.Queryer, src do
 	lo, hi := append(append([]byte{}, path...), '/'), append(append([]byte{}, path...), '0')
 	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM entries WHERE source_id = ? AND state = 'missing'
 		AND decision IS NOT NULL AND (path = ? OR (path >= ? AND path < ?)))`, string(src), path, lo, hi).Scan(&found)
+	return found, err
+}
+
+// IntentBelow reports an entry strictly below path, in any state, with its
+// own decision, a tag, or an override.
+func (f *fakeIndex) IntentBelow(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error) {
+	var found bool
+	lo, hi := append(append([]byte{}, path...), '/'), append(append([]byte{}, path...), '0')
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM entries e WHERE e.source_id = ? AND e.path >= ?
+		AND e.path < ? AND (e.decision IS NOT NULL OR EXISTS (SELECT 1 FROM entry_tags t WHERE t.entry_id = e.id)
+		OR EXISTS (SELECT 1 FROM entry_overrides o WHERE o.entry_id = e.id)))`, string(src), lo, hi).Scan(&found)
 	return found, err
 }
 

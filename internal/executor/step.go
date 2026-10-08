@@ -195,6 +195,13 @@ func (r *run) stepRmdir(it item) (verdict, error) {
 	return r.settle(it, settleConfirm, end{state: stateFailed, detail: "the folder removal reported success, but it is still there"})
 }
 
+// mayLackNoReplace reports whether drivers of the filesystem type may lack
+// RENAME_NOREPLACE while claiming it (older ZFS on Linux). Every other type
+// that allows writes honours the flag (fsaccess's capabilities), so its
+// EINVAL on a rename refuses the name, as a FAT-family filesystem refuses
+// its reserved characters (design V3).
+func mayLackNoReplace(fsType string) bool { return fsType == "zfs" }
+
 // failed ends an item whose step the filesystem refused (D5).
 func (r *run) failed(it item, err error) (verdict, error) {
 	switch {
@@ -202,6 +209,9 @@ func (r *run) failed(it item, err error) (verdict, error) {
 		return r.record(it, end{state: stateConflict, reason: reasonNameTaken})
 	case errors.Is(err, fsaccess.ErrIntoItself):
 		return r.record(it, end{state: stateRefused, reason: reasonIntoItself})
+	case errors.Is(err, fsaccess.ErrNoReplaceUnsupported) && errors.Is(err, syscall.EINVAL) &&
+		!mayLackNoReplace(r.fsType):
+		return r.record(it, end{state: stateFailed, detail: osText(err)})
 	case errors.Is(err, fsaccess.ErrNoReplaceUnsupported):
 		return r.record(it, end{state: stateNoSafeRename, stop: true, writesOff: true})
 	case errors.Is(err, fsaccess.ErrCrossDevice):
@@ -269,8 +279,12 @@ func (r *run) settle(it item, mode settleMode, notDone end) (verdict, error) {
 		donev      bool
 		from, to   string
 		changedDir []*folder
-		apply      func(tx *jobs.Tx) error
-		close      []*folder
+		// prepare reads the facts the index update needs and returns that
+		// update. It runs before the outcome transaction, never inside it:
+		// the source root's facts reopen the source, which may record its
+		// availability through the store's single writer (design V1).
+		prepare func() func(tx *jobs.Tx) error
+		close   []*folder
 	)
 	defer func() {
 		for _, f := range close {
@@ -301,11 +315,15 @@ func (r *run) settle(it item, mode settleMode, notDone end) (verdict, error) {
 		switch {
 		case from == foundAbsent && to == foundSame && ff != nil:
 			donev, changedDir = true, []*folder{ff, tf}
-			apply = func(tx *jobs.Tx) error {
+			prepare = func() func(tx *jobs.Tx) error {
+				oldFacts := r.folderFacts(ff)
+				newFacts := oldFacts
+				if it.toParent != it.fromParent {
+					newFacts = r.folderFacts(tf)
+				}
 				m := index.Move{Source: r.src, Entry: domain.EntryID(it.entry), NewParent: domain.EntryID(it.toParent),
-					NewName: it.toName, Facts: postFacts(info), OldParentFacts: r.folderFacts(ff),
-					NewParentFacts: r.folderFacts(tf)}
-				return r.e.idx.ApplyRename(r.bg, tx.SQL(), m)
+					NewName: it.toName, Facts: postFacts(info), OldParentFacts: oldFacts, NewParentFacts: newFacts}
+				return func(tx *jobs.Tx) error { return r.e.idx.ApplyRename(r.bg, tx.SQL(), m) }
 			}
 		case from == foundSame && to == foundAbsent:
 			return r.notDone(it, mode, notDone)
@@ -334,16 +352,18 @@ func (r *run) settle(it item, mode settleMode, notDone end) (verdict, error) {
 			}
 			if empty && !indexed {
 				donev, changedDir = true, []*folder{pf}
-				apply = func(tx *jobs.Tx) error {
-					id, err := r.e.idx.ApplyMkdir(r.bg, tx.SQL(), index.NewFolder{Source: r.src,
-						Parent: domain.EntryID(it.toParent), Name: it.toName, Facts: postFacts(info),
-						ParentFacts: r.folderFacts(pf)})
-					if err != nil {
+				prepare = func() func(tx *jobs.Tx) error {
+					nf := index.NewFolder{Source: r.src, Parent: domain.EntryID(it.toParent), Name: it.toName,
+						Facts: postFacts(info), ParentFacts: r.folderFacts(pf)}
+					return func(tx *jobs.Tx) error {
+						id, err := r.e.idx.ApplyMkdir(r.bg, tx.SQL(), nf)
+						if err != nil {
+							return err
+						}
+						_, err = tx.SQL().ExecContext(r.bg, `UPDATE action_items SET entry_id = ?, created = 1 WHERE id = ?`,
+							int64(id), it.id)
 						return err
 					}
-					_, err = tx.SQL().ExecContext(r.bg, `UPDATE action_items SET entry_id = ?, created = 1 WHERE id = ?`,
-						int64(id), it.id)
-					return err
 				}
 			} else {
 				to = foundOther
@@ -362,8 +382,11 @@ func (r *run) settle(it item, mode settleMode, notDone end) (verdict, error) {
 		switch {
 		case found == foundAbsent && pf != nil:
 			donev, changedDir = true, []*folder{pf}
-			apply = func(tx *jobs.Tx) error {
-				return r.e.idx.ApplyRmdir(r.bg, tx.SQL(), r.src, domain.EntryID(it.entry), r.folderFacts(pf))
+			prepare = func() func(tx *jobs.Tx) error {
+				parentFacts := r.folderFacts(pf)
+				return func(tx *jobs.Tx) error {
+					return r.e.idx.ApplyRmdir(r.bg, tx.SQL(), r.src, domain.EntryID(it.entry), parentFacts)
+				}
 			}
 		case found == foundSame:
 			return r.notDone(it, mode, notDone)
@@ -389,7 +412,7 @@ func (r *run) settle(it item, mode settleMode, notDone end) (verdict, error) {
 			return v, err
 		}
 	}
-	return r.outcome(it, apply, findings(from, to))
+	return r.outcome(it, prepare(), findings(from, to))
 }
 
 // notDone ends an item whose step did not happen: back to planned when

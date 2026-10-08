@@ -293,7 +293,9 @@ func postFacts(info fsaccess.EntryInfo) index.PostFacts {
 
 // folderFacts are a folder's facts after a step changed it: an lstat through
 // its parent's handle, or, for the source root, the root opened again. When
-// that fails, the facts of the handle are used.
+// that fails, the facts of the handle are used. Reopening the root records
+// the source's availability through the store's writer, so folderFacts never
+// runs inside a write transaction (design V1).
 func (r *run) folderFacts(f *folder) index.PostFacts {
 	if f.parent != nil {
 		if info, err := r.lstat(f.parent, f.name); err == nil {

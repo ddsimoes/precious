@@ -55,7 +55,7 @@ A step that fails the check SHALL NOT reach the filesystem. Its item SHALL end a
 The executor SHALL be the only code that renames an entry, creates a folder, or removes a folder in a source (§5 I2). It removes a folder only when undo takes away an empty folder its own action created. It SHALL act only for an action the owner planned and ran.
 - **Renaming.** Every rename SHALL use the platform's no-replace rename (`renameat2` with `RENAME_NOREPLACE` on Linux) between two folders opened through the rooted, identity-checked access, never by path.
 - **Taken destinations.** A destination that exists when the rename runs SHALL stop that item as `conflict`, with nothing replaced, and the action SHALL go on with its next item (§5 I3).
-- **No safe rename.** When the filesystem refuses the no-replace flag, the item SHALL end `no_safe_rename` with nothing moved. The executor SHALL then turn the source's write permission off, with an audit event.
+- **No safe rename.** When the filesystem refuses the no-replace flag, the item SHALL end `no_safe_rename` with nothing moved. The executor SHALL then turn the source's write permission off, with an audit event. Only a ZFS source's "invalid argument" on a rename is read as that refusal; on any other filesystem it refuses the name, and the item SHALL end `failed` with the system's message while writes stay on.
 
 #### Scenario: R3.1 A destination that appears during execution stops that item
 - **WHEN** a bulk move runs, and a file with the same name as its second item appears in the destination after the preview and before that item's rename
@@ -66,7 +66,7 @@ The executor SHALL be the only code that renames an entry, creates a folder, or 
 - **THEN** the planning answers `409 name_taken`, and when the name is taken only after planning, the item ends `conflict` and both files keep their content and names
 
 #### Scenario: Filesystem without the no-replace flag
-- **WHEN** the filesystem answers the no-replace rename with "invalid argument"
+- **WHEN** the filesystem of a ZFS source answers the no-replace rename with "invalid argument"
 - **THEN** the item ends `no_safe_rename`, nothing is moved, the remaining items are not attempted, and the source's write permission is off with an audit event
 
 ### Requirement: Intent is journaled and a crash is reconciled

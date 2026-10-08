@@ -87,7 +87,40 @@ func (s *Service) planMerge(ctx context.Context, tx *jobs.Tx, req planMergeReque
 		}
 		cursor = res.NextCursor
 	}
+	p.dropUnusedMkdirs()
 	return s.finish(ctx, tx, p, "merge", to.id, 0)
+}
+
+// dropUnusedMkdirs drops every mkdir item with no planned rename at or
+// below its folder (design V4): a merge plans the folders on the way before
+// deciding the files bound there, and when each of those ends refused or in
+// conflict, the folder would be made empty. The items left are numbered
+// again from 1, and each to_dir_seq follows its folder's new seq; an item
+// that is not planned and named a dropped folder keeps only its path.
+func (p *plan) dropUnusedMkdirs() {
+	// A folder is made before anything goes into it, so one pass from the
+	// end marks each needed mkdir before its parent is reached.
+	needed := make([]bool, len(p.items)+1) // by seq
+	for i := len(p.items) - 1; i >= 0; i-- {
+		it := p.items[i]
+		if it.toDirSeq != 0 && (it.op == opRename && it.state == statePlanned || it.op == opMkdir && needed[i+1]) {
+			needed[it.toDirSeq] = true
+		}
+	}
+	renumbered := make([]int, len(p.items)+1)
+	out := p.items[:0]
+	for i, it := range p.items {
+		if it.op == opMkdir && !needed[i+1] {
+			continue
+		}
+		if it.toDirSeq != 0 {
+			it.toDirSeq = renumbered[it.toDirSeq] // 0 for a dropped folder
+		}
+		out = append(out, it)
+		renumbered[i+1] = len(out)
+	}
+	clear(p.items[len(out):])
+	p.items = out
 }
 
 // mergeSide loads a side of plan-merge: a folder present on its disk. An

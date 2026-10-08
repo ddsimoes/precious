@@ -163,12 +163,16 @@ func TestUndoSetsReversedBy(t *testing.T) {
 }
 
 // The step errors of D5: each first item meets one, then the action goes on
-// to its second item or stops.
+// to its second item or stops. EINVAL on a rename is a missing no-replace
+// flag only on a filesystem whose drivers may lack it (zfs); elsewhere the
+// filesystem refused the name (design V3), and writes stay on.
 func TestStepErrors(t *testing.T) {
 	intoItself := &fsaccess.Error{Op: "RenameNoReplace", Name: []byte("a.jpg"),
 		Err: fmt.Errorf("%w (%w)", fsaccess.ErrIntoItself, syscall.EINVAL)}
+	einval := fsaccess.WriteError("RenameNoReplace", nil, syscall.EINVAL)
 	cases := []struct {
 		name      string
+		fsType    string
 		op        instrument.Op
 		err       error
 		state     string
@@ -177,25 +181,27 @@ func TestStepErrors(t *testing.T) {
 		stops     bool
 		writesOff bool
 	}{
-		{"exists", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EEXIST),
+		{"exists", "", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EEXIST),
 			stateConflict, reasonNameTaken, "", false, false},
-		{"no replace flag", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EINVAL),
-			stateNoSafeRename, "", "", true, true},
-		{"into itself", instrument.OpRename, intoItself, stateRefused, reasonIntoItself, "", false, false},
-		{"cross device", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EXDEV),
+		{"no replace flag", "zfs", instrument.OpRename, einval, stateNoSafeRename, "", "", true, true},
+		{"name refused on ext4", "ext4", instrument.OpRename, einval, stateFailed, "", "invalid argument", false, false},
+		{"name refused on exfat", "exfat", instrument.OpRename, einval, stateFailed, "", "invalid argument", false, false},
+		{"into itself", "zfs", instrument.OpRename, intoItself, stateRefused, reasonIntoItself, "", false, false},
+		{"cross device", "", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EXDEV),
 			stateRefused, reasonOtherFilesystem, "", false, false},
-		{"read-only", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EROFS),
+		{"read-only", "", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EROFS),
 			stateFailed, "", "read-only file system", true, false},
-		{"permission", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EACCES),
+		{"permission", "", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EACCES),
 			stateFailed, "", "permission denied", false, false},
-		{"gone", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.ENOENT),
+		{"gone", "", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.ENOENT),
 			stateChanged, "", "", false, false},
-		{"i/o error, not done", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EIO),
+		{"i/o error, not done", "", instrument.OpRename, fsaccess.WriteError("RenameNoReplace", nil, syscall.EIO),
 			stateFailed, "", "input/output error", false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			e := newEnv(t)
+			e.fsType = c.fsType
 			photos(e)
 			e.rec.InjectError(c.op, "/src/Fotos/2004/a.jpg", c.err)
 			action := e.action("move", true,

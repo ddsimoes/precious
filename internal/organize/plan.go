@@ -197,18 +197,19 @@ func prune(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	return nil
 }
 
-// caseSensitive reads whether names on src differ by letter case, from its
-// recorded capabilities (D8).
-func caseSensitive(ctx context.Context, tx *sql.Tx, src domain.SourceID) (bool, error) {
+// sourceFS reads whether names on src differ by letter case, from its
+// recorded capabilities (D8), and its filesystem type.
+func sourceFS(ctx context.Context, tx *sql.Tx, src domain.SourceID) (sensitive bool, fsType string, err error) {
 	var raw string
-	if err := tx.QueryRowContext(ctx, `SELECT capabilities FROM sources WHERE id = ?`, string(src)).Scan(&raw); err != nil {
-		return false, fmt.Errorf("organize: capabilities of %q: %w", src, err)
+	if err := tx.QueryRowContext(ctx, `SELECT capabilities, fs_type FROM sources WHERE id = ?`, string(src)).
+		Scan(&raw, &fsType); err != nil {
+		return false, "", fmt.Errorf("organize: capabilities of %q: %w", src, err)
 	}
 	var caps fsaccess.Capabilities
 	if err := json.Unmarshal([]byte(raw), &caps); err != nil {
-		return false, fmt.Errorf("organize: capabilities of %q: %w", src, err)
+		return false, "", fmt.Errorf("organize: capabilities of %q: %w", src, err)
 	}
-	return caps.CaseSensitive, nil
+	return caps.CaseSensitive, fsType, nil
 }
 
 // sameName compares two names as the source's filesystem does (D8): bytes,
@@ -316,8 +317,10 @@ type plan struct {
 	tx   *sql.Tx
 	src  domain.SourceID
 	bulk bool
-	// sensitive is the source's case sensitivity.
+	// sensitive is the source's case sensitivity; fsType its filesystem
+	// type.
 	sensitive bool
+	fsType    string
 	items     []*item
 	keptLost  int
 	// children are the names of the entries that are not missing in each
@@ -327,11 +330,11 @@ type plan struct {
 }
 
 func newPlan(ctx context.Context, tx *sql.Tx, src domain.SourceID, bulk bool) (*plan, error) {
-	sensitive, err := caseSensitive(ctx, tx, src)
+	sensitive, fsType, err := sourceFS(ctx, tx, src)
 	if err != nil {
 		return nil, err
 	}
-	return &plan{ctx: ctx, tx: tx, src: src, bulk: bulk, sensitive: sensitive,
+	return &plan{ctx: ctx, tx: tx, src: src, bulk: bulk, sensitive: sensitive, fsType: fsType,
 		children: map[int64]*names{}, planned: map[int64]*names{}}, nil
 }
 

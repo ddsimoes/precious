@@ -459,7 +459,9 @@ func (r *run) intentMkdir(ctx context.Context, q *sql.Tx, it item) (item, *end, 
 }
 
 // intentRmdir re-checks the removal of a folder the action's original made
-// and resolves its record.
+// and resolves its record. A folder with children, or with owner intent on
+// an entry below it (a missing file the owner tagged: design V2), is
+// not_empty before anything is asked of the disk.
 func (r *run) intentRmdir(ctx context.Context, q *sql.Tx, it item) (item, *end, error) {
 	ent, ok, err := loadEntry(ctx, q, it.entry)
 	if err != nil {
@@ -474,9 +476,11 @@ func (r *run) intentRmdir(ctx context.Context, q *sql.Tx, it item) (item, *end, 
 		ent.id).Scan(&children); err != nil {
 		return it, nil, err
 	}
-	kept, err := r.e.idx.MissingIntentAt(ctx, q, r.src, ent.path)
-	if err != nil {
-		return it, nil, err
+	kept := false
+	if !children {
+		if kept, err = r.e.idx.IntentBelow(ctx, q, r.src, ent.path); err != nil {
+			return it, nil, err
+		}
 	}
 	if children || kept {
 		return it, &end{state: stateNotEmpty}, nil
