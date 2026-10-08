@@ -359,6 +359,9 @@ type organizer struct {
 	destOf map[int64]int64
 	// contents are the digests of the targets, by entry.
 	contents map[int64]int64
+	// compared counts the siblings siblings() looked at, which a test
+	// bounds.
+	compared int64
 }
 
 // planDateOrganize plans plan-date-organize (r5 D16, D17): the targets
@@ -699,17 +702,20 @@ func (o *organizer) sameContent(a, b int64) (bool, error) {
 // siblings writes, on each planned file that leaves a same-stem sibling in
 // its folder behind (one not planned into the same destination folder),
 // those siblings' names in its detail, comma-separated, and counts those
-// files (r5 D16).
+// files (r5 D16). Each folder's files are read once and grouped by stem,
+// under the source's case rule, so a file looks only at its own stem's
+// (r5 H3).
 func (o *organizer) siblings() (int64, error) {
 	p := o.p
-	inFolder := map[int64][]named{}
+	inFolder := map[int64]map[string][]named{}
 	var count int64
 	for _, it := range p.items {
 		if it.op != opRename || it.state != statePlanned {
 			continue
 		}
-		kids, ok := inFolder[it.fromParent]
+		byStem, ok := inFolder[it.fromParent]
 		if !ok {
+			byStem = map[string][]named{}
 			rows, err := p.tx.QueryContext(p.ctx, siblingsSQL, it.fromParent)
 			if err != nil {
 				return 0, fmt.Errorf("organize: siblings in folder %d: %w", it.fromParent, err)
@@ -720,22 +726,21 @@ func (o *organizer) siblings() (int64, error) {
 					rows.Close()
 					return 0, err
 				}
-				kids = append(kids, k)
+				ks, _ := splitExt(k.name)
+				key := nameKey(p.sensitive, ks)
+				byStem[key] = append(byStem[key], k)
 			}
 			rows.Close()
 			if err := rows.Err(); err != nil {
 				return 0, err
 			}
-			inFolder[it.fromParent] = kids
+			inFolder[it.fromParent] = byStem
 		}
 		stem, _ := splitExt(it.fromName)
 		var left []string
-		for _, k := range kids {
+		for _, k := range byStem[nameKey(p.sensitive, stem)] {
+			o.compared++
 			if k.id == it.entry {
-				continue
-			}
-			ks, _ := splitExt(k.name)
-			if !sameName(p.sensitive, ks, stem) {
 				continue
 			}
 			if to, ok := o.destOf[k.id]; ok && to == o.destOf[it.entry] {

@@ -1,6 +1,10 @@
 package organize
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
 	"testing"
 
 	"precious/internal/fsaccess/instrument"
@@ -57,4 +61,67 @@ func TestR5ReviewSetFileDatesRefusesATimeTheDiskCannotHold(t *testing.T) {
 	if got := byPath(t, items, "scan.jpg").Mtime; got == nil || !got.To.Equal(at(1975, 6, 1, 12, 0, 0)) {
 		t.Errorf("on ext4 the time is %+v, want 1975-06-01 12:00", got)
 	}
+}
+
+// r5 H3: a date organize's siblings look at each planned file's own stem
+// only: 3,000 JPEGs planned out of one folder, beside a CR2 that stays,
+// compare about one sibling per file, not every file of the folder per
+// file; the JPEG whose stem the CR2 shares (in another letter case, on a
+// case-insensitive disk) names it, and only it.
+func TestR5ReviewSiblingsLookAtTheirOwnStem(t *testing.T) {
+	t.Parallel()
+	const n = 3000
+	w := newWorld(t)
+	w.disk("card", "/card", fat, func(root *synthfs.Node) {
+		d := root.Dir("DCIM")
+		for i := range n {
+			d.File(fmt.Sprintf("IMG_%05d.JPG", i), 10, mtime)
+		}
+		d.File("img_00007.cr2", 10, mtime)
+	})
+	folder := w.id("card", "DCIM")
+	w.readTx(func(tx *sql.Tx) error {
+		ctx := context.Background()
+		p, err := newPlan(ctx, tx, "card", true)
+		if err != nil {
+			return err
+		}
+		o := &organizer{p: p, destOf: map[int64]int64{}}
+		rows, err := tx.Query(`SELECT id, parent_id, name FROM entries WHERE parent_id = ? ORDER BY name`, folder)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			it := &item{op: opRename, state: statePlanned}
+			if err := rows.Scan(&it.entry, &it.fromParent, &it.fromName); err != nil {
+				return err
+			}
+			if !strings.HasSuffix(string(it.fromName), ".JPG") {
+				continue
+			}
+			p.items = append(p.items, it)
+			o.destOf[it.entry] = 1
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		count, err := o.siblings()
+		if err != nil {
+			return err
+		}
+		if count != 1 || o.compared > 2*n {
+			t.Errorf("%d files leave a sibling behind, after %d comparisons; want 1, at most %d", count, o.compared, 2*n)
+		}
+		for _, it := range p.items {
+			want := ""
+			if string(it.fromName) == "IMG_00007.JPG" {
+				want = "img_00007.cr2"
+			}
+			if it.detail != want {
+				t.Errorf("%s: detail %q, want %q", it.fromName, it.detail, want)
+			}
+		}
+		return nil
+	})
 }
