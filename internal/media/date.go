@@ -360,8 +360,12 @@ func FolderPathDate(path []byte, zone *time.Location, now time.Time) (Date, bool
 // comes first: a folder named by a two-digit month (01–12) right below one
 // named by a year alone, `2010/07`, is that month, and a two-digit day below
 // those, `2010/07/17`, that day; the month or day may be followed by a
-// space, '-', '_', or '.' and more (`2010/07 Bahia`). Otherwise it is the
-// date of its own name (FolderDate).
+// space, '-', '_', or '.' and more (`2010/07 Bahia`), except that a month
+// followed by '-', '_', or '.' and two more digits is one only when those
+// cannot be a month (`07-17`, as `{month}-{day}` writes it): `05-07-2010`
+// and `05.07.2010` are day-first dates, the common form in Brazil, and
+// carry no nested date (Addendum K2). Otherwise it is the date of its own
+// name (FolderDate).
 func folderDateAt(parts []string, i int, zone *time.Location, now time.Time) (Date, bool) {
 	if zone == nil {
 		zone = time.UTC
@@ -390,7 +394,7 @@ func nestedDate(year, month, day string, zone *time.Location, now time.Time) (Da
 		return Date{}, false
 	}
 	mm, ok := twoDigits(month)
-	if !ok {
+	if !ok || dayFirst(month) {
 		return Date{}, false
 	}
 	dd, p := "01", PrecisionMonth
@@ -421,4 +425,17 @@ func twoDigits(s string) (string, bool) {
 		}
 	}
 	return s[:2], true
+}
+
+// dayFirst reports whether a folder name that starts with two digits goes
+// on with '-', '_', or '.' and two digits from 00 to 12: `05-07-2010` may be
+// the 5th of July as well as May 7th, so it is not read as a month
+// (Addendum K2). `07-17` cannot be a day then a month, and `07 Bahia` or
+// `07-Bahia` has no second pair.
+func dayFirst(s string) bool {
+	if len(s) < 5 || (s[2] != '-' && s[2] != '_' && s[2] != '.') ||
+		s[3] < '0' || s[3] > '9' || s[4] < '0' || s[4] > '9' {
+		return false
+	}
+	return (s[3]-'0')*10+(s[4]-'0') <= 12
 }

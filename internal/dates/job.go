@@ -375,20 +375,26 @@ func (p *progress) publish()                { p.rt.Progress(p.c) }
 // deriveWindow is the number of entries pass 3 derives per write.
 const deriveWindow = 256
 
-// deriveWindowSQL reads pass 3's next window. entries is read NOT INDEXED,
-// by its rowid range, because the store never runs ANALYZE: without
-// statistics SQLite rates source_id = ? on an index of entries as highly
-// selective and would walk the whole source in it, then sort, per window
-// (Addendum G1).
-var deriveWindowSQL = `SELECT e.id FROM entries e NOT INDEXED WHERE e.id > ? AND e.source_id = ?
+// deriveWindowSQL reads pass 3's next window inside one span of entry IDs.
+// entries is read NOT INDEXED, by its rowid range, because the store never
+// runs ANALYZE: without statistics SQLite rates source_id = ? on an index of
+// entries as highly selective and would walk the whole source in it, then
+// sort, per window (Addendum G1). The span's upper bound keeps a window
+// that finds fewer than deriveWindow rows from reading every entry after it
+// (Addendum K1).
+var deriveWindowSQL = `SELECT e.id FROM entries e NOT INDEXED WHERE e.id > ? AND e.id <= ? AND e.source_id = ?
 		AND (` + MediaCond("e") + ` OR EXISTS (SELECT 1 FROM media_dates d WHERE d.entry_id = e.id))
 		ORDER BY e.id LIMIT ?`
 
 // deriveAll is pass 3 (D4, D9): Rederive over every media entry of src,
 // and every entry of src that still holds a media_dates row though
-// MediaCond no longer holds it (Addendum C6), in windows of deriveWindow
-// entry IDs, each derived inside its write transaction. The last window
-// rewrites src's summary with a recount and stamps summary_at.
+// MediaCond no longer holds it (Addendum C6), in windows of at most
+// deriveWindow entry IDs, each derived inside its write transaction. The
+// windows walk src's rowid range, from its first entry to its last, in
+// spans of at most idSpan IDs: a window that fills up continues after its
+// last ID, one that does not after its span (Addendum K1). The window of
+// the last span rewrites src's summary with a recount and stamps
+// summary_at.
 func (s *Service) deriveAll(ctx context.Context, src domain.SourceID, p *progress) error {
 	var total int64
 	if err := s.st.Reader().QueryRowContext(ctx, `SELECT count(*) FROM entries e
@@ -397,11 +403,18 @@ func (s *Service) deriveAll(ctx context.Context, src domain.SourceID, p *progres
 	}
 	p.set(progOfMedia, total)
 	p.publish()
-	var after int64
+	after, last, err := s.sourceIDs(ctx, src)
+	if err != nil {
+		return err
+	}
 	for {
-		var n int
+		var (
+			n    int
+			next int64
+		)
+		end := min(after+idSpan, last)
 		err := s.st.Write(ctx, func(tx *sql.Tx) error {
-			rows, err := tx.QueryContext(ctx, deriveWindowSQL, after, string(src), deriveWindow)
+			rows, err := tx.QueryContext(ctx, deriveWindowSQL, after, end, string(src), deriveWindow)
 			if err != nil {
 				return err
 			}
@@ -423,9 +436,13 @@ func (s *Service) deriveAll(ctx context.Context, src domain.SourceID, p *progres
 				if err := s.Rederive(ctx, tx, ids); err != nil {
 					return err
 				}
-				after = int64(ids[n-1])
 			}
 			if n == deriveWindow {
+				next = int64(ids[n-1])
+				return nil
+			}
+			next = end
+			if end < last {
 				return nil
 			}
 			sum, err := recount(ctx, tx, src)
@@ -444,8 +461,9 @@ func (s *Service) deriveAll(ctx context.Context, src domain.SourceID, p *progres
 		}
 		p.set(progMedia, min(p.c[progMedia]+int64(n), total))
 		p.publish()
-		if n < deriveWindow {
+		if n < deriveWindow && end >= last {
 			return nil
 		}
+		after = next
 	}
 }

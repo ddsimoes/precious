@@ -87,10 +87,11 @@ func TestSetMtimeNoChangeOnALocalTimeDisk(t *testing.T) {
 	}
 }
 
-// r5 H1, intent: a time the source's filesystem would clamp without an
-// error (before 1980 on FAT), or one the index reads as unknown (the epoch's
-// first day on ext4), is refused date_out_of_range and never written; the
-// action goes on. An undo restores what the disk held, even such a time.
+// r5 H1 and K3, intent: a time the source's filesystem would clamp without
+// an error (before 1980 on FAT) is refused date_out_of_range, and one the
+// index reads as unknown (before 1970-01-02: 1965, or the epoch's first
+// day, on ext4, which holds both) date_before_1970; neither is written and
+// the action goes on. An undo restores what the disk held, even such a time.
 func TestSetMtimeIntentRefusesATimeTheDiskCannotHold(t *testing.T) {
 	t.Run("FAT", func(t *testing.T) {
 		e := newEnv(t)
@@ -119,14 +120,21 @@ func TestSetMtimeIntentRefusesATimeTheDiskCannotHold(t *testing.T) {
 		epoch := time.Unix(0, 340_000_000)
 		e.disk("/src", posix, func(r *synthfs.Node) {
 			r.File("x.jpg", 100, mtime2004)
+			r.File("old.jpg", 100, mtime2004)
 			r.File("lost.jpg", 100, epoch)
 		})
 		action := e.mtimeAction("set_mtime", mtimeStep{Path: "lost.jpg", To: newTime},
-			mtimeStep{Path: "x.jpg", To: time.Date(1970, 1, 1, 12, 0, 0, 0, time.UTC)})
+			mtimeStep{Path: "x.jpg", To: time.Date(1970, 1, 1, 12, 0, 0, 0, time.UTC)},
+			mtimeStep{Path: "old.jpg", To: time.Date(1965, 8, 14, 10, 0, 0, 0, time.UTC)})
 		e.run(action)
-		e.wantStates(action, actionDone, stateDone, stateRefused)
-		if r := e.item(action, 2); r.Reason != reasonDateOutOfRange {
-			t.Errorf("reason %q, want date_out_of_range", r.Reason)
+		e.wantStates(action, actionDone, stateDone, stateRefused, stateRefused)
+		for _, n := range []int{2, 3} {
+			if r := e.item(action, n); r.Reason != reasonDateBefore1970 {
+				t.Errorf("item %d: reason %q, want date_before_1970", n, r.Reason)
+			}
+		}
+		if got := setTimes(e.rec.Calls()); len(got["x.jpg"]) != 0 || len(got["old.jpg"]) != 0 {
+			t.Errorf("SetModTime calls %v, want none on x.jpg or old.jpg", got)
 		}
 		undo := e.undoOf(action)
 		e.run(undo)

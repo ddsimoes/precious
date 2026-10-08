@@ -19,8 +19,7 @@ import (
 // is a time FAT cannot hold (Linux would silently store 1980-01-01), so
 // plan-set-mtime refuses it date_out_of_range, and running the action never
 // sets its time; the card's other photo is planned and set. On ext4 the same
-// date is planned, and a date in the epoch's first day, which the index
-// reads as unknown, is refused.
+// date is planned.
 func TestR5ReviewSetFileDatesRefusesATimeTheDiskCannotHold(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t).start()
@@ -31,13 +30,11 @@ func TestR5ReviewSetFileDatesRefusesATimeTheDiskCannotHold(t *testing.T) {
 	w.addAs("card", "/card", card, fat, "vfat")
 	w.disk("disk", "/disk", posix, func(root *synthfs.Node) {
 		root.File("scan.jpg", 100, at(2012, 2, 1, 9, 0, 0))
-		root.File("lost.jpg", 100, at(2012, 2, 1, 9, 0, 0))
 	})
 	w.seed("card")
 	w.seed("disk")
 	w.setDate(w.id("card", "DCIM/scan.jpg"), "1975-06-01T12:00:00")
 	w.setDate(w.id("disk", "scan.jpg"), "1975-06-01T12:00:00")
-	w.setDate(w.id("disk", "lost.jpg"), "1970-01-01T12:00:00")
 
 	var sum setMtimeSummary
 	a, items := w.datePlan("plan-set-mtime", folders("", w.id("card", "DCIM")), &sum)
@@ -58,13 +55,48 @@ func TestR5ReviewSetFileDatesRefusesATimeTheDiskCannotHold(t *testing.T) {
 		t.Errorf("SetModTime calls %q, want the dated photo's only", set)
 	}
 
-	_, items = w.datePlan("plan-set-mtime", entries("", w.id("disk", "scan.jpg"), w.id("disk", "lost.jpg")), &sum)
+	_, items = w.datePlan("plan-set-mtime", entries("", w.id("disk", "scan.jpg")), &sum)
+	wantItems(t, items, "set_mtime planned scan.jpg")
+	if got := byPath(t, items, "scan.jpg").Mtime; got == nil || !got.To.Equal(at(1975, 6, 1, 12, 0, 0)) {
+		t.Errorf("on ext4 the time is %+v, want 1975-06-01 12:00", got)
+	}
+}
+
+// r5 K3: the owner's 1965-08-14T10:00:00 on a scanned photo is refused
+// date_before_1970, not date_out_of_range, on ext4, which holds 1965: the
+// index reads every time before 1970-01-02 back as unknown. A time in
+// 1970's first day is refused the same way, on a FAT card too, whose own
+// range starts in 1980; the 1975 photo beside them is planned.
+func TestR5ReviewSetFileDatesRefusesADateBefore1970(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t).start()
+	card := w.sfs.Root("/card")
+	card.File("old.jpg", 100, at(2012, 2, 1, 9, 0, 0))
+	w.addAs("card", "/card", card, fat, "vfat")
+	w.disk("disk", "/disk", posix, func(root *synthfs.Node) {
+		root.File("old.jpg", 100, at(2012, 2, 1, 9, 0, 0))
+		root.File("lost.jpg", 100, at(2012, 2, 1, 9, 0, 0))
+		root.File("scan.jpg", 100, at(2012, 2, 1, 9, 0, 0))
+	})
+	w.seed("card")
+	w.seed("disk")
+	w.setDate(w.id("card", "old.jpg"), "1965-08-14T10:00:00")
+	w.setDate(w.id("disk", "old.jpg"), "1965-08-14T10:00:00")
+	w.setDate(w.id("disk", "lost.jpg"), "1970-01-01T12:00:00")
+	w.setDate(w.id("disk", "scan.jpg"), "1975-06-01T12:00:00")
+
+	var sum setMtimeSummary
+	_, items := w.datePlan("plan-set-mtime", entries("", w.id("disk", "old.jpg"), w.id("disk", "lost.jpg"),
+		w.id("disk", "scan.jpg")), &sum)
 	wantItems(t, items,
-		"set_mtime refused date_out_of_range lost.jpg",
+		"set_mtime refused date_before_1970 lost.jpg",
+		"set_mtime refused date_before_1970 old.jpg",
 		"set_mtime planned scan.jpg")
 	if got := byPath(t, items, "scan.jpg").Mtime; got == nil || !got.To.Equal(at(1975, 6, 1, 12, 0, 0)) {
 		t.Errorf("on ext4 the time is %+v, want 1975-06-01 12:00", got)
 	}
+	_, items = w.datePlan("plan-set-mtime", entries("", w.id("card", "old.jpg")), &sum)
+	wantItems(t, items, "set_mtime refused date_before_1970 old.jpg")
 }
 
 // r5 H3: a date organize's siblings look at each planned file's own stem

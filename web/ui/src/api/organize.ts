@@ -92,7 +92,8 @@ export type ItemReason =
   // (hard links), a time the disk cannot tell from the current one, a file
   // the service may not change the time of, an identical copy already at
   // the name, a name the disk cannot hold, a file that is not a photo or
-  // video, and a date the disk cannot record.
+  // video, a date the disk cannot record, and a date before 1970, which
+  // Precious reads back as a lost one.
   | 'date_too_coarse'
   | 'not_dated_yet'
   | 'hard_link'
@@ -102,6 +103,7 @@ export type ItemReason =
   | 'invalid_name'
   | 'not_media'
   | 'date_out_of_range'
+  | 'date_before_1970'
 
 // Found is what was at one name when a step could not be confirmed: nothing,
 // the entry expected, or something else.

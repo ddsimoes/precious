@@ -19,6 +19,10 @@ import (
 //     seconds (EOVERFLOW);
 //   - btrfs, f2fs, tmpfs, and NTFS store every time a nanosecond count does;
 //   - any other type, fuseblk included, gets FAT's range, the narrowest.
+//
+// These are the disks' ranges only: set_mtime also refuses, on every type, a
+// time before 1970-01-02, which the index reads back as unknown
+// (domain.KnownModTime; r5 K3), so the lower ends below 1970 never apply.
 var (
 	fatFrom   = time.Date(1980, 1, 2, 0, 0, 0, 0, time.UTC)
 	fatTo     = time.Date(2107, 12, 31, 0, 0, 0, 0, time.UTC)

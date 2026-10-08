@@ -23,11 +23,12 @@ import (
 // intentSetMtime re-checks a set_mtime and resolves its record: the entry is
 // a present regular file of the source, where the plan found it, outside the
 // quarantine, with no other hard link in the index, the new time is one the
-// source's filesystem stores as given and the index reads as known (r5 H1;
-// an undo's time, which that disk held, is not checked), and it differs
-// from the index's under the source's capabilities. An undo item needs the
-// index's time to still be the one the original wrote. The identity
-// expected at the step, its change time included, is the index row's.
+// index reads as known, from 1970-01-02 (r5 K3), and the source's
+// filesystem stores as given (r5 H1; an undo's time, which that disk held,
+// is not checked), and it differs from the index's under the source's
+// capabilities. An undo item needs the index's time to still be the one the
+// original wrote. The identity expected at the step, its change time
+// included, is the index row's.
 func (r *run) intentSetMtime(ctx context.Context, q *sql.Tx, it item) (item, *end, error) {
 	ent, ok, err := loadEntry(ctx, q, it.entry)
 	if err != nil {
@@ -37,6 +38,10 @@ func (r *run) intentSetMtime(ctx context.Context, q *sql.Tx, it item) (item, *en
 		(it.fromParent != 0 && ent.parent != it.fromParent) || (it.fromName != nil && !bytes.Equal(ent.name, it.fromName)) {
 		return it, &end{state: stateChanged}, nil
 	}
+	var refusal string
+	if it.reverses == 0 && it.newMtime.Valid {
+		refusal = timeRefusal(r.fsType, it.newMtime.Int64)
+	}
 	switch {
 	case !it.newMtime.Valid:
 		return it, &end{state: stateFailed, detail: "a set_mtime item without a time"}, nil
@@ -44,8 +49,8 @@ func (r *run) intentSetMtime(ctx context.Context, q *sql.Tx, it item) (item, *en
 		return it, &end{state: stateRefused, reason: reasonInQuarantine}, nil
 	case ent.nlink.Valid && ent.nlink.Int64 > 1:
 		return it, &end{state: stateRefused, reason: reasonHardLink}, nil
-	case it.reverses == 0 && !writableTime(r.fsType, it.newMtime.Int64):
-		return it, &end{state: stateRefused, reason: reasonDateOutOfRange}, nil
+	case refusal != "":
+		return it, &end{state: stateRefused, reason: refusal}, nil
 	case ent.mtime.Valid && sameTime(ent.mtime.Int64, it.newMtime.Int64, r.caps):
 		return it, &end{state: stateRefused, reason: reasonNoChange}, nil
 	}
@@ -76,12 +81,20 @@ func stillWritten(written, indexed int64, caps fsaccess.Capabilities) bool {
 	return abs(indexed-written) <= int64(caps.TimeResolution)
 }
 
-// writableTime reports whether a set_mtime may write ns on a filesystem of
-// type fsType (r5 H1): a time it stores as given, which Linux would
-// otherwise clamp without an error, and one the index reads back as known.
-// plan-set-mtime refuses the others by the same test.
-func writableTime(fsType string, ns int64) bool {
-	return domain.KnownModTime(ns) && fsaccess.StoresModTime(fsType, ns)
+// timeRefusal is the reason a set_mtime may not write ns on a filesystem of
+// type fsType, or "" when it may: date_before_1970 for a time the index
+// reads back as unknown (domain.KnownModTime: before 1970-01-02), whatever
+// the disk holds (r5 K3), and date_out_of_range for one the filesystem does
+// not store as given, which Linux would clamp without an error (r5 H1).
+// plan-set-mtime refuses the same times by the same test.
+func timeRefusal(fsType string, ns int64) string {
+	switch {
+	case !domain.KnownModTime(ns):
+		return reasonDateBefore1970
+	case !fsaccess.StoresModTime(fsType, ns):
+		return reasonDateOutOfRange
+	}
+	return ""
 }
 
 // stepSetMtime runs an intent set_mtime (r5 D13): lstat the name through its

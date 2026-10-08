@@ -161,6 +161,15 @@ func TestFolderPathDate(t *testing.T) {
 		{"Fotos/2010-07 Bahia/08", "", ""}, // nor a month
 		{"Fotos/2027/07", "", ""},          // after now's year
 		{"Fotos/2010/07/2011-03", "2011-03", PrecisionMonth},
+		// r5 review, Addendum K2: a day-first date under a year is no month.
+		{"Fotos/2010/05-07-2010 Festa", "", ""},
+		{"Fotos/2010/05.07.2010", "", ""},
+		{"Fotos/2010/05_07", "", ""},
+		{"Fotos/2010/12-12", "", ""},
+		{"Fotos/2010/05-07-2010 Festa/12", "", ""},
+		{"Fotos/2010/07-17", "2010-07", PrecisionMonth}, // {month}-{day}
+		{"Fotos/2010/05-2010", "2010-05", PrecisionMonth},
+		{"Fotos/2010/07-Bahia", "2010-07", PrecisionMonth},
 	} {
 		d, ok := FolderPathDate([]byte(c.path), recif, now)
 		if ok != (c.local != "") || d.Local != c.local || d.Precision != c.prec {
@@ -178,6 +187,17 @@ func TestFolderPathDate(t *testing.T) {
 	checkEff(t, "a day folder", Derive(in("Fotos/2010/07/17/scan.jpg", tp(2010, 7, 17, 15, 0, 0), nil)), wantEff{
 		source: SourceFolderName, conf: ConfidenceMedium, local: "2010-07-17T15:00:00", prec: PrecisionSecond,
 		refined: true, flags: FlagNoDateMetadata})
+	// r5 review, Addendum K2: a day-first folder under a year carries no
+	// month, so the year above it is refined to the modification time of
+	// 5 July; `07-17` is still July, refined to a time inside it.
+	for _, p := range []string{"Fotos/2010/05-07-2010 Festa junina/scan.jpg", "Fotos/2010/05.07.2010/scan.jpg"} {
+		checkEff(t, p, Derive(in(p, tp(2010, 7, 5, 18, 0, 0), nil)), wantEff{source: SourceFolderName,
+			conf: ConfidenceMedium, local: "2010-07-05T18:00:00", prec: PrecisionSecond, refined: true,
+			flags: FlagNoDateMetadata})
+	}
+	checkEff(t, "a {month}-{day} folder", Derive(in("Fotos/2010/07-17/scan.jpg", tp(2010, 12, 26, 15, 0, 0), nil)),
+		wantEff{source: SourceFolderName, conf: ConfidenceLow, local: "2010-07", prec: PrecisionMonth,
+			flags: FlagNoDateMetadata})
 }
 
 func TestParseLocal(t *testing.T) {
