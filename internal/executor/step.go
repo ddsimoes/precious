@@ -1,10 +1,13 @@
 package executor
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"syscall"
 
+	"precious/internal/cleanup/stale"
 	"precious/internal/clock"
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
@@ -98,6 +101,9 @@ func (r *run) stepRename(it item) (verdict, error) {
 	switch {
 	case info.MountBoundary:
 		return r.record(it, end{state: stateRefused, reason: reasonOtherFilesystem})
+	case r.kind == kindCleanup && !r.draftOnDisk(it, info):
+		// r4 D3: a cleanup item moves only what was drafted.
+		return r.record(it, end{state: stateChanged, reason: reasonIdentityChanged})
 	case !r.matches(it, info):
 		return r.record(it, end{state: stateChanged})
 	case info.Dev != from.dir.Self().Dev || to.dir.Self().Dev != from.dir.Self().Dev:
@@ -222,6 +228,9 @@ func (r *run) failed(it item, err error) (verdict, error) {
 		return r.record(it, end{state: stateFailed, detail: osText(err)})
 	case errors.Is(err, fsaccess.ErrNotEmpty):
 		return r.record(it, end{state: stateNotEmpty})
+	case errors.Is(err, fsaccess.ErrIsDir):
+		// A record became a folder: nothing was removed.
+		return r.record(it, end{state: stateChanged})
 	}
 	if o, _ := fsaccess.OutcomeOf(err); o == domain.OutcomeAbsent {
 		return r.record(it, end{state: stateChanged})
@@ -275,6 +284,22 @@ const (
 // findings, which stops the running action except while reconciling. An
 // error means the names could not be looked at; the item stays intent.
 func (r *run) settle(it item, mode settleMode, notDone end) (verdict, error) {
+	switch it.op {
+	case opRecord:
+		return r.settleRecord(it, mode, notDone)
+	case opUnlink:
+		return r.settleUnlink(it, mode, notDone)
+	case opVerify:
+		// r4 D4: verify only reads, so it runs again.
+		return r.notDone(it, mode, notDone)
+	case opPurge:
+		// r4 D11: a purge is decided by reconcilePurge; its step never
+		// settles.
+		if mode == settleReconcile {
+			return r.reconcilePurge(it)
+		}
+		return r.record(it, notDone)
+	}
 	var (
 		donev      bool
 		from, to   string
@@ -362,6 +387,13 @@ func (r *run) settle(it item, mode settleMode, notDone end) (verdict, error) {
 						}
 						_, err = tx.SQL().ExecContext(r.bg, `UPDATE action_items SET entry_id = ?, created = 1 WHERE id = ?`,
 							int64(id), it.id)
+						if err != nil || string(it.toPath) != index.QuarantineName {
+							return err
+						}
+						// r4 D1: the quarantine folder a cleanup made.
+						_, err = tx.SQL().ExecContext(r.bg, `UPDATE sources SET quarantine_entry_id = ? WHERE id = ?
+							AND EXISTS (SELECT 1 FROM actions WHERE id = ? AND kind = 'cleanup')`, int64(id),
+							string(r.src), it.action)
 						return err
 					}
 				}
@@ -447,7 +479,8 @@ func (e *indexError) Error() string { return "executor: index update: " + e.err.
 func (e *indexError) Unwrap() error { return e.err }
 
 // outcome records a done step with its index update in one transaction (D4
-// step 6), and sets the original's reversed_by for an undo item. When that
+// step 6), marks stale the pre-delete checks that relied on its paths (r4
+// D10), and sets the original's reversed_by for an undo item. When that
 // transaction fails, a second one ends the item manual_recovery with the
 // findings, and the running action stops.
 func (r *run) outcome(it item, apply func(tx *jobs.Tx) error, found string) (verdict, error) {
@@ -464,6 +497,9 @@ func (r *run) outcome(it item, apply func(tx *jobs.Tx) error, found string) (ver
 		if err := apply(tx); err != nil {
 			return &indexError{err}
 		}
+		if err := r.markStale(tx, it, true); err != nil {
+			return err
+		}
 		if it.reverses != 0 {
 			if _, err := q.ExecContext(r.bg, `UPDATE action_items SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`,
 				it.id, it.reverses); err != nil {
@@ -476,7 +512,61 @@ func (r *run) outcome(it item, apply func(tx *jobs.Tx) error, found string) (ver
 		return goOn, nil
 	}
 	r.e.log.Error("executor: recording a done step failed; the item needs a check", "item", it.id, "err", err)
-	return r.record(it, end{state: stateManualRecovery, detail: found, stop: true})
+	return r.recordUnsure(it, found)
+}
+
+// recordUnsure ends an item manual_recovery with the findings when its done
+// step could not be recorded, and stops the action. The disk changed where
+// the index cannot follow, so the checks relying on the step's paths are
+// marked stale too.
+func (r *run) recordUnsure(it item, found string) (verdict, error) {
+	err := r.write(func(tx *jobs.Tx) error {
+		if err := r.recordIn(tx, it, end{state: stateManualRecovery, detail: found, stop: true}); err != nil {
+			return err
+		}
+		return r.markStale(tx, it, false)
+	})
+	return halt, err
+}
+
+// markStale marks stale, in tx, every check relying on a path of the step
+// (r4 D10): its old and new paths, and extra. A purge's own check, ready
+// before, stays ready when keepOwn: the step is what the check was for.
+func (r *run) markStale(tx *jobs.Tx, it item, keepOwn bool, extra ...[]byte) error {
+	q := tx.SQL()
+	var own int64
+	if keepOwn {
+		err := q.QueryRowContext(r.bg, `SELECT c.id FROM actions a JOIN purge_checks c ON c.id = a.check_id
+			WHERE a.id = ? AND a.kind = 'purge' AND c.state = 'ready'`, it.action).Scan(&own)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	for _, p := range append([][]byte{it.fromPath, it.toPath}, extra...) {
+		if len(p) == 0 {
+			continue
+		}
+		if err := stale.MarkStale(r.bg, q, r.src, p); err != nil {
+			return err
+		}
+	}
+	if own == 0 {
+		return nil
+	}
+	_, err := q.ExecContext(r.bg, `UPDATE purge_checks SET state = 'ready', stale_reason = NULL
+		WHERE id = ? AND state = 'stale'`, own)
+	return err
+}
+
+// staleDiskChanged is the stale_reason of a check the disk no longer
+// matches (r4 D10), found by verify or a purge step.
+const staleDiskChanged = "disk_changed"
+
+// markCheckStale marks the check stale for a difference on the disk.
+func markCheckStale(ctx context.Context, q *sql.Tx, check int64) error {
+	_, err := q.ExecContext(ctx, `UPDATE purge_checks SET state = 'stale', stale_reason = ?
+		WHERE id = ? AND state IN ('running', 'ready')`, staleDiskChanged, check)
+	return err
 }
 
 // reconcile settles every intent item of the source (D4), oldest first. It

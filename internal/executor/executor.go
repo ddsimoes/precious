@@ -33,6 +33,17 @@
 //
 // Actions of one source run one at a time, oldest first, and never while a
 // scan of the source is running (D10): the job defers by one second.
+//
+// R4 runs cleanup, restore, and purge actions on the same journal (r4 D3–D6,
+// D10–D13). A cleanup item is the mkdir of its folder in the quarantine,
+// the rename of its entry into it, and its origin record (created
+// exclusively); its first step re-checks the whole item against its draft,
+// and, for a duplicate ground, against copies read in full beforehand. A
+// restore renames back, unlinks the record, and removes the emptied
+// folders. A purge verifies its check against the disk, then deletes one
+// checked item per step, compared whole before its first deletion. Files
+// are created and unlinked only through folders inside the quarantine, and
+// every outcome marks stale the pre-delete checks relying on its paths.
 package executor
 
 import (
