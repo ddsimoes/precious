@@ -3,6 +3,7 @@ package cleanup
 import (
 	"context"
 	"database/sql"
+	"strings"
 
 	"precious/internal/content"
 	"precious/internal/domain"
@@ -113,7 +114,7 @@ func (c *checker) searchCopy(ctx context.Context, sum [32]byte, size int64) (cop
 				return res, err
 			}
 			if f != nil {
-				return copyResult{copy: f}, nil
+				return copyResult{copy: f}, c.rely(ctx, f)
 			}
 			res.offline = res.offline || offline
 		}
@@ -140,7 +141,7 @@ func (c *checker) searchCopy(ctx context.Context, sum [32]byte, size int64) (cop
 				return res, err
 			}
 			if f != nil {
-				return copyResult{copy: f}, nil
+				return copyResult{copy: f}, c.rely(ctx, f)
 			}
 		}
 	}
@@ -270,4 +271,95 @@ func (c *checker) source(ctx context.Context, src domain.SourceID) (*openSource,
 	o := &openSource{root: opened.Root, caps: opened.Source.Caps, w: &walker{root: opened.Root}}
 	c.opened[src] = o
 	return o, nil
+}
+
+// What a check relies on in a copy besides its content (D10, R4.8, G9): a
+// decision, a category, or a group mark set on the copy, or on a folder
+// above it, makes the check stale. MarkStale finds a copy through its
+// record, which the check writes up to 256 records later, so a change in
+// between would find nothing to mark. The check therefore notes, when it
+// finds a copy, the state of the copy's file and of every folder above it,
+// and finish ends the check stale when any of them differs then.
+const (
+	// relyStateSQL is what a decision, a category, a group mark, or a move
+	// changes of an entry e with its override o.
+	relyStateSQL = `printf('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', hex(e.path), e.parent_id, e.state,
+		e.decision, e.decision_at, e.eff_decision, e.eff_from, e.category, e.family, e.triage, e.is_group, e.veto,
+		o.category, o.group_mark, o.updated_at)`
+	// relyUpSQL: entry. The entry and every folder above it, by primary key.
+	relyUpSQL = `WITH RECURSIVE up(id) AS (SELECT ? UNION ALL
+			SELECT e.parent_id FROM entries e JOIN up ON e.id = up.id WHERE e.parent_id IS NOT NULL)
+		SELECT e.id, ` + relyStateSQL + ` FROM up JOIN entries e ON e.id = up.id
+		LEFT JOIN entry_overrides o ON o.entry_id = e.id`
+	// relyBatch is how many entries reliedChanged reads at a time.
+	relyBatch = 500
+)
+
+// rely notes the state of the found copy's file and of the folders above
+// it, each as first seen in this attempt.
+func (c *checker) rely(ctx context.Context, f *found) error {
+	rows, err := c.q.QueryContext(ctx, relyUpSQL, f.entry)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id    int64
+			state string
+		)
+		if err := rows.Scan(&id, &state); err != nil {
+			return err
+		}
+		if _, ok := c.relied[id]; !ok {
+			c.relied[id] = state
+		}
+	}
+	return rows.Err()
+}
+
+// reliedChanged reports, in tx, whether an entry rely noted is gone or no
+// longer in the state noted.
+func (c *checker) reliedChanged(ctx context.Context, tx *sql.Tx) (bool, error) {
+	ids := make([]any, 0, len(c.relied))
+	for id := range c.relied {
+		ids = append(ids, id)
+	}
+	for len(ids) > 0 {
+		batch := ids[:min(relyBatch, len(ids))]
+		ids = ids[len(batch):]
+		changed, err := c.batchChanged(ctx, tx, batch)
+		if changed || err != nil {
+			return changed, err
+		}
+	}
+	return false, nil
+}
+
+func (c *checker) batchChanged(ctx context.Context, tx *sql.Tx, batch []any) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT e.id, `+relyStateSQL+` FROM entries e
+		LEFT JOIN entry_overrides o ON o.entry_id = e.id WHERE e.id IN (?`+strings.Repeat(", ?", len(batch)-1)+`)`,
+		batch...)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var (
+			id    int64
+			state string
+		)
+		if err := rows.Scan(&id, &state); err != nil {
+			return false, err
+		}
+		if c.relied[id] != state {
+			return true, nil
+		}
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return seen != len(batch), nil
 }

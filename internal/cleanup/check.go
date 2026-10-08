@@ -388,6 +388,9 @@ type checker struct {
 	// digest of each candidate already read (ok false when it failed).
 	copies map[[32]byte]copyResult
 	sums   map[candidateKey]candidateSum
+	// relied holds the state of each entry a found copy relies on, by ID
+	// (rely).
+	relied map[int64]string
 
 	items                          []setItem
 	pending                        []record
@@ -396,7 +399,7 @@ type checker struct {
 
 func newChecker(s *Service, rt jobs.Runtime, id int64, src domain.SourceID) *checker {
 	return &checker{s: s, rt: rt, q: s.st.Reader(), id: id, src: src, opened: map[domain.SourceID]*openSource{},
-		copies: map[[32]byte]copyResult{}, sums: map[candidateKey]candidateSum{}}
+		copies: map[[32]byte]copyResult{}, sums: map[candidateKey]candidateSum{}, relied: map[int64]string{}}
 }
 
 // close closes every source the check opened.
@@ -830,9 +833,9 @@ func (c *checker) memberNames(ctx context.Context, archive int64) (map[int64][]b
 }
 
 // finish ends the check in one transaction (D7 step 4, I9): ready only
-// while it is still running and every item is still present at its
-// recorded quarantine path; otherwise stale, through MarkStale for each
-// item out of place.
+// while it is still running, every item is still present at its recorded
+// quarantine path, and nothing a found copy relies on changed (G9);
+// otherwise stale, through MarkStale for each item out of place.
 func (c *checker) finish(ctx context.Context) error {
 	return c.s.st.Write(ctx, func(tx *sql.Tx) error {
 		now := clock.Millis(c.s.clk.Now())
@@ -875,7 +878,11 @@ func (c *checker) finish(ctx context.Context) error {
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		if len(misplace) == 0 && n == len(c.items) {
+		changed, err := c.reliedChanged(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if len(misplace) == 0 && n == len(c.items) && !changed {
 			_, err := tx.ExecContext(ctx, `UPDATE purge_checks SET state = 'ready', finished_at = ?
 				WHERE id = ? AND state = 'running'`, now, c.id)
 			return err
@@ -886,7 +893,8 @@ func (c *checker) finish(ctx context.Context) error {
 			}
 		}
 		// An item deleted from the index took its purge_check_items row
-		// with it: no path is left to mark by.
+		// with it: no path is left to mark by. A copy decided again before
+		// its record was written was not marked either.
 		_, err = tx.ExecContext(ctx, `UPDATE purge_checks SET state = 'stale',
 			stale_reason = coalesce(stale_reason, ?), finished_at = ? WHERE id = ? AND state IN ('running', 'stale')`,
 			stale.ReasonIndexChanged, now, c.id)

@@ -459,6 +459,7 @@ export function checkFile(id: string, path: string, overrides: Partial<CheckFile
     class: 'uncertain',
     copy: null,
     confirmed: false,
+    item_readable: true,
     ...overrides,
   }
 }

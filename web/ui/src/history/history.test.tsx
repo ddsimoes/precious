@@ -299,6 +299,54 @@ describe('History', () => {
     expect(new URL(listing?.url ?? '').searchParams.getAll('op')).toEqual(['rename'])
   })
 
+  it('shows what changed on disk when a purge stopped at its comparison', async () => {
+    const purge = action({
+      id: '32',
+      kind: 'purge',
+      state: 'stopped',
+      finished_at: '2026-10-08T11:00:00Z',
+      entries: { ...moved.counts, done: 0, conflict: 0, not_attempted: 1 },
+      undo: { possible: false, reason: 'not_undoable_kind' },
+    })
+    const verify = actionItem('1', '', '', {
+      op: 'verify',
+      from: null,
+      to: null,
+      state: 'changed',
+      reason: 'copy_changed',
+      detail: 'Docs/x.txt',
+    })
+    const deletion = actionItem('2', '.precious-quarantine/50/2/2004', '', {
+      op: 'purge',
+      to: null,
+      state: 'not_attempted',
+    })
+    stubApi(
+      routes(() => [purge], {
+        'GET /api/history/32/items': (request) => {
+          const ops = new URL(request.url).searchParams.getAll('op')
+          return jsonResponse(200, {
+            items: [verify, deletion].filter((item) => ops.includes(item.op)),
+            next_cursor: null,
+          })
+        },
+      }),
+    )
+    renderApp('/history')
+
+    await screen.findByRole('article', { name: 'Delete for good' })
+    const stopped = card('Delete for good')
+    expect(
+      within(stopped.getByRole('list', { name: 'Items' }))
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual(['Done: 0', 'Not attempted: 1'])
+    await userEvent.click(stopped.getByRole('button', { name: 'Show items' }))
+    expect(await stopped.findByText(/A copy it relied on changed since the check/)).toBeInTheDocument()
+    expect(stopped.getByText('Docs/x.txt')).toBeInTheDocument()
+    expect(stopped.getByText('Delete for good: .precious-quarantine/50/2/2004')).toBeInTheDocument()
+  })
+
   it('follows organize job events', async () => {
     let history = [waiting]
     const requests = stubApi(routes(() => history))

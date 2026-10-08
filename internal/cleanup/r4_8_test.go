@@ -1,12 +1,17 @@
 package cleanup
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
 	"precious/internal/fsaccess/synthfs"
+	"precious/internal/jobs"
 )
 
 // staleAt is the time of every file of the R4.8 disks.
@@ -100,6 +105,58 @@ func TestR4_8ACopyDecidedAgainAfterTheCheck(t *testing.T) {
 	}
 	if q := w.quarantined("casa"); len(q.Items) != 1 || q.Items[0].Entry.ID != velho {
 		t.Errorf("quarantine: %+v", q)
+	}
+}
+
+// G9: a copy decided again while the check runs, before the record that
+// names it is written (so MarkStale finds nothing to mark), still makes the
+// check stale: the check reads Velho/praia.jpg and finds its twin, then,
+// while it reads Velho/z.txt, the owner discards the twin's folder.
+func TestR4_8ACopyDecidedAgainWhileTheCheckRuns(t *testing.T) {
+	for _, decide := range []bool{false, true} {
+		t.Run(fmt.Sprintf("decide=%v", decide), func(t *testing.T) {
+			w := newWorld(t)
+			w.disk("casa", "/casa", func(root *synthfs.Node) {
+				root.Dir("Fotos").File("praia.jpg", 100, staleAt).Seed(1)
+				v := root.Dir("Velho")
+				v.File("praia.jpg", 100, staleAt).Seed(1)
+				v.File("z.txt", 50, staleAt).Seed(2)
+			})
+			w.decide("casa", "Velho", "discard")
+			velho := staleQuarantineVelho(w)
+			ctx := context.Background()
+			var check int64
+			err := w.r.Write(ctx, func(tx *jobs.Tx) error {
+				if err := tx.SQL().QueryRow(`INSERT INTO purge_checks (source_id, state, created_at)
+					VALUES ('casa', 'running', 0) RETURNING id`).Scan(&check); err != nil {
+					return err
+				}
+				_, err := tx.SQL().Exec(`INSERT INTO purge_check_items (check_id, entry_id, path, readable)
+					VALUES (?, ?, ?, 1)`, check, velho, []byte(".precious-quarantine/1/1/Velho"))
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt := &checkRuntime{onYield: func(n int) {
+				if n == 2 && decide { // the twin is found; z.txt is next
+					w.decide("casa", "Fotos", "discard")
+				}
+			}}
+			payload, _ := json.Marshal(checkPayload{CheckID: strconv.FormatInt(check, 10)})
+			if err := (&checkHandler{s: w.svc}).Run(ctx, jobs.Job{Kind: KindPurgeCheck, PayloadVersion: 1,
+				Payload: payload, SourceID: "casa", Attempt: 1}, rt); err != nil {
+				t.Fatal(err)
+			}
+			id := strconv.FormatInt(check, 10)
+			staleSafeTwin(w, id)
+			if !decide {
+				staleCheckState(w, id, "ready", "", false) // z.txt has no copy
+				return
+			}
+			staleCheckState(w, id, "stale", "index_changed", false)
+			w.refuse(http.StatusConflict, "check_stale", "plan-purge", fmt.Sprintf(`{"check_id":%q}`, id))
+		})
 	}
 }
 
@@ -218,4 +275,91 @@ func TestR4_8AVerifiedCopyChangesBeforeThePurge(t *testing.T) {
 		t.Errorf("quarantine: %+v", q)
 	}
 	w.refuse(http.StatusConflict, "check_stale", "plan-purge", fmt.Sprintf(`{"check_id":%q}`, check))
+}
+
+// G10: once every item of a check was deleted for good, the check keeps
+// its records but is not allowed: plan-purge says the set is gone (409
+// check_stale) rather than offering it again, and check-purge of the check
+// finds nothing left (404 not_found).
+func TestR4_8AFullyPurgedCheckIsNotAllowed(t *testing.T) {
+	w := newWorld(t)
+	w.disk("casa", "/casa", func(root *synthfs.Node) {
+		root.Dir("Fotos").File("praia.jpg", 100, staleAt).Seed(1)
+		root.Dir("Velho").File("praia.jpg", 100, staleAt).Seed(1)
+	})
+	w.decide("casa", "Velho", "discard")
+	velho := staleQuarantineVelho(w)
+	check, c := w.checkPurge(velho)
+	if c.State != "ready" || !c.Allowed || c.Items != 1 {
+		t.Fatalf("check %+v", c)
+	}
+	body := fmt.Sprintf(`{"check_id":%q}`, check)
+	if a := w.run(w.plan("plan-purge", body).Action.ID); a.State != "done" || a.DeletedFiles != 1 {
+		t.Fatalf("purge %+v", a)
+	}
+	if c := staleCheckState(w, check, "ready", "", false); c.Items != 0 {
+		t.Fatalf("check after the purge %+v; want no item", c)
+	}
+	w.refuse(http.StatusConflict, "check_stale", "plan-purge", body)
+	w.refuse(http.StatusNotFound, "not_found", "check-purge", body)
+}
+
+// G11: check-purge {"check_id"} checks again what is left of that check's
+// own set, whichever newer check also holds its items: an item restored
+// since is left out.
+func TestR4_8CheckAgainAnOlderCheck(t *testing.T) {
+	w := newWorld(t)
+	w.disk("casa", "/casa", func(root *synthfs.Node) {
+		root.Dir("Fotos").File("praia.jpg", 100, staleAt).Seed(1)
+		root.Dir("Velho").File("praia.jpg", 100, staleAt).Seed(1)
+		root.File("solto.bin", 300, staleAt).Seed(5)
+		root.File("outro.bin", 200, staleAt).Seed(6)
+	})
+	w.decide("casa", "Velho", "discard")
+	w.decide("casa", "solto.bin", "discard")
+	w.decide("casa", "outro.bin", "discard")
+	velho := staleQuarantineVelho(w)
+	q := w.quarantined("casa")
+	if len(q.Items) != 3 {
+		t.Fatalf("quarantine %+v", q)
+	}
+	var solto, outro string
+	for _, it := range q.Items {
+		switch it.Entry.ID {
+		case w.id("casa", ".precious-quarantine/1/2/outro.bin"):
+			outro = it.Entry.ID
+		case w.id("casa", ".precious-quarantine/1/3/solto.bin"):
+			solto = it.Entry.ID
+		}
+	}
+	if solto == "" || outro == "" {
+		t.Fatalf("quarantine %+v", q)
+	}
+	older, _ := w.checkPurge(velho, solto)
+	newer, _ := w.checkPurge(velho, solto, outro) // now the newest check of every item
+	r := w.plan("plan-restore", `{"entry_ids":`+ids(solto)+`}`)
+	if a := w.run(r.Action.ID); a.State != "done" {
+		t.Fatalf("restore %+v", a)
+	}
+	staleCheckState(w, older, "stale", "index_changed", false)
+
+	var started checkStarted
+	decode(t, w.ok(http.StatusAccepted, "check-purge", fmt.Sprintf(`{"check_id":%q}`, older)), &started)
+	w.idle()
+	if started.CheckID == older || started.CheckID == newer {
+		t.Fatalf("check again started %+v", started)
+	}
+	if c := w.check(started.CheckID); c.State != "ready" || c.Items != 1 {
+		t.Fatalf("check again %+v; want ready with Velho only", c)
+	}
+	var item string
+	w.readTx(func(tx *sql.Tx) error {
+		return tx.QueryRow(`SELECT entry_id FROM purge_check_items WHERE check_id = ?`, started.CheckID).Scan(&item)
+	})
+	if item != velho {
+		t.Fatalf("check again holds entry %s, want Velho (%s)", item, velho)
+	}
+	w.refuse(http.StatusBadRequest, "invalid_request", "check-purge",
+		fmt.Sprintf(`{"check_id":%q,"entry_ids":%s}`, older, ids(velho)))
+	w.refuse(http.StatusNotFound, "not_found", "check-purge", `{"check_id":"99"}`)
 }

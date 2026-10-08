@@ -303,13 +303,15 @@ export function fetchActionItems(
   return apiGet<ItemsPage>(`/api/history/${encodeURIComponent(id)}/items${query === '' ? '' : `?${query}`}`, signal)
 }
 
-// entryOps are the steps that stand for an entry in a cleanup, restore, or
-// purge, one per entry; null for the other kinds, which list every step.
+// entryOps are the steps listed for a cleanup, restore, or purge: one per
+// entry, and for a purge its comparison with the disk first, which says why
+// it stopped when something changed; null for the other kinds, which list
+// every step.
 export function entryOps(kind: ActionKind): readonly ItemOp[] | null {
   if (kind === 'cleanup' || kind === 'restore') {
     return ['rename']
   }
-  return kind === 'purge' ? ['purge'] : null
+  return kind === 'purge' ? ['verify', 'purge'] : null
 }
 
 // exportUrl is the CSV of an action's items (R4 design D16), as an

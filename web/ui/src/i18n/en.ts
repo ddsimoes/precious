@@ -1215,6 +1215,8 @@ export const en = {
       moveOut: 'Move out…',
       moveOutTitle: 'Move “{{name}}” out of quarantine to…',
       restoreItem: 'Restore its item',
+      actionsFor: 'Actions for {{name}}',
+      itemUnreadable: 'Stays in quarantine: its item could not be read, so it is never deleted.',
     },
     purge: {
       title: 'Delete for good',
@@ -1231,6 +1233,7 @@ export const en = {
       deleted: 'Deleted {{files}}, {{bytes}}.',
       freed: 'Space freed: {{bytes}}',
       zfs: 'This source is on ZFS: snapshots taken before the deletion keep the space until they expire.',
+      stoppedAt: 'Why it stopped',
     },
   },
   history: {

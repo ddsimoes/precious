@@ -740,3 +740,57 @@ func TestScenarioRemoveSourceWithAQuarantine(t *testing.T) {
 		t.Errorf("source pen: %d rows after its removal", n)
 	}
 }
+
+// G8: remove-source counts only quarantined top items (S1). A plan folder,
+// or a <seq> folder and its record, that normal runs leave without an item
+// does not hold the source forever.
+func TestScenarioRemoveSourceWithAnItemlessQuarantine(t *testing.T) {
+	t.Run("the only item changed before the run", func(t *testing.T) {
+		w := newWorld(t)
+		var solto *synthfs.Node
+		w.disk("casa", "/casa", func(root *synthfs.Node) {
+			solto = root.File("solto.bin", 500, scenAt).Seed(1)
+		})
+		w.decide("casa", "solto.bin", "discard")
+		p := w.plan("plan-cleanup", `{"source_id":"casa"}`)
+		solto.ModTime(scenAt.Add(time.Hour))
+		a := w.run(p.Action.ID)
+		if a.Entries["changed"] != 1 || a.Entries["done"] != 0 {
+			t.Fatalf("cleanup %+v", a)
+		}
+		if !w.has("casa", ".precious-quarantine/1") || w.has("casa", ".precious-quarantine/1/1") ||
+			!w.has("casa", "solto.bin") {
+			t.Fatal("want an empty plan folder, and solto.bin where it was")
+		}
+		w.ok(http.StatusOK, "remove-source", `{"source_id":"casa"}`)
+		if n := w.count(`SELECT count(*) FROM sources WHERE id = 'casa'`); n != 0 {
+			t.Errorf("source casa: %d rows after its removal", n)
+		}
+	})
+
+	t.Run("the only item moved out", func(t *testing.T) {
+		w := newWorld(t)
+		w.disk("casa", "/casa", func(root *synthfs.Node) {
+			root.Dir("Fotos").File("a.txt", 20, scenAt).Seed(2)
+			root.File("solto.bin", 500, scenAt).Seed(1)
+		})
+		w.decide("casa", "solto.bin", "discard")
+		w.scenCleanup("casa")
+		solto := w.id("casa", ".precious-quarantine/1/1/solto.bin")
+		m := w.plan("plan-move", fmt.Sprintf(`{"entry_id":%q,"destination_id":%q}`, solto, w.id("casa", "Fotos")))
+		if a := w.run(m.Action.ID); a.State != "done" {
+			t.Fatalf("move %+v", a)
+		}
+		if !w.has("casa", "Fotos/solto.bin") {
+			t.Fatal("solto.bin is not in Fotos")
+		}
+		if n := w.count(`SELECT count(*) FROM entries WHERE source_id = 'casa' AND path > ? AND path < ?
+			AND state <> 'missing'`, []byte(".precious-quarantine/1/"), []byte(".precious-quarantine/10")); n == 0 {
+			t.Fatal("want what the item leaves in its plan folder")
+		}
+		w.ok(http.StatusOK, "remove-source", `{"source_id":"casa"}`)
+		if n := w.count(`SELECT count(*) FROM sources WHERE id = 'casa'`); n != 0 {
+			t.Errorf("source casa: %d rows after its removal", n)
+		}
+	})
+}

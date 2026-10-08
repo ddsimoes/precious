@@ -332,6 +332,10 @@ type checkFileJSON struct {
 	Class     *string       `json:"class"`
 	Copy      *copyJSON     `json:"copy"`
 	Confirmed bool          `json:"confirmed"`
+	// ItemReadable is false for a file of an item that holds what the
+	// check could not read: that item is never deleted, so its files need
+	// no confirmation (D11, G15).
+	ItemReadable bool `json:"item_readable"`
 }
 
 // checkFiles lists what a check recorded, in record order, filtered by
@@ -360,9 +364,10 @@ func (s *Service) checkFiles(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		query := `SELECT f.id, f.item_id, f.entry_id, f.member_id, m.path, f.path, f.kind, f.size, f.verdict, f.class,
-				f.copy_source, f.copy_path, f.copy_hard_link, ` + confirmedSQL + `
+				f.copy_source, f.copy_path, f.copy_hard_link, ` + confirmedSQL + `, coalesce(i.readable, 1)
 			FROM purge_check_files f JOIN purge_checks c ON c.id = f.check_id
 			LEFT JOIN archive_members m ON m.id = f.member_id
+			LEFT JOIN purge_check_items i ON i.check_id = f.check_id AND i.entry_id = f.item_id
 			WHERE f.check_id = ?`
 		args := []any{id}
 		if v := qv.Get("verdict"); v != "" {
@@ -418,7 +423,7 @@ func (s *Service) checkFiles(w http.ResponseWriter, r *http.Request) {
 				hardLink, confirmed bool
 			)
 			if err := rows.Scan(&fid, &item, &entry, &member, &memberPath, &path, &f.Kind, &f.Size, &f.Verdict, &class,
-				&copySrc, &copyPath, &hardLink, &confirmed); err != nil {
+				&copySrc, &copyPath, &hardLink, &confirmed, &f.ItemReadable); err != nil {
 				rows.Close()
 				return nil, err
 			}
