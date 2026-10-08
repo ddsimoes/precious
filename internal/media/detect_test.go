@@ -238,6 +238,21 @@ func TestDetectOneEvent(t *testing.T) {
 			t.Errorf("next month: %s is %s", r.Key, r.State)
 		}
 	}
+
+	// A correct camera's photos on both sides of a phone's, more than 6
+	// hours away each (G6): the phone, with GPS, shoots 12:00–12:30; the
+	// camera at 04:00, 04:10, 20:00, 20:10. Its medians are 10 minutes
+	// apart, which is no clock offset: no candidate, no suggestion.
+	noon := time.Date(2012, 5, 5, 12, 0, 0, 0, time.UTC)
+	d = detector{}
+	d.add(1, canon, nil, false, shots(noon, []float64{0, 0.25, 0.5}, 0, 3))
+	d.add(1, sony, nil, false, shots(noon, []float64{-8, -8 + 10.0/60, 8, 8 + 10.0/60}, 0, 0))
+	rs = Detect(d.photos)
+	for _, k := range []string{canon, sony} {
+		if r := result(t, rs, k); r.State != CameraOK || r.ShiftS != nil || len(r.Events) != 0 {
+			t.Errorf("both sides: %s is %s, shift %v, events %+v; want ok with none", k, r.State, r.ShiftS, r.Events)
+		}
+	}
 }
 
 func TestDetectTwoEvents(t *testing.T) {
