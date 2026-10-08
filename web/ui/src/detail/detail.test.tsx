@@ -112,6 +112,42 @@ describe('Detail panel', () => {
     expect(panel.getByText('73 65 74 75 70 2e 65 78 65')).toBeVisible()
   })
 
+  it('says an entry is in quarantine, links to Cleanup, and offers no control that changes it', async () => {
+    stubApi(
+      baseRoutes(() =>
+        setupExe({
+          in_quarantine: {
+            plan_id: '50',
+            quarantined_at: '2026-10-08T09:00:00Z',
+            original: { path: 'Downloads/setup.exe', path_b64: btoa('Downloads/setup.exe') },
+          },
+        }),
+      ),
+    )
+    renderApp('/search?entry=12')
+
+    const panel = within(await screen.findByRole('complementary', { name: 'setup.exe' }))
+    expect(
+      await panel.findByText('In quarantine since Oct 8, 2026, 9:00 AM, from Downloads/setup.exe.'),
+    ).toBeInTheDocument()
+    expect(panel.getByRole('link', { name: 'Cleanup' })).toHaveAttribute('href', '/cleanup?source=fotos')
+    expect(panel.getByRole('button', { name: 'Open' })).toBeInTheDocument()
+    expect(panel.getByRole('region', { name: 'Classification' })).toBeInTheDocument()
+    expect(panel.queryByRole('region', { name: 'Decision' })).not.toBeInTheDocument()
+    expect(panel.queryByRole('region', { name: 'Tags' })).not.toBeInTheDocument()
+    expect(panel.queryByRole('region', { name: 'Organize' })).not.toBeInTheDocument()
+    expect(panel.queryByRole('button', { name: 'Change category' })).not.toBeInTheDocument()
+  })
+
+  it('says where a quarantined entry came from is unknown', async () => {
+    stubApi(
+      baseRoutes(() => setupExe({ in_quarantine: { plan_id: null, quarantined_at: null, original: null } })),
+    )
+    renderApp('/search?entry=12')
+    const panel = within(await screen.findByRole('complementary', { name: 'setup.exe' }))
+    expect(await panel.findByText('In quarantine, from an unknown place.')).toBeInTheDocument()
+  })
+
   it('shows a folder’s breakdowns, its veto, and its indicators', async () => {
     const office = folderRow('20', 'Microsoft Office', {
       category: 'application_installation',

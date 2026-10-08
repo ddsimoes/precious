@@ -227,6 +227,78 @@ describe('History', () => {
     expect(await bodies(requests, 'resolve-recovery')).toEqual([{ item_id: '301' }])
   })
 
+  it('offers no Undo for a cleanup or a purge, names them, and exports every action as CSV', async () => {
+    const cleanup = action(
+      {
+        id: '30',
+        kind: 'cleanup',
+        state: 'done',
+        list: 'system_junk',
+        finished_at: '2026-10-08T10:00:00Z',
+        entries: { ...moved.counts, done: 2, blocked: 1, conflict: 0 },
+        // Even an answer that says otherwise offers no Undo for these kinds.
+        undo: { possible: true, reason: null },
+      },
+      { done: 6, blocked: 1 },
+    )
+    const purge = action({
+      id: '31',
+      kind: 'purge',
+      state: 'done',
+      finished_at: '2026-10-08T11:00:00Z',
+      entries: { ...moved.counts, done: 2, conflict: 0 },
+      undo: { possible: false, reason: 'not_undoable_kind' },
+      deleted_files: 3,
+      deleted_bytes: 3 * 1024 ** 2,
+      freed_bytes: 2 * 1024 ** 2,
+    })
+    const requests = stubApi(
+      routes(() => [purge, cleanup, moved], {
+        'GET /api/history/30/items': (request) =>
+          jsonResponse(200, {
+            items:
+              new URL(request.url).searchParams.getAll('op').join() === 'rename'
+                ? [
+                    actionItem('1', 'Thumbs.db', '.precious-quarantine/30/1/Thumbs.db', { state: 'done' }),
+                    actionItem('2', 'Fotos', '.precious-quarantine/30/2/Fotos', {
+                      state: 'blocked',
+                      reason: 'holds_kept',
+                    }),
+                  ]
+                : [],
+            next_cursor: null,
+          }),
+      }),
+    )
+    renderApp('/history')
+
+    await screen.findByRole('article', { name: 'Move the discarded items of “System junk” to quarantine' })
+    const quarantine = card('Move the discarded items of “System junk” to quarantine')
+    expect(quarantine.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    expect(
+      within(quarantine.getByRole('list', { name: 'Items' }))
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual(['Done: 2', 'Blocked: 1'])
+    expect(quarantine.getByRole('link', { name: 'Export CSV' })).toHaveAttribute('href', '/api/history/30/export.csv')
+    await userEvent.click(quarantine.getByRole('button', { name: 'Show items' }))
+    expect(
+      await quarantine.findByText('Fotos → .precious-quarantine/30/2/Fotos'),
+    ).toBeInTheDocument()
+    expect(quarantine.getByText('Blocked by kept items · Holds kept items')).toBeInTheDocument()
+
+    const deleted = card('Delete for good')
+    expect(deleted.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    expect(deleted.getByText(/^Deleted 3 files, 3\sMiB\. Space freed: 2\sMiB\.$/)).toBeInTheDocument()
+    expect(deleted.getByRole('link', { name: 'Export CSV' })).toHaveAttribute('href', '/api/history/31/export.csv')
+    expect(card('Move into “Documentos”').getByRole('link', { name: 'Export CSV' })).toHaveAttribute(
+      'href',
+      '/api/history/12/export.csv',
+    )
+    const listing = requests.find((r) => new URL(r.url).pathname === '/api/history/30/items')
+    expect(new URL(listing?.url ?? '').searchParams.getAll('op')).toEqual(['rename'])
+  })
+
   it('follows organize job events', async () => {
     let history = [waiting]
     const requests = stubApi(routes(() => history))

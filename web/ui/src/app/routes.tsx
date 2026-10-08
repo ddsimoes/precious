@@ -3,6 +3,8 @@ import type { RouteObject } from 'react-router'
 import { AppLayout } from '@/app/AppLayout'
 import { LoginPage } from '@/app/LoginPage'
 import { NotFoundPage } from '@/app/NotFoundPage'
+import { CheckReportPage } from '@/cleanup/CheckReport'
+import { CleanupPage } from '@/cleanup/CleanupPage'
 import { ComparePage } from '@/compare/ComparePage'
 import { HistoryPage } from '@/history/HistoryPage'
 import { HomePage } from '@/home/HomePage'
@@ -29,6 +31,10 @@ export const routes: RouteObject[] = [
       { path: 'opportunities/:list', element: <ReviewListPage /> },
       // Compare names its two sides in the address: ?left=&right=&bucket=.
       { path: 'compare', element: <ComparePage /> },
+      // Cleanup: plans and the quarantine, ?source= limiting them to one
+      // source, and the report of each check before deleting for good.
+      { path: 'cleanup', element: <CleanupPage /> },
+      { path: 'cleanup/checks/:checkId', element: <CheckReportPage /> },
       { path: 'history', element: <HistoryPage /> },
       { path: 'sources', element: <SourcesPage /> },
       { path: '*', element: <NotFoundPage /> },

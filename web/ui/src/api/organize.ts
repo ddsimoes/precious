@@ -4,25 +4,42 @@ import { compareQueryRoot, opportunitiesQueryRoot } from '@/api/content'
 import { entriesQueryRoot, type EntryRow } from '@/api/entries'
 import { homeQueryRoot } from '@/api/home'
 import { isTerminal, organizeKind, type JobEvent, type JobState } from '@/api/jobs'
+import type { ReviewListName } from '@/api/opportunities'
 import { searchQueryRoot } from '@/api/search'
 import { sourcesQueryKey } from '@/api/sources'
 import { apiGet, postCommand } from '@/app/api'
 
 // Organizing (R3 design Interfaces): every change to a source is an action
 // that a plan-* command plans and run-action runs in an organize job. The
-// history lists the actions that were run, with their items.
+// history lists the actions that were run, with their items. R4 adds the
+// cleanup kinds: a cleanup plan moves discarded items to quarantine, a
+// restore brings them back, and a purge deletes a checked set for good.
 
-export type ActionKind = 'move' | 'rename' | 'create_folder' | 'rescue' | 'merge' | 'undo'
+export type ActionKind =
+  | 'move'
+  | 'rename'
+  | 'create_folder'
+  | 'rescue'
+  | 'merge'
+  | 'undo'
+  | 'cleanup'
+  | 'restore'
+  | 'purge'
+
+// cleanupKinds are the kinds History offers no Undo for: a cleanup is
+// reversed by restoring its items, and a purge cannot be reversed.
+export const cleanupKinds: readonly ActionKind[] = ['cleanup', 'restore', 'purge']
 
 export type ActionState = 'planned' | 'queued' | 'running' | 'done' | 'stopped' | 'expired'
 
 // ItemState is where one step of an action stands: planned, refused or in
-// conflict when planned, its intent recorded while it runs, then how it
-// ended.
+// conflict when planned, blocked by a kept entry inside a cleanup item, its
+// intent recorded while it runs, then how it ended.
 export type ItemState =
   | 'planned'
   | 'refused'
   | 'conflict'
+  | 'blocked'
   | 'intent'
   | 'done'
   | 'not_permitted'
@@ -35,7 +52,8 @@ export type ItemState =
   | 'not_attempted'
   | 'resolved'
 
-// ItemReason says why an item was refused, is a conflict, or changed.
+// ItemReason says why an item was refused, is a conflict, is blocked, or
+// changed.
 export type ItemReason =
   | 'other_source'
   | 'inside_archive'
@@ -51,6 +69,18 @@ export type ItemReason =
   | 'previous_folder_gone'
   | 'would_lose_keep'
   | 'already_undone'
+  | 'holds_kept'
+  | 'last_copy'
+  | 'both_sides'
+  | 'no_verified_copy'
+  | 'identity_changed'
+  | 'decision_changed'
+  | 'in_quarantine'
+  | 'unreadable'
+  | 'writes_off'
+  | 'check_stale'
+  | 'file_changed'
+  | 'copy_changed'
 
 // Found is what was at one name when a step could not be confirmed: nothing,
 // the entry expected, or something else.
@@ -75,19 +105,39 @@ export interface Action {
   undo_of: string | null
   bulk: boolean
   counts: Record<ItemState, number>
+  // entries counts, for a cleanup, restore, or purge, only the steps that
+  // stand for an entry (its rename, or its purge), by state.
+  entries?: Record<ItemState, number>
   bytes: number
   files: number
   // kept_lost counts the items whose effective decision goes from keep to
   // another value (R3 design D14).
   kept_lost: number
   reversed: number
-  undo: { possible: boolean; reason: 'not_done' | 'already_undone' | 'nothing_done' | null }
+  undo: {
+    possible: boolean
+    reason: 'not_done' | 'already_undone' | 'nothing_done' | 'not_undoable_kind' | null
+  }
+  // The R4 fields: what a cleanup plan was drafted from (the discards, or
+  // the duplicates list's rules, and the review list), the check a purge
+  // deletes, and what a purge deleted and freed.
+  ground: 'discard' | 'duplicate' | null
+  list: ReviewListName | null
+  check_id: string | null
+  deleted_files: number
+  deleted_bytes: number
+  freed_bytes: number
 }
+
+// ItemOp is what one step does. R4 adds writing an origin record, removing
+// one, deleting a checked item for good, and comparing a checked set with
+// the disk before a purge.
+export type ItemOp = 'rename' | 'mkdir' | 'rmdir' | 'record' | 'unlink' | 'purge' | 'verify'
 
 export interface Item {
   id: string
   seq: number
-  op: 'rename' | 'mkdir' | 'rmdir'
+  op: ItemOp
   entry: EntryRow | null
   from: ItemPath | null
   to: ItemPath | null
@@ -101,6 +151,8 @@ export interface Item {
   reversed: boolean
   bytes: number
   files: number
+  // kept_count is how many kept entries block a blocked cleanup item.
+  kept_count?: number
 }
 
 // PlanResult is the 201 answer of every plan-* command: the planned action
@@ -200,8 +252,15 @@ export function actionQueryKey(id: string) {
   return [...historyQueryRoot, id] as const
 }
 
-export function actionItemsQueryKey(id: string, states: readonly ItemState[] = []) {
-  return [...historyQueryRoot, id, 'items', ...states] as const
+// ItemsFilter limits an action's items to some states and some ops; empty
+// lists every one.
+export interface ItemsFilter {
+  states?: readonly ItemState[]
+  ops?: readonly ItemOp[]
+}
+
+export function actionItemsQueryKey(id: string, { states = [], ops = [] }: ItemsFilter = {}) {
+  return [...historyQueryRoot, id, 'items', ...states, ...ops] as const
 }
 
 // foldersQueryKey is under the entries root, so a move or a new folder
@@ -225,7 +284,7 @@ export function fetchAction(id: string, signal?: AbortSignal): Promise<Action> {
 
 export function fetchActionItems(
   id: string,
-  states: readonly ItemState[],
+  { states = [], ops = [] }: ItemsFilter,
   cursor: string | null,
   signal?: AbortSignal,
 ): Promise<ItemsPage> {
@@ -233,11 +292,29 @@ export function fetchActionItems(
   for (const state of states) {
     params.append('state', state)
   }
+  for (const op of ops) {
+    params.append('op', op)
+  }
   if (cursor !== null) {
     params.set('cursor', cursor)
   }
   const query = params.toString()
   return apiGet<ItemsPage>(`/api/history/${encodeURIComponent(id)}/items${query === '' ? '' : `?${query}`}`, signal)
+}
+
+// entryOps are the steps that stand for an entry in a cleanup, restore, or
+// purge, one per entry; null for the other kinds, which list every step.
+export function entryOps(kind: ActionKind): readonly ItemOp[] | null {
+  if (kind === 'cleanup' || kind === 'restore') {
+    return ['rename']
+  }
+  return kind === 'purge' ? ['purge'] : null
+}
+
+// exportUrl is the CSV of an action's items (R4 design D16), as an
+// attachment.
+export function exportUrl(id: string): string {
+  return `/api/history/${encodeURIComponent(id)}/export.csv`
 }
 
 // fetchFolders lists the folders inside a folder by name, for the

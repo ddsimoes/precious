@@ -99,13 +99,18 @@ export function useOrganize({ onRan, onError }: { onRan?: () => void; onError?: 
 }
 
 // useActionTitle names an action by its kind and destination, the
-// destination's path or, for a source's top folder, the source's name.
+// destination's path or, for a source's top folder, the source's name. A
+// cleanup plan is named by the review list it was drafted from, if any; a
+// cleanup and a purge have no destination of their own.
 export function useActionTitle(): (action: Action) => string {
   const { t } = useTranslation()
   const sourceLabel = useSourceLabel()
   return (action) => {
     const destination = action.destination
-    if (destination === null) {
+    if (action.kind === 'cleanup' && action.list !== null) {
+      return t('organize.titleFromList', { list: t(`opportunities.list.${action.list}`) })
+    }
+    if (destination === null || action.kind === 'cleanup' || action.kind === 'purge') {
       return t(`organize.titleNoDestination.${action.kind}`)
     }
     return t(`organize.title.${action.kind}`, {

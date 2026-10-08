@@ -1,3 +1,4 @@
+import type { Check, CheckFile, Quarantined } from '@/api/cleanup'
 import type { Copy, Coverage, Relation } from '@/api/content'
 import type { EntryDetail, EntryRow } from '@/api/entries'
 import type { Home } from '@/api/home'
@@ -53,6 +54,7 @@ export function fotosSource(overrides: Partial<Source> = {}): Source {
     next_scan_at: null,
     schedule_skipped: null,
     writes: { enabled: false, unavailable: null },
+    quarantine: { files: 0, bytes: 0, name_taken: false },
     ...overrides,
   }
 }
@@ -76,6 +78,7 @@ export function usbSource(overrides: Partial<Source> = {}): Source {
     next_scan_at: null,
     schedule_skipped: null,
     writes: { enabled: false, unavailable: 'no_replace_rename' },
+    quarantine: { files: 0, bytes: 0, name_taken: false },
     ...overrides,
   }
 }
@@ -116,6 +119,7 @@ export function homeResponse(overrides: Partial<Home> = {}): Home {
       keep: { bytes: 25 * GiB, files: 60_000 },
       discard: { bytes: 40 * GiB, files: 45_000 },
       later: { bytes: 5 * GiB, files: 5_000 },
+      quarantine: { bytes: 0, files: 0 },
     },
     partial: false,
     scans: [],
@@ -305,6 +309,7 @@ export function entryDetail(row: EntryRow, overrides: Partial<EntryDetail> = {})
     coverage: coverage(),
     only_folder: null,
     archive_note: null,
+    in_quarantine: null,
     ...overrides,
   }
 }
@@ -329,6 +334,7 @@ export function action(overrides: Partial<Action> = {}, counts: Partial<Action['
       planned: 0,
       refused: 0,
       conflict: 0,
+      blocked: 0,
       intent: 0,
       done: 0,
       not_permitted: 0,
@@ -347,6 +353,12 @@ export function action(overrides: Partial<Action> = {}, counts: Partial<Action['
     kept_lost: 0,
     reversed: 0,
     undo: { possible: false, reason: 'not_done' },
+    ground: null,
+    list: null,
+    check_id: null,
+    deleted_files: 0,
+    deleted_bytes: 0,
+    freed_bytes: 0,
     ...overrides,
   }
 }
@@ -368,6 +380,85 @@ export function actionItem(id: string, from: string, to: string, overrides: Part
     reversed: false,
     bytes: 1024,
     files: 1,
+    ...overrides,
+  }
+}
+
+// entryCounts is an Action's entries: every state at 0 but those given.
+export function entryCounts(counts: Partial<Action['counts']> = {}): Action['counts'] {
+  return action({}, counts).counts
+}
+
+// quarantined is a Quarantined item of fotos: by default the file
+// Downloads/setup.exe, moved to quarantine by plan 50, never checked.
+export function quarantined(id: string, original: string | null, overrides: Partial<Quarantined> = {}): Quarantined {
+  const name = (original ?? `found-${id}`).split('/').at(-1) ?? id
+  const path = `.precious-quarantine/50/${id}/${name}`
+  return {
+    entry: entryRow({ id, name, name_b64: btoa(name), path, path_b64: btoa(path) }),
+    original: original === null ? null : { path: original, path_b64: btoa(original) },
+    plan_id: original === null ? null : '50',
+    quarantined_at: original === null ? null : '2026-10-08T09:00:00Z',
+    bytes: 3 * 1024 ** 2,
+    files: 1,
+    check: null,
+    ...overrides,
+  }
+}
+
+const noAmount = { files: 0, bytes: 0 }
+
+// check is a Check of fotos: by default a ready check of two items, with
+// one unique photo, one unique junk file, and one file with a copy, of
+// which the photo and the junk still need their confirmations.
+export function check(overrides: Partial<Check> = {}): Check {
+  return {
+    id: '9',
+    source_id: 'fotos',
+    state: 'ready',
+    job_id: '31',
+    created_at: '2026-10-08T10:00:00Z',
+    finished_at: '2026-10-08T10:05:00Z',
+    stale_reason: null,
+    items: 2,
+    counts: {
+      verdict: {
+        safe: { files: 1, bytes: 1024 },
+        copy_offline: noAmount,
+        unique: { files: 2, bytes: 3 * 1024 ** 2 },
+        unreadable: noAmount,
+        opaque_archive: noAmount,
+        no_content: { files: 1, bytes: 0 },
+      },
+      class: {
+        possibly_valuable: { files: 1, bytes: 2 * 1024 ** 2 },
+        likely_junk: { files: 1, bytes: 1024 ** 2 },
+        uncertain: noAmount,
+      },
+    },
+    confirmed: noAmount,
+    unconfirmed: { files: 2, bytes: 3 * 1024 ** 2 },
+    junk_confirmed: false,
+    allowed: false,
+    ...overrides,
+  }
+}
+
+// checkFile is a CheckFile of item 61 of check 9; by default a unique file.
+export function checkFile(id: string, path: string, overrides: Partial<CheckFile> = {}): CheckFile {
+  return {
+    id,
+    item: quarantined('61', 'Fotos/2004').entry,
+    entry_id: `e${id}`,
+    path,
+    path_b64: btoa(path),
+    member: null,
+    kind: 'file',
+    size: 1024 ** 2,
+    verdict: 'unique',
+    class: 'uncertain',
+    copy: null,
+    confirmed: false,
     ...overrides,
   }
 }

@@ -264,6 +264,16 @@ export interface EntryDetail {
   // archive (D10).
   only_folder: string | null
   archive_note: ArchiveNote | null
+  // in_quarantine is set for an entry in its source's quarantine (R4
+  // design D13): the plan that put it there, when, and where it came from
+  // (null when unknown).
+  in_quarantine: InQuarantine | null
+}
+
+export interface InQuarantine {
+  plan_id: string | null
+  quarantined_at: string | null
+  original: { path: string; path_b64: string } | null
 }
 
 export type ChildSort = 'bytes' | 'files' | 'newest' | 'name'

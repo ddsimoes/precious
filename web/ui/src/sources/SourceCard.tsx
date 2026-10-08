@@ -116,6 +116,11 @@ export function SourceCard({ source }: { source: Source }) {
         <CapabilityList capabilities={source.capabilities} />
 
         <WritesRow source={source} />
+        {source.quarantine.name_taken && (
+          <p role="note" className="rounded-md border border-amber-300 bg-amber-50 p-3">
+            {t('cleanup.nameTaken')}
+          </p>
+        )}
 
         {source.active_job !== null && (
           <section className="grid gap-1 rounded-md border p-3">
