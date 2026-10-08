@@ -18,12 +18,16 @@ type done struct {
 	fromParent int64
 	fromName   []byte
 	fromPath   []byte
+	// A set_mtime's written time, and the time its step found before
+	// (r5 D13).
+	newMtime, prevMtime int64
 }
 
 // planUndo plans plan-undo (r3 design D11): the reverse of the action's done
 // items that no undo has reversed yet, in reverse seq order. A rename goes
 // back from wherever its entry is now to its previous folder and name; a
-// folder the action created is removed. Either is refused in_quarantine
+// folder the action created is removed; a written modification time goes
+// back to the one its step found (r5 D14). Each is refused in_quarantine
 // while its entry is in the quarantine (r4 D13). An item whose previous name is
 // taken, or whose previous folder is gone, is a conflict, unless
 // destination_id names a folder for those items, which then go there under
@@ -104,6 +108,12 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 			}
 			continue
 		}
+		if it.op == opSetMtime {
+			if err := p.reverseMtime(n, it); err != nil {
+				return 0, nil, err
+			}
+			continue
+		}
 		if err := p.reverse(n, it, alt); err != nil {
 			return 0, nil, err
 		}
@@ -159,14 +169,46 @@ func (p *plan) reverse(n *node, it done, alt *dest) error {
 	return err
 }
 
+// reverseMtime plans the set_mtime of n back to the time the step of done
+// item it found (r5 D14): refused missing when n is no longer a present file
+// of the source, in_quarantine, hard_link, or identity_changed when the
+// index's time is no longer the one written, within the source's
+// resolution, as the executor's intent checks again (D13).
+func (p *plan) reverseMtime(n *node, it done) error {
+	prev := it.prevMtime
+	rm := &item{op: opSetMtime, entry: n.id, fromParent: n.parent, fromName: n.name, fromPath: n.path,
+		bytes: n.bytes, files: n.files, state: statePlanned, reverses: it.id, newMtime: &prev}
+	var mtime, nlink sql.NullInt64
+	if err := p.tx.QueryRowContext(p.ctx, `SELECT mtime_ns, nlink FROM entries WHERE id = ?`, n.id).
+		Scan(&mtime, &nlink); err != nil {
+		return fmt.Errorf("organize: read entry %d: %w", n.id, err)
+	}
+	switch {
+	case n.source != p.src || n.state != "present" || n.kind != string(domain.EntryFile):
+		return p.refused(rm, reasonMissing)
+	case index.IsQuarantinePath(n.path):
+		return p.refused(rm, reasonInQuarantine)
+	case nlink.Int64 > 1:
+		return p.refused(rm, reasonHardLink)
+	case !mtime.Valid || abs(mtime.Int64-it.newMtime) > int64(p.caps.TimeResolution):
+		return p.refused(rm, reasonIdentityChanged)
+	}
+	return p.push(rm)
+}
+
+// reversibleCond selects the items i of an action that an undo can reverse
+// once done: renames, the folders the action created, and written
+// modification times whose previous time was journaled (r5 D14).
+const reversibleCond = `i.entry_id IS NOT NULL AND (i.op = 'rename' OR i.op = 'mkdir' AND i.created = 1
+	OR i.op = 'set_mtime' AND i.prev_mtime_ns IS NOT NULL)`
+
 // reversible returns the done items of action that no undo reversed yet
-// and that an undo can reverse, in reverse seq order: renames, and the
-// folders the action created.
+// and that an undo can reverse, in reverse seq order.
 func reversible(ctx context.Context, tx *sql.Tx, action int64) ([]done, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, op, entry_id, from_parent, from_name, from_path FROM action_items
-		WHERE action_id = ? AND state = 'done' AND reversed_by IS NULL AND entry_id IS NOT NULL
-			AND (op = 'rename' OR op = 'mkdir' AND created = 1)
-		ORDER BY seq DESC`, action)
+	rows, err := tx.QueryContext(ctx, `SELECT i.id, i.op, i.entry_id, i.from_parent, i.from_name, i.from_path,
+			i.new_mtime_ns, i.prev_mtime_ns
+		FROM action_items i WHERE i.action_id = ? AND i.state = 'done' AND i.reversed_by IS NULL AND `+reversibleCond+`
+		ORDER BY i.seq DESC`, action)
 	if err != nil {
 		return nil, fmt.Errorf("organize: read done items: %w", err)
 	}
@@ -174,13 +216,13 @@ func reversible(ctx context.Context, tx *sql.Tx, action int64) ([]done, error) {
 	var out []done
 	for rows.Next() {
 		var (
-			d          done
-			fromParent sql.NullInt64
+			d                    done
+			fromParent, nmt, pmt sql.NullInt64
 		)
-		if err := rows.Scan(&d.id, &d.op, &d.entry, &fromParent, &d.fromName, &d.fromPath); err != nil {
+		if err := rows.Scan(&d.id, &d.op, &d.entry, &fromParent, &d.fromName, &d.fromPath, &nmt, &pmt); err != nil {
 			return nil, err
 		}
-		d.fromParent = fromParent.Int64
+		d.fromParent, d.newMtime, d.prevMtime = fromParent.Int64, nmt.Int64, pmt.Int64
 		out = append(out, d)
 	}
 	return out, rows.Err()

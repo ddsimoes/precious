@@ -80,7 +80,13 @@ func newEnv(t *testing.T) *env {
 // newEnvOn is an env over fs, with root as the allowed root.
 func newEnvOn(t *testing.T, fs fsaccess.FS, root string) *env {
 	t.Helper()
-	e := &env{t: t, st: storetest.Open(t), allowWrites: true}
+	return newEnvWith(t, storetest.Open(t), fs, root)
+}
+
+// newEnvWith is newEnvOn over the store st.
+func newEnvWith(t *testing.T, st *store.Store, fs fsaccess.FS, root string) *env {
+	t.Helper()
+	e := &env{t: t, st: st, allowWrites: true}
 	e.rec = instrument.Wrap(fs)
 	svc, err := sources.New(e.st, e.rec, config.Sources{AllowedRoots: []string{root}}, fixedClock{testNow})
 	if err != nil {
@@ -116,14 +122,14 @@ func (e *env) disk(path string, caps fsaccess.Capabilities, build func(root *syn
 	if build != nil {
 		build(root)
 	}
-	dev := root.Info().Dev
-	fsType := e.fsType
-	if fsType == "" {
-		fsType = "ext4"
-	}
-	vol := fsaccess.Volume{Kind: fsaccess.VolumeUUID, ID: "uuid-disk", FSType: fsType, DeviceKey: "dev:disk", Strong: true}
-	e.sfs.SetVolume(dev, vol)
-	e.sfs.SetCapabilities(dev, caps)
+	e.addDisk(path, root, caps)
+	return root
+}
+
+// addDisk adds the synthfs root built at path as srcID, as disk does.
+func (e *env) addDisk(path string, root *synthfs.Node, caps fsaccess.Capabilities) {
+	e.t.Helper()
+	vol, fsType := e.mount(root, caps)
 	capsJSON, err := json.Marshal(caps)
 	if err != nil {
 		e.t.Fatal(err)
@@ -134,7 +140,20 @@ func (e *env) disk(path string, caps fsaccess.Capabilities, build func(root *syn
 	e.exec(`INSERT INTO entries (source_id, parent_id, name, path, kind, state, first_seen, last_seen, scan_gen)
 		VALUES (?, NULL, X'', X'', 'directory', 'present', 0, 0, 0)`, string(srcID))
 	e.scan()
-	return root
+}
+
+// mount gives root's synthfs device the volume (filesystem type e.fsType)
+// and capabilities addDisk records for srcID.
+func (e *env) mount(root *synthfs.Node, caps fsaccess.Capabilities) (fsaccess.Volume, string) {
+	dev := root.Info().Dev
+	fsType := e.fsType
+	if fsType == "" {
+		fsType = "ext4"
+	}
+	vol := fsaccess.Volume{Kind: fsaccess.VolumeUUID, ID: "uuid-disk", FSType: fsType, DeviceKey: "dev:disk", Strong: true}
+	e.sfs.SetVolume(dev, vol)
+	e.sfs.SetCapabilities(dev, caps)
+	return vol, fsType
 }
 
 func (e *env) exec(query string, args ...any) {
@@ -429,6 +448,7 @@ type fakeIndex struct {
 	rmdirs     []domain.EntryID
 	purges     []domain.EntryID // whole, or 0 for a partial purge
 	unlinks    [][]byte
+	modTimes   []index.ModTime
 	actionDone int
 	// fail makes every Apply* fail.
 	fail error
@@ -571,6 +591,19 @@ func (f *fakeIndex) ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.Sour
 	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE source_id = ? AND path = ?`, string(src), path)
 	return err
+}
+
+// ApplyModTime is organize's adapter: index.ApplyModTime, which writes the
+// entry's new facts, carries its content rows, and carries the time up its
+// folders' figures.
+func (f *fakeIndex) ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTime) error {
+	f.mu.Lock()
+	f.modTimes = append(f.modTimes, m)
+	f.mu.Unlock()
+	if err := f.begin(); err != nil {
+		return err
+	}
+	return index.ApplyModTime(ctx, tx, m)
 }
 
 func (f *fakeIndex) counts() (renames, mkdirs, rmdirs, done int) {

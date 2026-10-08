@@ -14,6 +14,7 @@ import { ErrorBanner } from '@/app/ErrorBanner'
 import { useCsrfToken } from '@/app/session'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
+import { DatePlanNotices } from '@/dates/DatePlanNotices'
 import { useFormat } from '@/lib/format'
 import { FolderChooser } from '@/organize/FolderChooser'
 import { ItemLine } from '@/organize/ItemLine'
@@ -25,9 +26,9 @@ const groups = ['planned', 'conflict', 'refused'] as const
 // PreviewDialog shows a planned action before it runs (R3 design D9, R3.4):
 // its counts, every item paged from the history with its path before and
 // after, the items left as they are and those not included with their
-// reasons, and the kept items that would no longer be kept. Confirm runs
-// it; Cancel leaves it to expire. An undo with conflicts can be planned
-// again into a chosen folder.
+// reasons, and the kept items that would no longer be kept. A date plan
+// adds what its summary says (R5). Confirm runs it; Cancel leaves it to
+// expire. An undo with conflicts can be planned again into a chosen folder.
 export function PreviewDialog({
   plan,
   onRan,
@@ -94,6 +95,7 @@ export function PreviewDialog({
             {t('organize.preview.keptLost', { count: action.kept_lost, formatted: fmt.count(action.kept_lost) })}
           </p>
         )}
+        <DatePlanNotices plan={current} />
         {action.kind === 'undo' && counts.conflict > 0 && action.undo_of !== null && (
           <div className="grid justify-items-start gap-2 text-sm">
             <p>{t('organize.preview.undoConflicts')}</p>

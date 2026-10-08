@@ -21,6 +21,7 @@ import (
 	commandapi "precious/internal/commands"
 	"precious/internal/config"
 	"precious/internal/content"
+	"precious/internal/dates"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/executor"
@@ -88,6 +89,9 @@ func runServe(ctx context.Context, e env, args []string) int {
 // serve runs the web server, the job runner, the source refresh loop, and the
 // rescan schedule loop until ctx is cancelled.
 func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps) error {
+	if cfg.Dates.TimeZone == "" {
+		log.Warn(unsetZoneWarning, "zone", describeZone(time.Local, d.Clock.Now()))
+	}
 	origin, err := middleware.ParseOrigin(cfg.Server.ExternalOrigin)
 	if err != nil {
 		return err
@@ -123,21 +127,35 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		return review.Refresh(ctx, st, gen)
 	})
 	relate.Register(runner)
+	// Media dates (r5 design D2–D11): derived in the zone [dates] time_zone
+	// resolves to; organize's date plans re-derive their targets with it.
+	// The media job waits while its source is being organized, as a scan
+	// does (D4).
+	zone, err := cfg.Dates.Location()
+	if err != nil {
+		return err
+	}
+	mediaDates := dates.New(dates.Options{Store: st, Runner: runner, Sources: srcs, Zone: zone, Clock: d.Clock,
+		Logger: log})
+	mediaDates.DeferWhile(executor.OrganizeActive)
+	mediaDates.Register(runner)
 	// After each scan: hashing for every online source (sizes are shared
-	// across sources), and a relate pass, because classification feeds the
-	// review lists even when no content changed (design D5).
+	// across sources), a relate pass, because classification feeds the
+	// review lists even when no content changed (design D5), and the
+	// source's media job.
 	scanner.OnScanDone(func(ctx context.Context, src domain.SourceID) {
 		hashing.AfterScan(ctx, src)
 		if err := runner.Write(ctx, relations.RequestRefresh); err != nil && ctx.Err() == nil {
 			log.Error("relate refresh after a scan", "source", src, "err", err)
 		}
+		mediaDates.AfterScan(ctx, src)
 	})
 	// Organizing (r3 design D3–D14): the executor follows each done step in
 	// the index through organize's adapter, and a scan waits while a change
 	// of its source is queued, running, or has a step recorded as started
 	// (D10).
 	org := organize.New(organize.Options{Store: st, Policy: pol, AllowWrites: cfg.Sources.AllowWrites,
-		Clock: d.Clock, Logger: log})
+		Clock: d.Clock, Logger: log, Dates: mediaDates})
 	exec := executor.New(executor.Options{Store: st, Sources: srcs, Index: org.Index(),
 		AllowWrites: cfg.Sources.AllowWrites, Clock: d.Clock, Logger: log, Content: hashing})
 	exec.Register(runner)
@@ -167,6 +185,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		hashing:   hashing,
 		organize:  org,
 		cleanup:   clean,
+		dates:     mediaDates,
 		spa:       shell,
 	})
 
@@ -201,6 +220,9 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 	}
 	if err := exec.Startup(ctx, runner); err != nil {
 		log.Error("check interrupted changes at start", "err", err)
+	}
+	if err := mediaDates.Startup(ctx); err != nil {
+		log.Error("request the media jobs at start", "err", err)
 	}
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	defer stopRefresh()
@@ -274,6 +296,7 @@ type handlerDeps struct {
 	hashing   *content.Service
 	organize  *organize.Service
 	cleanup   *cleanup.Service
+	dates     *dates.Service
 	spa       http.Handler
 }
 
@@ -299,6 +322,7 @@ func newHandler(d handlerDeps) http.Handler {
 	review.RegisterCommands(cmds, d.decisions)
 	d.organize.RegisterCommands(cmds)
 	d.cleanup.RegisterCommands(cmds)
+	d.dates.RegisterCommands(cmds)
 	mux.Handle("POST /api/commands/{name}", cmds)
 	mux.Handle("GET /api/jobs/{id}", jobs.NewStatusHandler(d.runner))
 	mux.Handle("GET /api/events", jobs.NewEventsHandler(d.runner))
@@ -306,6 +330,7 @@ func newHandler(d handlerDeps) http.Handler {
 	api.Register(mux, d.store, d.policy, d.log)
 	d.organize.Routes(mux)
 	d.cleanup.Routes(mux)
+	d.dates.Routes(mux)
 	viewer.Register(mux, d.store, d.sources, d.hashing, d.log)
 	mux.HandleFunc("/api", apiNotFound)
 	mux.HandleFunc("/api/", apiNotFound)

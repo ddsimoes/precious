@@ -28,6 +28,7 @@ func Validate(c *Config) error {
 	validateHashing(&c.Hashing, &p)
 	validateArchives(&c.Archives, &p)
 	validateDuplicates(&c.Duplicates, &p)
+	validateDates(&c.Dates, &p)
 	return p.Err()
 }
 
@@ -113,6 +114,13 @@ func validateArchives(a *Archives, p *Problems) {
 
 func validateDuplicates(d *Duplicates, p *Problems) {
 	p.durationInRange("duplicates.refresh_interval", d.RefreshInterval, time.Minute, 24*time.Hour)
+}
+
+// validateDates requires a time zone the binary can resolve, when one is set.
+func validateDates(d *Dates, p *Problems) {
+	if _, err := d.Location(); err != nil {
+		p.addf("dates.time_zone", "%v", err)
+	}
 }
 
 func validateAuth(a *Auth, p *Problems) {

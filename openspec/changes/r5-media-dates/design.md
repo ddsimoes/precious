@@ -1,0 +1,806 @@
+# Design
+
+## Context
+
+See proposal.md for why. What R5 builds on:
+- **Hashing (R2).** A per-source `ClassBulk` job with a plan pass (`file_content` rows inserted in ID windows), identity-checked opens (`content.OpenAt` and its unexported folder `chain`), bounded `ReadAt`, `Yield` between units, and batched commits that re-check the `entries` identity (I9). Rescans drop `file_content` and `archives` in the writer's transaction (`stDropContent`); `index.MoveEntry` keeps them (`keepContent`).
+- **The executor (R3, R4).** Journaled steps (intent → step → sync → confirm → outcome), `executor.Index` for the index side, `Writer` methods only it may call (guard test), plan commands in `organize`, undo by reverse items, History, and CSV export.
+- **The index.** `entries.mtime_ns` is both a file's identity and the input of folder aggregates (`newest_ns`, `oldest_ns`, `dir_stats.by_year`), Search's year filter, and the Map's age. `index.intentCond` decides which missing rows carry owner intent (`MissingIntentAt`, `IntentBelow`, `freePath`).
+- **Zones.** `cmd/precious` already embeds `time/tzdata` (serve.go's blank import), so zone names resolve on hosts without zone files.
+
+What R5 has to add:
+- **Parsing.** No EXIF or ISO-BMFF parser exists, and `go.mod` holds no media library.
+- **Writing a time.** `fsaccess.Writer` cannot set a time; `actions.kind` and `action_items.op` are CHECK lists (0007), so a new kind or op rebuilds both tables. The shipped deployments run as a service account without `CAP_FOWNER`, which `utimensat` needs on files it does not own.
+- **The corpus.** Its JPEGs carry no EXIF, its only MP4 is an ffmpeg test clip with no creation time, and no fixture disagrees with its own date.
+
+## Goals / Non-Goals
+
+**Goals:** close R5.1–R5.5 on Linux without weakening I1–I9. Precious never invents a date finer than its evidence, never loses a correction, and changes nothing on a disk but what the owner ran.
+
+**Non-Goals:**
+- `exiftool` (no milestone yet), the camera-release check (ADR 0012), writing EXIF or XMP (§13).
+- Metadata of formats without a parser here (MKV, WebM, WMV, MPEG, MTS, AVI, PNG, GIF, WebP, …): they get name, folder, and modification-time dates.
+- The effective date in Search, folder aggregates, or the Map (D20).
+- Removing folders a date organize empties (§13: no change the owner did not request).
+
+## Decisions
+
+### D1. Native, bounded header parsers in `internal/media` (§10.7.1, §12; ADR 0012)
+
+`internal/media` parses, with the standard library only:
+- **EXIF** fields: `DateTimeOriginal`, else `DateTimeDigitized`, else IFD0 `DateTime`; `OffsetTimeOriginal`; `SubSecTimeOriginal`; `GPSDateStamp` + `GPSTimeStamp` (UTC); `Make`, `Model`; `BodySerialNumber`, else `CameraSerialNumber`. No maker notes, no orientation. They are read from:
+  - **JPEG**: APP1 `Exif\0\0`;
+  - **TIFF and TIFF-based RAW** (`tif`, `tiff`, `cr2`, `nef`, `arw`, `dng`, `pef`, `srw`, and `orf` and `rw2` with their own header magics `IIRO`/`MMOR` and `IIU\0`): IFD0 and its Exif and GPS IFDs, with the same TIFF parser;
+  - **ISO-BMFF images** (`heic`, `heif`, `avif`): `meta` → `iinf`/`iloc` → the `Exif` item, parsed as TIFF;
+  - **CR3**: `moov` → Canon's `uuid` box (`85c0b687-820f-11e0-8111-f4ce462b6a48`) → `CMT1` (IFD0), `CMT2` (Exif IFD), and `CMT4` (GPS IFD), each parsed as TIFF.
+- **ISO-BMFF video** (`mp4`, `m4v`, `mov`, `3gp`, `3g2`; and CR3): `moov/mvhd` `creation_time` (1904 epoch, read as UTC; 0 means absent).
+
+**Bounds.** The first `ReadAt` takes up to 256 KiB. ISO-BMFF boxes are walked by their 8- or 16-byte headers with `ReadAt` wherever they sit, skipping `mdat` by size; inside `moov`, only child headers, `mvhd`, and CR3's `CMT` boxes are read. At most 1 MiB is read per file, at most 1,024 boxes or IFD entries, depth at most 8, and every offset is checked against the file's size. A malformed structure yields no value. `Read` turns a panic into "no metadata" and logs it; fuzz targets call the inner parsers without that net, so a panic fails them.
+
+This is the reading of §10.7.1's "from the start of each file only": header structures, never the media payload, even when a MOV's `moov` sits at the end (ADR 0012).
+
+Rejected alternatives:
+- **A third-party EXIF or MP4 module.** It adds a dependency surface for untrusted input that §12 does not need.
+- **Only the first window.** It misses every MOV and MP4 whose `moov` follows `mdat`.
+- **`exiftool` now.** It is optional (§12), and no milestone has taken it on; native reading covers R5.1–R5.5.
+- **AVI `IDIT`.** §10.7.1 and §12 do not list AVI, and the corpus AVI is random bytes.
+
+### D2. Every photo and video is media; one predicate (§10.7.3)
+
+A media file is a present regular file, outside the quarantine, whose `file_kind` is `image` or `video` (the policy's tables, §6.2). Archive members are not media. One SQL fragment, `dates.MediaCond(alias)`, says so, and every reader, the plan pass, `Rederive`, `ExpandTargets`, and the entry-dates read use it. `media.IsMediaKind` is its Go twin, and a test checks they agree.
+
+`media.FormatOf(ext)` says which media files are read (D1). Every other media file (MKV, WebM, WMV, MPEG, MTS, M2TS, VOB, AVI, PNG, GIF, WebP, BMP, PSD, SVG, ICO, generic `raw`, …) is `none` in `media_meta` and dated by name, folder, or modification time. `pef` and `srw` are read once the policy's tables call them images; R5 does not change the rules.
+
+Rejected alternatives:
+- **A list of 15 extensions (the earlier draft).** RAW and camcorder files would get no date, and a date organize would split `IMG_0001.JPG` from its `IMG_0001.CR2`.
+- **Excluding icons and drawings by name.** One more list to keep; an icon's date is its folder's or its modification time, which is harmless.
+
+### D3. Metadata is cached by identity, like digests (I9)
+
+`media_meta` has one row per media file, keyed by `entry_id`, with the identity of the `entries` row the read started from, as `file_content` has:
+- **Rescans** drop it in the writer's transaction when a file's facts change (a new `stDropMedia` beside `stDropContent`).
+- **Moves by Precious** keep it (`keepContent` adds `media_meta` to its tables).
+- **A written time** carries it to the new times (D15).
+- **The read pass** loads each pending row with its `entries` identity (path, size, `mtime_ns`, `ctime_ns`, `ino`, `dev`), opens the file only when the disk matches that row under `content.Matches`' tolerance, and restats the open file the same way after the read.
+- **The commit** applies a read only while the entry is `present` and its `entries` row still equals, exactly, the identity loaded at the read's start, and the `media_meta` row is still `pending`. It writes that loaded identity into the row. So a FAT source, where a scan keeps an index time within tolerance of the disk's, is not dropped forever.
+
+States: `pending`; `read` (whatever it found); `none` (a format D1 does not read); `unreadable` (the open was refused). A file found changed stays `pending` and counts as `changed` in progress; the next scan resets it.
+
+Rejected: rows that carry their own identity and are re-validated on each read. Every reader would need the same check, and a moved file would read as changed.
+
+### D4. One `media` job per source, and no lost request (§10.7.1)
+
+Kind `media`, `ClassBulk`, bound to its source. It is requested through `dates.EnqueueMedia`:
+- after each scan of that source (`scanner.OnScanDone`);
+- at startup for every source;
+- from `ActionDone`, next to hashing, so moves and written times re-derive;
+- by correction commands (D11).
+
+Offline and unavailable sources are requested too. Their job skips passes 1 and 2, since passes 3 and 4 need only the index (§6.1).
+
+**No lost request: the relations pattern (r4 Addendum G1), plus mutual exclusion.**
+- **A request** (`EnqueueMedia`, in the requester's transaction) sets `media_sources.dirty = 1` for the source. It then calls `EnqueueOnce` with scope `media:<source>` and payload `{"if_dirty":true}`. When the job returned is `running`, it also calls `EnqueueOnce` with scope `media-next:<source>` and the same payload, as `relations.enqueueRelate` does.
+- **The start**, one write transaction, in this order:
+  1. while `media_sources.passes_job` names another media job whose state is `running`, return `jobs.Defer{Until: now + 3 s, Reason: "media_running"}` (a deferral uses no attempt);
+  2. on a first attempt (`job.Attempt ≤ 1`) with `if_dirty`, return having run nothing when `dirty` is 0: a loop that began after the last request already covered it; a retry (`Attempt > 1`, after a lost worker or lease) ignores `if_dirty`;
+  3. set `passes_job` to its own ID (a stale ID, of a job no longer running, is overwritten).
+
+  `passes_job` exists because a runner marks a deferred or yielding job `running` too: the job state alone cannot tell which of two media jobs runs the passes. The single writer serializes step 1 and step 3, so two handlers never both pass, and nothing is read by two jobs.
+- **The loop.** Each iteration clears `dirty` in a write transaction, runs passes 1–4, and reads `dirty` again in a write transaction: set means a request came during the passes, so it loops; clear means it releases `passes_job` in that same transaction and returns.
+- **Failure.** On any error, a cancel included, the handler sets `dirty = 1` and releases `passes_job` in one write transaction under `context.WithoutCancel`, then returns the error. The request it was serving is then served by the follow-up, the next request, or the next start.
+- **Pausing.** The handler never returns `jobs.Pause`; a job paused by hand is resumed by the next request's `EnqueueOnce` (`jobs.Tx.once`).
+
+The start also defers 3 s (reason `organizing`), before step 3, while `executor.OrganizeActive` holds for its source. That function is injected by `DeferWhile`, as for the scanner, since `executor` imports `content`. The passes:
+1. **Plan.** Insert `media_meta` rows (`pending`, or `none` for formats D1 does not read) for media files (`MediaCond`) without one, in ID windows of 50,000, one write per window.
+2. **Read.** Open each `pending` row of a media file (`MediaCond`, so never in the quarantine) through `content.Opener`, the exported folder chain, read (D1), restat, and commit up to 64 results per write with D3's re-check. It yields between files.
+3. **Dates.** `Rederive` (D9) over every media entry of the source in ID windows of 256, each window derived inside its write transaction. The last window rewrites the source's summary (D10).
+4. **Cameras.** Detection (D8), written in one transaction at the end of the pass, always. A request during the pass makes the loop run again, and that run's write replaces this one.
+
+Progress: `phase` (1–4), `files`/`of_files` read, `bytes`, `changed`, `unreadable`, and `media`/`of_media` derived.
+
+Rejected alternatives:
+- **Folding it into hashing.** Hashing reads only files that share a size, and its plan is global.
+- **`ClassInteractive`.** It reads every photo on a first run, which is background work.
+- **A generation counter with a claim (the earlier revision).** A claimer that failed, was cancelled, or ran out of attempts never ran its end check, and every request it had absorbed was lost (review).
+- **Two scopes without mutual exclusion (relations' exact pattern).** Relations runs in a pool of capacity 1; media jobs are device jobs, so a queued follow-up takes the device at the first `Yield` and both read the same rows.
+- **Writing the cameras only when no request came (the earlier revision).** Steady moves and scans would keep the cameras from ever being written.
+
+### D5. The effective date: precedence and plausibility (§10.7.1, §10.7.3)
+
+Candidates, most trusted first:
+
+| Source | Date | Precision | Confidence |
+|---|---|---|---|
+| `owner` | the correction (D11) | as set | `high` (set), `medium` (shift) |
+| `exif` | capture with offset: an instant; without: a wall time in the zone (D7) | second | `high` with offset, else `medium` |
+| `gps` | GPS date and time, UTC | second | `high` |
+| `container` | MP4/MOV creation time (UTC) | second | `medium` |
+| `file_name` | D6 patterns | as the pattern | `low` (`medium` when refined) |
+| `folder_name` | nearest dated ancestor folder, D6 | year, month, or day | `low` (`medium` when refined) |
+| `mtime` | the modification time, when known (`domain.KnownModTime`) | second | `lowest` |
+
+- **The owner's date always wins.** It is not tested for plausibility; `set-date-correction` validates it instead (D11).
+- **Otherwise the first plausible candidate wins.** A candidate is implausible when it falls before 1990-01-01, after the read time plus one day, or exactly at `1970-01-01`, `1980-01-01`, `2000-01-01`, or `2001-01-01 00:00:00` (camera defaults). An implausible candidate is skipped, and the next one wins.
+- **No candidate.** The source is `none`, with no date and confidence `none`. This happens only for an unknown modification time with nothing else.
+- **What each date stores.**
+  - `instant`, for the start of the period when coarser than a second.
+  - `local`, the wall time in the capture's own offset when known, else in the zone: `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, or `YYYY-MM-DDTHH:MM:SS`.
+  - `offset_min`, when known.
+
+Templates and renames use `local`; write-back uses `instant`. GPS ranks below an EXIF capture because it may come from a stale fix. An EXIF date with an offset is as good as GPS, and is the camera's own.
+
+### D6. Name and folder dates: a finite list, with refinement (§10.7.1)
+
+**File-name patterns** (at the start of the name, case-insensitive prefix; the date must be valid):
+
+| Pattern | Precision | Kind |
+|---|---|---|
+| `IMG_YYYYMMDD_HHMMSS`, `VID_YYYYMMDD_HHMMSS` | second | wall time |
+| `PXL_YYYYMMDD_HHMMSSmmm` | second | UTC instant |
+| `YYYYMMDD_HHMMSS` | second | wall time |
+| `YYYY-MM-DD HH.MM.SS` | second | wall time |
+| `Screenshot_YYYY-MM-DD-HH-MM-SS`, `Screenshot_YYYYMMDD-HHMMSS` | second | wall time |
+| `Screenshot_YYYY-MM-DD` | day | wall time |
+| `IMG-YYYYMMDD-WA`, `VID-YYYYMMDD-WA` | day | wall time |
+
+**Folder names** count when the name is, or starts with, `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`, followed by the end, a space, `-`, `_`, or `.`, with a year from 1990 to the read year. The nearest such ancestor below the source's top wins. `fotos_2005_do_pendrive` and `celular_backup_2009` carry no folder date.
+
+**Refinement.** When a `file_name` or `folder_name` candidate coarser than a second contains the modification time (in the zone, within the filesystem's local-time tolerance), the effective date takes the modification time. It keeps the name or folder as its `source`, with `refined: true`, precision `second`, and confidence `medium`. Otherwise the coarse date wins, with its own precision. Nothing finer is ever invented: a template or rename that needs more is refused `date_too_coarse`.
+
+Rejected alternatives:
+- **Source `mtime` for a refined date (the coordinator's draft).** WhatsApp images modified on their name's day would read "date from the modification time", and R5.3 asks for the name. Refinement is recorded instead.
+- **A year found anywhere in a name.** `fotos_2005_do_pendrive` and `Backup_PC_2004` would date photos by when they were copied.
+
+### D7. One configured time zone (§10.7.1)
+
+- `[dates] time_zone` is an IANA name, resolved through the zone database `cmd/precious` already embeds. Absent or empty, it is the server's local zone (`time.Local`), and `check-config` and the server's start log warn that it is unset. The shipped container's local zone is UTC, so the example configurations set it.
+- It turns wall times into instants (EXIF without an offset, name and folder dates), and instants into the `local` of GPS, container, and `mtime` dates.
+- Nonexistent and ambiguous wall times follow Go's `time.Date`.
+- `media.ZoneKey(loc)` identifies the resolved zone: its name, plus its UTC offsets on January 1 and July 1 of every year from 1990 to 2040. A changed host zone under the default "Local" therefore changes the key, and every date is re-derived at the next job (D9).
+- **FAT sources.** Their modification times are what the mount's `tz=`/`time_offset` makes of the stored wall times. When the mount and `time_zone` disagree, those times shift; flags tolerate ±1 h only, and the operator guide says to mount FAT sources in the configured zone.
+
+Rejected alternatives:
+- **A zone per source, or per camera.** No R5 scenario needs it, and a correction covers a trip abroad.
+- **The browser's zone.** Stored dates would differ by viewer.
+- **Keying on the zone's name.** The default's name is always "Local".
+
+### D8. Flags and camera offsets (§10.7.2, R5.2)
+
+**Flags** (`media_dates.flags` bitmask):
+- `1` `mtime_disagrees`: the effective source is `exif`, `gps`, `container`, or `owner`, and the date is more than 24 h from a known modification time (plus 1 h on a `LocalTime` filesystem).
+- `2` `implausible`: an `exif`, `gps`, or `container` candidate was implausible (D5). Name, folder, and modification-time candidates never set it.
+- `4` `camera_offset`: set by detection.
+- `8` `no_date_metadata`: the metadata state is `read` or `none`, and no capture, GPS, or container date was found, plausible or not. A `pending` or `unreadable` file never has it; lists show its metadata state instead (I7).
+
+"A date before the camera model existed" is not flagged (ADR 0012).
+
+**Camera key.** `make|model|serial`: each part trimmed of spaces and NULs, with `|` in a part replaced by `/`. An empty serial leaves a trailing `|`, as in `SONY|DSC-W55|`.
+
+**Detection** (pure `media.Detect`, run by pass 4):
+- **Input.** Each photo with a plausible EXIF capture and a camera key gives its capture instant, its folder, and its GPS time if any. A `shift` correction is applied; any other correction leaves the photo out.
+- **Events.** An event is a folder whose direct children include photos of at least 2 cameras.
+- **Candidates.** Camera C is a candidate in event F when C's photos in F span less than a day, and every one of them lies outside the other cameras' range in F, `[min − 6 h, max + 6 h]`. Its `delta = median(C in F) − median(other cameras in F)`.
+- **References.** In each such event, a reference sides with the other cameras:
+  - `gps`: the GPS times of their photos in F agree with their own captures within 10 min;
+  - `folder_name`: F's folder date (D6) contains every capture of the other cameras in F and none of C's.
+- **Own GPS.** C's own GPS gives a candidate only when at least 3 of its photos have GPS, their `capture − GPS` all agree within 10 min, and that difference is beyond 1 h with a known offset, or beyond 14 h without one (a whole time zone cannot explain it). Its reference is `own_gps`. Scattered differences, as a stale fix gives, are ignored.
+- **Offset, decided first.** C is `offset` when its candidates all lie within 10 min of each other, and a reference sides with the other cameras in at least one of its events: with candidates in one event, that reference must be `gps` or `own_gps`; with candidates in two or more events, `folder_name` also counts. Every reference-backed `offset` is decided before anything else. The suggestion is `−delta` rounded to the minute. Its events are the folders of those candidates; `camera_offset` is set on C's photos directly in those folders, and the suggestion targets exactly them (D11's `{folder_ids, camera_key}`).
+- **Counterparts, then.** The other cameras' candidates are computed again without the `offset` cameras; a camera left alone in an event has no candidate there.
+- **No reference.** Cameras with candidates left that are not `offset` are `disagrees`, with no suggestion. That includes both cameras of a 2-camera tie, and both cameras of two or more events with no reference: a pairing is symmetric, so repeated events alone cannot say which clock is wrong.
+- **The rest** are `ok`.
+- **Blind spot.** An offset of 6 h or less between cameras (daylight saving, a home zone kept abroad) is not detected; the owner shifts such photos by hand. The operator guide says so.
+
+In the corpus, the Sony has candidates in 2 events, and in each the Canon's GPS agrees with the Canon's captures (`gps`), so the Sony is `offset`. The Canon has candidates against the Sony in both events too, but no reference sides with the Sony: it has no GPS, the Canon's own GPS agrees with its captures, and each event's month holds the Canon's captures, not the Sony's. So the Canon is not `offset`; with the Sony set aside it is alone in both events, has no candidate left, and is `ok`.
+
+Rejected alternatives:
+- **Suggesting without a reference, from one event or several (the earlier revisions).** A pairing is symmetric: the camera that is right is a candidate as well, so both would be flagged.
+- **A median gap alone, over a whole subtree (the earlier draft).** A camera used on one day of a long trip, or photos on the 1st of the next month, looked offset, and the shift covered photos never shown to be offset.
+- **A majority of 3 or more cameras as a reference.** No scenario needs it, and it adds false positives.
+- **Calendar shifts.** A clock error is a duration. A shift is stored in seconds, and the interface shows years of 365 days and days of 24 h, so "+1 year 3 hours" is 31,546,800 s.
+
+### D9. Materialized effective dates, derived in the writing transaction
+
+`media_dates` holds one row per media file, with:
+- the effective date, its source, precision, confidence, refinement, correction kind, and flags;
+- the metadata state and `camera_key`;
+- `inputs_key`: an FNV-64a of the path, `mtime_ns`, the `media_meta` row and state, the correction, `media.ZoneKey`, and `media.DeriveVersion`.
+
+`(*dates.Service).Rederive(ctx, tx, ids)` reads those inputs inside the caller's transaction, calls the pure `media.Derive`, and writes only rows whose key changed. It keeps the `camera_offset` bit, except for a `set` or `shift` correction, which clears it. It deletes the rows of entries that `MediaCond` no longer holds (missing, quarantined, no longer media). It adjusts the source's summary by the rows it changed (D10).
+
+Pass 3 calls it over the whole source, so moves (the path changes name and folder dates) and written times are picked up after `ActionDone`. Correction commands call it for their targets, and both plan commands for theirs (D14, D16). `GET /api/entries/{id}/dates` derives on read for the candidates list, which is not stored.
+
+Rejected alternatives:
+- **Deriving on read.** Filtering, sorting, and paging 2 million entries by date or flag needs stored, indexed values.
+- **SQL triggers.** The derivation is Go, and triggers would hide writes from the executor's outcome transaction.
+
+### D10. The reads: their place, indexes, and summary (§11, §12)
+
+Reads live in `internal/dates` and are routed by `(*dates.Service).Routes`, as organize and cleanup do. The entry's dates are a sub-resource, `GET /api/entries/{id}/dates`, so `web/api` and its `Register` signature stay as they are. List rows carry their own entry fields, not `web/api`'s `EntryRow`.
+
+Every read joins `entries` and applies `MediaCond`, so quarantined, missing, and non-media rows are left out at once, before `Rederive` deletes them. A quarantined entry's dates answer `null`.
+
+**The list** needs `source` and answers 200 rows to a page:
+- by date (`effective_ns`, then entry ID), through `media_dates_by_time`;
+- with a `flag`, through that flag's partial index (`flags & k <> 0`);
+- with `date_source`, through `media_dates_by_source`;
+- with `camera`, through `media_dates_by_camera`;
+- with `within` (a folder), in path order instead, through `entries`' `UNIQUE (source_id, path)` range, with the other filters residual.
+
+With several filters, `within` decides, else `camera`, else `flag`, else `date_source`; the rest are residual. The plan guard (task 2.6) runs `EXPLAIN QUERY PLAN` on analyzed data for each filter and asserts the expected index and no `USE TEMP B-TREE`.
+
+**The summary** is materialized in `media_sources.summary`. Pass 3's last window rewrites it, and every `Rederive` adjusts it in its own transaction. Between a scan's deletions and the next pass it may lag, as the list does. Without `source`, it sums the sources' rows.
+
+Rejected alternatives:
+- **A `dates` field on `GET /api/entries/{id}` (the coordinator's draft).** `web/api` would need the zone and the derivation, a shared signature change, and the panel's other sections would wait for it.
+- **Aggregating on read.** At 2 million entries it misses the §12 targets.
+- **A list across all sources.** It cannot be served by one index.
+
+### D11. Corrections are owner decisions (§10.7.3, I4)
+
+`date_corrections` holds one row per entry, cascading with the entry, so a correction survives rescans, moves, and a return from missing. No job writes it. `index.intentCond` counts a correction as owner intent, so a missing row with one is never deleted to free its path (`freePath`), and `MissingIntentAt` and `IntentBelow` see it.
+
+**Targets.** IDs are strings, parsed with `domain.ParseRef`. Exactly one of:
+- `entry_id` (single);
+- `entry_ids` (1–1,000);
+- `folder_ids` (1–100 folders of one source), optionally with `camera_key`.
+
+Folders without `camera_key` expand to the media files at or below them. With `camera_key`, they expand to that camera's photos directly in them, as D8's events count them. More than 50,000 media is `400 invalid_request`. A target that is itself quarantined is `409 in_quarantine` (r4 D13). A member ref is `400` single, and `not_media` in bulk.
+
+**Kinds.**
+- `set`, with `local` as `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, or `YYYY-MM-DDTHH:MM:SS`, stored at that precision, and an optional `offset_min` with a time. A date after now plus one day is `400 invalid_request`; any earlier date is the owner's to set.
+- `shift`, with `shift_s` within ±50 years, applied to the EXIF capture, or to the effective date when there is none. A target it would move past now plus one day is skipped `in_future`.
+- `use_name` and `use_folder`, which force that candidate. They keep its source and confidence and add `corrected`.
+
+**Refusals.** Single: `409 invalid_entry_state` for a target that is not media, has no name date, has no folder date, or would land in the future. Bulk: such targets are skipped with reasons `not_media`, `no_name_date`, `no_folder_date`, and `in_future`.
+
+**One transaction.** Writing rows, `Rederive` of the targets, `EnqueueMedia`, and the audit event commit together.
+
+Keep is not consulted: corrections change no file (I5 protects removal and decisions).
+
+Rejected alternatives:
+- **Storing a correction in `media_meta`.** A rescan drops that row (D3), and I4 forbids losing it.
+- **Selections (`select-dates`, "Select all results").** Per-page `entry_ids` and camera targets cover R5.2 and R5.4; selections can come later without a contract change.
+
+### D12. `Writer.SetModTime` (I2, I3, §10.7.4)
+
+- **Linux.** `utimensat(dirfd, name, {UTIME_OMIT, t}, AT_SYMLINK_NOFOLLOW)` through the folder's descriptor, inside `rc.Control` with `retryEINTR`. No file is opened, the access time stays, and the change time becomes the system's.
+- **Ownership.** An explicit time needs the file's owner, or `CAP_FOWNER`; write permission is not enough. The shipped systemd unit and Compose file run as a service account with no capabilities, so the operator guide's "Allowing changes in the deployment" says the files to date must be owned by that account, or the deployment opts in to `CAP_FOWNER`, with its risk: the service can then change the times and modes of any file it can reach. A `chown` advances every file's change time, which D13's step compares, so the guide says to rescan the source after changing ownership and before setting file dates (r4 G19's lesson).
+- **Errors.** `ENOENT` is absent, `EPERM`/`EACCES` `ErrPermission`, `EROFS` `ErrReadOnly`, and anything else unavailable.
+- **Other backends.** synthfs sets the time truncated to its resolution (stored as local time on a `LocalTime` device), sets the change time to now, and can refuse with `EPERM` for a file marked foreign (tests). The portable backend refuses with `ErrNoReplaceUnsupported`. instrument logs `OpSetModTime`.
+- **The guard test.** Only the executor calls it; the fixture count rises with the method.
+
+Rejected alternatives:
+- **`futimens` on an opened handle.** It opens the file, which the read-only `File` interface does not offer.
+- **`os.Chtimes` by path.** It escapes the rooted, no-follow access.
+- **`CAP_FOWNER` by default.** It widens what a compromised service can change on every disk it reaches.
+
+### D13. The `set_mtime` step (§10.7.4, R5.4)
+
+An item has op `set_mtime`, one name, `new_mtime_ns`, and, once journaled, `prev_mtime_ns`.
+
+**Intent** re-checks, in R3's transaction:
+- writes;
+- the entry is present, a regular file, and not quarantined (`refused in_quarantine`);
+- `nlink ≤ 1` in the index (`refused hard_link`);
+- the new time is distinguishable from the index's (`refused no_change`), meaning not `sameTime` under the source's capabilities: within the resolution, or the ±1 h of a `LocalTime` filesystem;
+- for an undo item, the index's time is still the original item's `new_mtime_ns` (`changed identity_changed`).
+
+It records `from_*` from the entry's current path, and identity (with `ctime_ns`) from the index row.
+
+**Step.**
+1. Open the folder (rooted descent) and `lstat` the name. It must be a regular file matching the identity (kind, device and inode where stable, size, modification time), whose change time is `sameTime` to the index's when both are known; else `changed`/`identity_changed`. A link count above 1 is `refused hard_link`.
+2. Journal `prev_mtime_ns` from that `lstat` in a write transaction.
+3. `before` hook, `SetModTime`, `after` hook, `lstat` again. No folder `Sync`: a folder's fsync does not persist a file's times, and Risks covers a power loss.
+4. Same size and inode, and a time `sameTime` to the new one: done. Anything else: `manual_recovery`.
+
+**Errors.** `ErrPermission` ends the item `failed`, reason `not_owner`, and the action goes on, with writes still on. `ErrReadOnly` ends it as R3's `failed()` does (`failed`, stopping the action). An absent name is `changed`. `ErrNoReplaceUnsupported` and other errors end it `failed`. It never ends `no_safe_rename`, and never turns writes off.
+
+**Reconcile** from `intent` looks at `from_path`:
+
+| Found | Outcome |
+|---|---|
+| identity, old time | `planned` (it runs once) |
+| identity, new time | `done`, with the outcome recorded |
+| absent, or anything else | `manual_recovery`, findings `{"from":"absent"|"other","to":"absent"}` |
+
+**Outcome.** `Index.ApplyModTime` (D15) and `stale.MarkStale(src, from_path)`, in one transaction. An undo item sets the original's `reversed_by`.
+
+The executor never reads the media tables. A correction made after planning does not change a planned action, and the preview is what runs.
+
+Rejected alternatives:
+- **Re-reading the effective date at intent.** The executor would depend on `dates`, and the owner approved the preview's times.
+- **Stopping the action at the first `not_owner`.** Ownership can differ by file; the others are still done, and History lists the refused ones.
+- **Taking the previous time from the index.** On FAT and exFAT a scan keeps an index time within tolerance of the disk's, so an undo would not restore what the disk held.
+
+### D14. "Set file dates": action kind `set_mtime` (§10.7.4)
+
+`plan-set-mtime` (organize) expands its targets (D11's forms, without `entry_id`; at most 10,000 items), calls `Rederive` on them in its transaction, then reads `media_dates`:
+- **Planned.** A `set_mtime` item to `effective_ns`, truncated down to a multiple of the source's `TimeResolution` (a 2-second boundary on FAT, where offsets are whole minutes, so UTC and local truncation agree).
+- **Unchanged.** Files whose time is already `sameTime` are counted in `summary.unchanged`, not listed.
+- **Refused.** `not_dated_yet` (the metadata of a format D1 reads is still `pending`), `date_too_coarse` (precision not `second`, or source `none`), `hard_link`, and `not_media` (an explicit file target). A quarantined target fails the plan with `409 in_quarantine` (`ExpandTargets`, r4 D13).
+
+It is always bulk, so it is always previewed, and it needs writes (`CheckWrites`). Keep does not block it: no decision or place changes.
+
+`plan-undo` reverses its done items with a `set_mtime` item each, to the original item's `prev_mtime_ns`. An item whose index time is no longer the original's `new_mtime_ns` is refused `identity_changed` at planning, and again at intent. `reversible()` and `json.go`'s undo counts add `op = 'set_mtime'`.
+
+### D15. The index follows a written time
+
+`index.ApplyModTime(ctx, tx, index.ModTime{Source, Entry, Facts})`:
+- writes the entry's `mtime_ns`, `ctime_ns`, `dev`, and `ino`, and its own `newest_ns`/`oldest_ns`, which are NULL for an unknown time;
+- updates `file_content`, `archives`, and `media_meta` rows that describe the file as the index stored it before (size, `mtime_ns`, `ctime_ns`, `ino` equal), giving them the new times, so nothing is hashed, listed, or read again.
+
+That carry is safe only because the step matched the disk's change time to the index's (D13): a file edited in place since the scan, even with its modification time put back, is `changed` and carries nothing. The organize adapter then calls `Refold([entry])`, so the parents' newest, oldest, and by-year figures follow (§6.3). A folder's own times do not change when a child's time is set.
+
+### D16. "Organize by date": action kind `date_organize` (§10.7.5, R5.5)
+
+`plan-date-organize {targets, destination_id, template?, rename?}` (organize) expands its targets, calls `Rederive` on them in its transaction, then plans:
+
+**The template.** 1–4 `/`-separated components of literal text and the tokens `{year}` (4 digits), `{month}` and `{day}` (2 digits), and `{event}`. The default is `{year}/{month}`. No `/`, NUL, braces outside tokens, `.`, or `..` component is allowed, and each component must have a token or text. The needed precision is the finest token's.
+
+**`{event}`.** The file's current parent folder name, with a leading folder date (D6) and the separators after it stripped. When it is empty, the token and the literal text just before it in its component go; an empty component goes too. This settles §10.7.5's event names in the folder.
+
+**Rename.** It is fixed as `YYYYMMDD_HHMMSS_<name>` from `local`. A name already starting with that prefix is kept.
+
+**Items.**
+- **Order.** Files are processed in path order.
+- **Folders.** They resolve below the destination with `merge.go`'s resolver: an existing folder is reused under the source's case and normalization rules; a missing one is a planned `mkdir`, once; a non-folder or missing-with-intent entry in the way makes the items `conflict` (`name_taken`, `name_taken_by_missing`). `dropUnusedMkdirs` runs at the end.
+- **Moves.** One `rename` per file, with `p.move` and its bulk rules (`would_lose_keep`).
+- **Refused.** `not_dated_yet` (as in D14), `already_there` (same folder and name), `date_too_coarse`, and `invalid_name` (a name the filesystem cannot hold, or over 255 bytes). A quarantined target fails the plan with `409 in_quarantine`, as in D14.
+- **Siblings.** `summary.split_siblings` counts planned files with a same-stem sibling in their folder (same name up to the last `.`, compared under the source's rules) that is not planned into the same destination folder, such as a `.CR2` with no date or a `.THM`. The preview warns, naming them through the items' `detail`.
+- **Cap.** 10,000 items, folders included; over it, `400 invalid_request` asks for a narrower scope.
+
+**Undo** is R3's: renames back, then each created folder removed if empty. Folders a run empties stay.
+
+Rejected alternatives:
+- **Configurable rename patterns.** §10.7.5 names one.
+- **Removing emptied folders.** That is a change the owner did not ask for (§13).
+- **Moving siblings along by stem.** A sibling's own date may differ; the owner decides, warned.
+
+### D17. Collisions never overwrite (§10.7.5, I3)
+
+A name in a destination folder is taken by:
+- a present child, compared under the source's rules;
+- an earlier item of the plan;
+- a missing entry with owner intent (`MissingIntentAt`, which counts corrections, D11).
+
+When a present child or earlier item takes it, and both files are `hashed` with the same `content_id`, the item is `refused identical_copy`, with `copy_of` naming that entry. Otherwise the file takes the first free `stem (k)ext`, for k from 1 to 999. The extension starts at the last `.` that is not the first character, and the name is checked against the same three sets. Past 999 it is `conflict name_taken`.
+
+The plan's `summary.files_with_copies` counts planned files with a hashed copy among the targets or at or below the destination. The preview then recommends deduplicating first, linking to the duplicates list. "Discard these copies" sends `set-decision` with `discard` for the refused items' entries, 1,000 per request, after a confirmation. RENAME_NOREPLACE stays the guarantee: a name taken after the preview ends the item `conflict` (R3).
+
+Rejected alternatives:
+- **Suffixing identical copies too.** Copies would land side by side, which §10.7.5 asks to avoid.
+- **Suffixing the first file in path order.** The first file keeps its name, which is deterministic and stable across previews.
+
+### D18. Migration 0008 (§10.7)
+
+Interfaces lists it in full. `actions` and `action_items` are rebuilt as 0007 did. Five tables are added. Hashes and duplicates are unaffected.
+
+### D19. Corpus fixtures and an independent truth (§15)
+
+New fixtures live in new top-level folders, so `Fotos`, `Fotos - Copia`, `Midia`, and the pendrive copies keep their bytes, order, and relations. The corpus gains an EXIF writer (APP1 spliced after SOI: IFD0 `Make`/`Model`/`DateTime`, the Exif IFD with `DateTimeOriginal`, `OffsetTimeOriginal`, `SubSecTimeOriginal`, `BodySerialNumber`, and a GPS IFD) and an MP4 writer (`ftyp` + `moov/mvhd`). Every true time is a wall time read in UTC, since the tests' zone is `UTC`.
+
+| Path | Content | Exercises |
+|---|---|---|
+| `Viagens/2010-07 Bahia/IMG_0101…0104.JPG` | Canon (`Canon`, `Canon PowerShot SX230 HS`), 2010-07-17 10:00, 11:00, 12:00, 13:00; 0101 and 0102 with GPS equal to the capture; mtime = capture | the right clock; GPS reference |
+| `Viagens/2010-07 Bahia/DSC00301…00306.JPG` | Sony (`SONY`, `DSC-W55`), true times 10:00, 10:30, 11:00, 12:00, 12:30, 13:00 minus 365 days 3 hours (no offset, no GPS); mtime = its capture | R5.2 (equal medians, so the suggestion is exactly +31,546,800 s) |
+| `Viagens/2010-07 Bahia/do celular da Ana/IMG_0102.JPG` | no EXIF, own content, mtime 2010-07-17 18:00 | folder refinement; R5.5 suffix |
+| `Viagens/2010-12 Natal/IMG_0201…0204.JPG`, `DSC00401…00406.JPG` | as Bahia, true 2010-12-24 19:00–22:00; 0201 with GPS | R5.2 second event |
+| `Viagens/2008-03 Ouro Preto/DSCN0001…0003.JPG` | Nikon (`NIKON`, `COOLPIX P5000`, serial `3012345`), 2008-03-22 14:00 + 10 min, offset `-03:00`, subseconds; mtime 2011-01-15 10:00 | R5.1 `mtime_disagrees`; R5.4 |
+| `Viagens/2008-03 Ouro Preto/DSCN0004.JPG` | same camera, `2000:01:01 00:00:00`; mtime 2011-01-15 10:00 | `implausible`; month precision |
+| `celular_2011/DCIM/Camera/VID_20110423_101500.mp4` | `mvhd` 2011-04-23 13:15:00 UTC; mtime 13:15:30 | `container` |
+| `celular_2011/Pictures/Screenshots/Screenshot_2011-05-02-21-14-07.png` | PNG; mtime 2012-02-01 09:00 | name, second precision |
+| `celular_2011/WhatsApp/Media/WhatsApp Images/IMG-20110416-WA0003.jpg`, `IMG-20110417-WA0004.jpg` | no EXIF; mtime 2012-02-01 09:00 | R5.3 |
+| `celular_2011/WhatsApp/Media/WhatsApp Images/Sent/IMG-20110416-WA0003.jpg` | the same bytes as WA0003; mtime 09:01 | R5.5 `identical_copy` |
+
+All mtimes stay within 2003–2012, and the corpus within 10–40 MiB.
+
+**The truth.**
+- `corpus.Entry` gains `Date *DateTruth` for every media file (D2): `effective` (`*time.Time`, UTC; nil for `none`), `local`, `precision`, `source`, `refined`, and `flags`. The values are derived without corrections, for zone `UTC`.
+- `GroundTruth` gains `Cameras []CameraTruth`: `key`, `shift_s`, `photos`, and `folders`. The Sony's is `SONY|DSC-W55|`, 31,546,800, 12, and `Viagens/2010-07 Bahia` and `Viagens/2010-12 Natal`.
+- Truth for the new fixtures, and for the existing `celular_backup_2009/WhatsApp/Media/WhatsApp Images/IMG-20090612-WA0001.jpg` and `WA0002.jpg` (source `file_name`, refined to their mtimes), is declared by hand. Truth for the other older media (every image and video kind, GIFs and the AVI included) comes from the corpus's own small rule (leading-date folder, containment of the mtime, else mtime), which never imports `internal/media`, so the tests compare two independent implementations. `Midia/video.mp4`'s `mvhd` creation time is 0 (absent), so its truth is from its folder or mtime by that rule.
+- `web/ui/e2e/env.ts` gains the same fields.
+
+### D20. Search, aggregates, and the Map stay on the modification time (§6.3, §11.3)
+
+They keep "Year of last change". Changing them would re-fold every folder after every derive pass, and contradict §6.3. Rejected: an effective-date year filter in Search, since the Dates screen's list filters by date already.
+
+### D21. Dates is its own screen (§11)
+
+It sits in the main navigation, between Opportunities and Cleanup. Rejected: a ninth opportunity card. Cards are a closed list of review lists over `review_rows`, while dates need their own filters, cameras, and actions.
+
+## Interfaces
+
+### Import direction
+
+```
+media ──▶ standard library only (a leaf)
+dates ──▶ media, content (Opener, Row), index (NotQuarantined), jobs, store, sources, commands, domain, clock
+organize ──▶ media (templates, names, DateFromRow), dates (EnqueueMedia, Targets, ExpandTargets, Rederive, MediaCond)
+executor ──▶ index (ModTime), fsaccess (SetModTime); never media or dates
+cmd/precious ──▶ dates
+web/api, search, review, relations ──▶ unchanged
+```
+
+### Go signatures (foundation adds; slices only add)
+
+```go
+// internal/media (foundation, pure)
+type Format uint8 // FormatNone, FormatJPEG, FormatTIFF, FormatISOBMFF
+func FormatOf(ext string) Format       // D1's list; ext lower-case, no dot; FormatNone otherwise
+func IsMediaKind(fileKind string) bool // "image" or "video" (D2)
+const FirstWindow = 256 << 10; MaxBytes = 1 << 20
+type Meta struct {
+	CaptureLocal     string     // "2006-01-02T15:04:05" or with ".000"; "" when none
+	CaptureOffsetMin *int
+	GPS, Container   *time.Time // UTC instants
+	Make, Model, Serial string
+}
+func Read(r io.ReaderAt, size int64, f Format) (Meta, error) // error only from r; malformed input → partial or empty Meta
+type Precision string   // "second" "day" "month" "year"
+type Source string      // "owner" "exif" "gps" "container" "file_name" "folder_name" "mtime" "none"
+type Confidence string  // "high" "medium" "low" "lowest" "none"
+type MetaState string   // "pending" "read" "none" "unreadable"
+type Flags uint32       // FlagMtimeDisagrees=1, FlagImplausible=2, FlagCameraOffset=4, FlagNoDateMetadata=8
+type Date struct { Instant time.Time; Local string; OffsetMin *int; Precision Precision }
+type Correction struct { Kind string; SetLocal string; SetOffsetMin *int; ShiftS int64 } // SetLocal in any D11 form
+type Inputs struct {
+	Path       []byte      // relative to the source's top
+	Mtime      *time.Time  // nil when unknown
+	Caps       struct{ LocalTime bool; Resolution time.Duration }
+	MetaState  MetaState   // "pending" when there is no row
+	Meta       *Meta       // non-nil only for MetaState "read"
+	Correction *Correction
+	Zone       *time.Location
+	Now        time.Time   // plausibility bound; not part of the key
+}
+type Candidate struct { Source Source; Date Date; Plausible bool }
+type Effective struct { Date *Date; Source Source; Confidence Confidence; Refined bool; Corrected string; Flags Flags; Candidates []Candidate }
+const DeriveVersion = 1
+func Derive(in Inputs) Effective           // never sets FlagCameraOffset; the owner's date bypasses plausibility
+func InputsKey(in Inputs) uint64
+func ZoneKey(loc *time.Location) uint64    // D7
+func ParseLocal(s string, zone *time.Location, offsetMin *int) (Date, error) // D11's set forms
+func NameDate(name []byte, zone *time.Location) (Date, bool)
+func FolderDate(name []byte, zone *time.Location, now time.Time) (Date, bool)
+func CameraKey(make, model, serial string) string
+func DateFromRow(effectiveNs int64, local string, offsetMin *int, precision string) (Date, error)
+type Photo struct { Entry, Folder int64; Camera string; Capture time.Time; OffsetKnown bool; GPS *time.Time; FolderDate *Date }
+type Event struct { Folder int64; DeltaS int64; Photos int; SpanS int64; Reference string /* gps folder_name own_gps "" */ }
+type CameraResult struct { Key string; Photos int; State string /* ok offset disagrees */; ShiftS *int64; Events []Event; Others []string }
+func Detect(photos []Photo) []CameraResult // offset: Events are exactly the folders whose photos it flags
+type Template struct{ /* parsed */ }
+func ParseTemplate(s string) (Template, error) // "" → "{year}/{month}"; error is domain invalid_request
+func (t Template) String() string
+func (t Template) Folders(d Date, event []byte) ([][]byte, error) // ErrTooCoarse
+func EventName(folder []byte) []byte
+func RenamedName(name []byte, d Date) ([]byte, error)         // ErrTooCoarse; unchanged when already prefixed
+var ErrTooCoarse error
+
+// internal/content (foundation): the hashing chain, exported
+type Opener struct{ /* folder chain */ }
+func NewOpener(root fsaccess.Dir, calls FSCaller) *Opener
+func (o *Opener) Open(r Row, caps fsaccess.Capabilities) (fsaccess.File, fsaccess.EntryInfo, error) // OpenAt's errors
+func (o *Opener) Close()
+// OpenAt and the hashing job use it; behaviour unchanged.
+
+// internal/fsaccess (foundation)
+// Writer gains:
+//	SetModTime(name []byte, t time.Time) error // D12
+// instrument: OpSetModTime; synthfs and portable implement it; synthfs can mark a file foreign (EPERM).
+
+// internal/index (foundation)
+type ModTime struct { Source domain.SourceID; Entry domain.EntryID; Facts PostFacts }
+func ApplyModTime(ctx context.Context, tx *sql.Tx, m ModTime) error // D15; refuses a folder, another source, a missing entry
+// writer: stDropMedia beside stDropContent; keepContent also updates media_meta;
+// intentCond also counts a date_corrections row (D11).
+
+// internal/executor (foundation adds the contract; task 2.8 implements the op)
+// Index gains:
+//	ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTime) error // organize's adapter: index.ApplyModTime + Refold([entry])
+// New op "set_mtime"; item gains newMtime and prevMtime (new_mtime_ns, prev_mtime_ns) in itemColumns.
+
+// internal/config (foundation)
+type Dates struct { TimeZone string `toml:"time_zone"` }
+func (d Dates) Location() (*time.Location, error) // "" → time.Local; validated at load
+
+// internal/organize (foundation, additive)
+// Options gains Dates *dates.Service, passed in cmd/precious/serve.go; plan-set-mtime and
+// plan-date-organize call Options.Dates.Rederive and dates.ExpandTargets (D14, D16).
+
+// internal/dates (foundation: dates.go, targets.go, derive.go, enqueue.go)
+const KindMedia jobs.Kind = "media"
+type Options struct { Store *store.Store; Runner *jobs.Runner; Sources *sources.Service; Zone *time.Location; Clock clock.Clock; Logger *slog.Logger }
+func New(o Options) *Service
+func MediaCond(alias string) string // D2; includes index.NotQuarantined(alias); alias must be a plain identifier
+func EnqueueMedia(ctx context.Context, tx *jobs.Tx, src domain.SourceID) error
+// D4: sets media_sources.dirty; EnqueueOnce scope "media:<src>", payload {"if_dirty":true};
+// when that job is running, EnqueueOnce scope "media-next:<src>" with the same payload. Any source state.
+type Targets struct {
+	EntryID   string   `json:"entry_id,omitempty"`   // single; only when the command allows it
+	EntryIDs  []string `json:"entry_ids,omitempty"`  // 1–1,000
+	FolderIDs []string `json:"folder_ids,omitempty"` // 1–100, one source
+	CameraKey string   `json:"camera_key,omitempty"` // only with folder_ids
+}
+func (t Targets) Validate(single bool) error // exactly one form; IDs through domain.ParseRef; a member ref is 400 when single
+type Skip struct { Entry domain.Ref; Reason string } // reason "not_media" for a member ref or a non-media file
+type Expanded struct { Source domain.SourceID; Media []domain.EntryID /* path order */; Skipped []Skip }
+func ExpandTargets(ctx context.Context, tx *sql.Tx, t Targets, max int) (Expanded, error)
+// not_found, in_quarantine (a target itself quarantined), invalid_request (two sources, over max)
+func (s *Service) Rederive(ctx context.Context, tx *sql.Tx, ids []domain.EntryID) error // D9
+
+// internal/dates (task 2.1, slice A)
+func (s *Service) Register(r *jobs.Runner)
+func (s *Service) DeferWhile(active func(ctx context.Context, q store.Queryer, src domain.SourceID) (bool, error))
+func (s *Service) AfterScan(ctx context.Context, src domain.SourceID)
+func (s *Service) Startup(ctx context.Context) error
+
+// internal/dates (task 2.6, slice B)
+func (s *Service) RegisterCommands(h *commands.Handler)
+func (s *Service) Routes(mux *http.ServeMux)
+
+// tests (foundation): internal/dates/helpers_test.go (env, the shared built corpus; slices only add),
+// internal/dates/datestest.Seed (fills media_meta with media.Read of each media file, then Rederive).
+```
+
+### Tables (migration `0008_media.sql`; foundation)
+
+`actions` and `action_items` are rebuilt as `actions_v8`/`action_items_v8`. Rows are copied with their IDs, items are dropped before actions, both are renamed, and every 0007 index is recreated. Every other CHECK and column stays, with new columns last:
+- `actions.kind` adds `'set_mtime','date_organize'`;
+- `actions.template TEXT` (a `date_organize`'s template) and `actions.rename INTEGER NOT NULL DEFAULT 0 CHECK (rename IN (0,1))`;
+- `action_items.op` adds `'set_mtime'`;
+- `action_items.new_mtime_ns INTEGER`, with `CHECK ((op = 'set_mtime') = (new_mtime_ns IS NOT NULL))`, and `action_items.prev_mtime_ns INTEGER CHECK (prev_mtime_ns IS NULL OR op = 'set_mtime')`;
+- `action_items.copy_of INTEGER REFERENCES entries(id) ON DELETE SET NULL`, indexed by `action_items_copy_of ... WHERE copy_of IS NOT NULL`.
+
+```sql
+CREATE TABLE media_meta (
+  entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','read','none','unreadable')),
+  size INTEGER NOT NULL, mtime_ns INTEGER, ctime_ns INTEGER, ino INTEGER,   -- the entries identity the read started from
+  capture_local TEXT, capture_offset_min INTEGER CHECK (capture_offset_min BETWEEN -840 AND 840),
+  gps_ns INTEGER, container_ns INTEGER,
+  make TEXT, model TEXT, serial TEXT,
+  read_at INTEGER,
+  CHECK (state = 'read' OR (capture_local IS NULL AND gps_ns IS NULL AND container_ns IS NULL
+    AND make IS NULL AND model IS NULL AND serial IS NULL)));
+CREATE INDEX media_meta_by_source ON media_meta(source_id, state, entry_id);
+
+CREATE TABLE media_dates (
+  entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL,
+  effective_ns INTEGER, local TEXT, offset_min INTEGER,
+  precision TEXT CHECK (precision IN ('second','day','month','year')),
+  source TEXT NOT NULL CHECK (source IN ('owner','exif','gps','container','file_name','folder_name','mtime','none')),
+  confidence TEXT NOT NULL CHECK (confidence IN ('high','medium','low','lowest','none')),
+  refined INTEGER NOT NULL DEFAULT 0 CHECK (refined IN (0,1)),
+  corrected TEXT CHECK (corrected IN ('set','shift','use_name','use_folder')),
+  flags INTEGER NOT NULL DEFAULT 0 CHECK (flags BETWEEN 0 AND 15),
+  meta_state TEXT NOT NULL CHECK (meta_state IN ('pending','read','none','unreadable')),
+  camera_key TEXT,
+  inputs_key INTEGER NOT NULL, computed_at INTEGER NOT NULL,
+  CHECK ((source = 'none') = (effective_ns IS NULL)),
+  CHECK ((effective_ns IS NULL) = (precision IS NULL) AND (effective_ns IS NULL) = (local IS NULL)),
+  CHECK (flags & 8 = 0 OR meta_state IN ('read','none')));
+CREATE INDEX media_dates_by_time   ON media_dates(source_id, effective_ns, entry_id);
+CREATE INDEX media_dates_by_source ON media_dates(source_id, source, effective_ns, entry_id);
+CREATE INDEX media_dates_by_camera ON media_dates(source_id, camera_key, effective_ns, entry_id) WHERE camera_key IS NOT NULL;
+CREATE INDEX media_dates_mtime_disagrees  ON media_dates(source_id, effective_ns, entry_id) WHERE flags & 1 <> 0;
+CREATE INDEX media_dates_implausible      ON media_dates(source_id, effective_ns, entry_id) WHERE flags & 2 <> 0;
+CREATE INDEX media_dates_camera_offset    ON media_dates(source_id, effective_ns, entry_id) WHERE flags & 4 <> 0;
+CREATE INDEX media_dates_no_date_metadata ON media_dates(source_id, effective_ns, entry_id) WHERE flags & 8 <> 0;
+
+CREATE TABLE date_corrections (
+  entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('set','shift','use_name','use_folder')),
+  set_local TEXT CHECK (set_local IS NULL OR length(set_local) IN (4,7,10,19)),
+  set_offset_min INTEGER CHECK (set_offset_min BETWEEN -840 AND 840),
+  shift_s INTEGER CHECK (shift_s BETWEEN -1577880000 AND 1577880000),
+  batch_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+  CHECK ((kind = 'set') = (set_local IS NOT NULL)),
+  CHECK ((kind = 'shift') = (shift_s IS NOT NULL)),
+  CHECK (set_offset_min IS NULL OR (kind = 'set' AND length(set_local) = 19)));
+
+CREATE TABLE media_cameras (
+  source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  camera_key TEXT NOT NULL,
+  make TEXT, model TEXT, serial TEXT,
+  photos INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('ok','offset','disagrees')),
+  suggested_shift_s INTEGER,
+  basis TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(basis)),
+  computed_at INTEGER NOT NULL,
+  PRIMARY KEY (source_id, camera_key),
+  CHECK ((state = 'offset') = (suggested_shift_s IS NOT NULL))) WITHOUT ROWID;
+
+CREATE TABLE media_sources (                 -- D4, D10
+  source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+  dirty INTEGER NOT NULL DEFAULT 0 CHECK (dirty IN (0,1)), -- set by every request, cleared at each loop's start
+  passes_job INTEGER,                        -- the media job running its passes, if any (D4's mutual exclusion)
+  summary TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(summary)),
+  summary_at INTEGER, detected_at INTEGER) WITHOUT ROWID;
+```
+
+Text formats other slices read:
+- `capture_local`, `set_local`, and `media_dates.local` use D5's and D11's forms.
+- `camera_key` follows D8.
+- `media_cameras.basis` is `{"events":[{"folder_id":"812","path":"Viagens/2010-07 Bahia","path_b64":"…","delta_s":-31546800,"photos":6,"span_s":10800,"reference":"gps"|"folder_name"|"own_gps"|null}],"others":["Canon|Canon PowerShot SX230 HS|"]}`. For `offset`, the events' folders are the suggestion's `folder_ids`.
+- `media_sources.summary` is the summary read's body (below) for that source, without `time_zone` and `detected_at`.
+
+### Commands (strict JSON; IDs are strings)
+
+| Command | Body | Success | Errors |
+|---|---|---|---|
+| `set-date-correction` | `Targets` (D11) + `correction: {kind, local?, offset_min?, shift_s?}` | 200 `{applied, skipped_count, skipped: [{entry_id, path, path_b64, reason}] (≤100, path order), batch_id}` | 400 `invalid_request` (shape, a bad date, a date after now plus one day, over 50,000 media, a member ref when single); 404 `not_found`; 409 `in_quarantine`; single only: 409 `invalid_entry_state` |
+| `clear-date-correction` | `Targets` | 200 `{cleared, batch_id}` | as above, without `invalid_entry_state` |
+| `plan-set-mtime` | `Targets` without `entry_id` | 201 `{action, items, next_cursor, summary: {unchanged}}` | 400 (shape, two sources, over 10,000 items); 404; 409 `in_quarantine`, `source_offline`, `writes_disabled`, `writes_unavailable`, `recovery_needed` |
+| `plan-date-organize` | `Targets` without `entry_id` and `camera_key` + `destination_id`, `template?`, `rename?` | 201 `{action, items, next_cursor, summary: {files_with_copies, split_siblings}}` | as `plan-set-mtime`, plus 400 for a bad template, or a destination that is not a present folder of the targets' source, is inside an archive, or is in the quarantine |
+| `plan-undo` | R3's | | reverses `set_mtime` items (D14) |
+| `run-action`, `cancel-action` | R3's | | unchanged |
+
+Single and bulk: only the correction commands take `entry_id`; a single request fails where a bulk one skips. Audit events: `date_correction_set` and `date_correction_cleared`, with detail `{targets, correction, applied, skipped, batch_id}`. Plans and runs audit as R3's do.
+
+### Read API (`dates.Routes`; every read applies `MediaCond`)
+
+- **`GET /api/dates/summary?source=`** answers:
+
+  ```
+  {media, metadata: {pending, read, none, unreadable},
+   by_source: {owner, exif, gps, container, file_name, folder_name, mtime, none},
+   by_confidence: {high, medium, low, lowest, none},
+   flags: {mtime_disagrees, implausible, camera_offset, no_date_metadata},
+   cameras: {offset, disagrees}, time_zone, time_zone_set, summary_at|null, detected_at|null}
+  ```
+
+  From `media_sources.summary` (D10); without `source`, the sum over sources.
+- **`GET /api/dates?source=&flag=&date_source=&camera=&within=&cursor=&limit=`** answers `{items: MediaDate[], next_cursor}`. `source` is required (400 without it). Order is by `effective_ns` then entry ID, with `none` last, or by path with `within` (D10). `limit` is 200 by default and at most 1,000. `count=only` answers `{count}`. Unknown parameters are `400 invalid_request`.
+  - `MediaDate {entry: {id, source_id, name, path, path_b64, size, mtime|null}, date: DateJSON, metadata: "pending"|"read"|"none"|"unreadable", flags: [name…], camera: {key, make, model, serial}|null, correction: CorrectionJSON|null}`.
+  - `DateJSON {instant|null, local|null, offset_min|null, precision|null, source, confidence, refined, corrected|null}`.
+  - `CorrectionJSON {kind, local?, offset_min?, shift_s?, created_at}`.
+- **`GET /api/dates/cameras?source=`** answers `{items: [{key, make, model, serial, source_id, photos, state, suggested_shift_s|null, events: [{folder: {id, path, path_b64}, delta_s, photos, reference|null}], computed_at}]}`: `offset`, then `disagrees`, then by photos. An event whose folder is gone is left out.
+- **`GET /api/entries/{id}/dates`** answers `{dates: EntryDates|null}`, or 404. It is `null` for anything `MediaCond` leaves out: not media, archive members, missing, and quarantined entries.
+  - `EntryDates = MediaDate` without `entry`, plus `candidates: [{source, local, offset_min|null, instant, precision, plausible}]`, derived on read (D9).
+- **The Action JSON** gains `template` and `rename`.
+- **The Item JSON** gains `mtime: {from, to}` (RFC 3339, nanoseconds, UTC; `from` is `prev_mtime_ns` once journaled, else the index time) for `set_mtime`, and `copy_of: {entry, path, path_b64}` for `identical_copy`.
+- **History.** `GET /api/history/{id}/items?op=set_mtime` is valid. The export's operation for `set_mtime` is `set_mtime`, and a `date_organize` rename is `move`.
+- **Item reasons** gain `date_too_coarse`, `not_dated_yet`, `hard_link`, `no_change`, `not_owner`, `identical_copy`, `invalid_name`, and `not_media`.
+- **Jobs.** Kind `media`, with D4's progress keys, appears in `GET /api/jobs/{id}` and the event stream.
+
+## Concurrency
+
+- **Scheduling (D4).** Requests, the handler's start, each loop's clear and end read, and its failure path are all write transactions, so they are ordered:
+  - *A request while no job exists, or while one is queued:* it creates or joins the queued `media:` job, with `dirty` set, so that job runs.
+  - *A request during passes 1–4:* the `media:` job is `running`, so a `media-next:` follow-up is enqueued; `dirty` is set, so the loop's end read sees it and loops again. The follow-up, once it starts, finds `passes_job` held and defers (no attempt used, so it stays a first attempt), or, after the loop released it, finds `dirty` clear and ends at once.
+  - *A request after the loop's end read, while the job is still `running`:* the follow-up is enqueued, finds `passes_job` released and `dirty` set, and runs the passes.
+  - *A request while the follow-up runs:* the `media:` job has ended, so a new `media:` job is created; it defers while the follow-up holds `passes_job`, then runs if `dirty` is still set. A further request joins whichever of the two is queued.
+  - *The job fails or is cancelled:* its failure transaction sets `dirty` and releases `passes_job`. A queued follow-up, or the next request, runs the passes; with neither, the next server start requests every source. A cancel is honoured: nothing runs until then.
+  - *A lost lease or worker:* the runner retries the attempt (same job, `Attempt > 1`), which ignores `if_dirty`, retakes its own `passes_job`, and runs. A crash on the last attempt skips the failure transaction; requests absorbed before that attempt's last clear wait for the next request or the next start, which requests every source. Every loop covers the whole source, so a late request is delayed, never answered wrongly.
+  - *A paused job:* the handler never pauses; one paused by hand is resumed by the next request.
+- **The read pass.** Each commit of up to 64 results re-checks, in its transaction, that the entry is `present` and its `entries` row equals the identity loaded when the read started, and that the `media_meta` row is `pending`. A rescan that changed the file dropped the row; a `set_mtime` outcome changed the `entries` times and carried the row. Either way, a commit just after them drops the result, and a carried row is read once more. A commit just before them is seen by them: the scan drops the fresh row if the file changed, and `ApplyModTime` carries it. A move just before makes the path differ, so the result is dropped and read again at the new path, as hashing does (R3).
+- **The dates pass, the commands, and the plans.** `Rederive` reads its inputs inside the writing transaction, so a result never outlives its inputs. A move or a written time committed just after a pass is picked up by the `media` job that `ActionDone` requests, and by any plan, which re-derives its targets first. Until then, list and summary reads may show the previous path's name and folder dates; that is eventually consistent.
+- **The cameras pass.** It reads a snapshot, computes, and writes `media_cameras` and the `camera_offset` bits in one transaction at the end of every pass. A correction committed during the pass may be overwritten there (its targets' bits set again, the suggestion still listed); its request set `dirty`, so the loop runs again and that run's write replaces it. A correction just after the write clears its targets' bits itself, and its request makes the job run again.
+- **Correction commands.** They expand targets, check quarantine, write, re-derive, request the job, and audit, in one transaction. A plan or a run committed before sees no correction. A plan just after uses the new dates. A planned action does not change (D13).
+- **`plan-set-mtime` and `plan-date-organize`.** These are index-only commands in the write transaction. They re-derive, then re-check writes, recovery, quarantine, keeps, and collisions against the index and the plan. A rescan or edit just after is caught at intent and at the step (identity and change time), and a name taken on disk just after by RENAME_NOREPLACE (`conflict`).
+- **The `set_mtime` step.** Its journal of `prev_mtime_ns` commits before the call; a crash between them reconciles to `planned` (old time), and the next attempt journals again. The outcome's `ApplyModTime` and `MarkStale` share the transaction recording `done`. A hashing or `media` read of that file committed just after fails its identity re-check and is dropped. Scans, `purge_check`, and the `media` job defer while `OrganizeActive` holds.
+- **Undo.** Intent requires the index's time to be the written one. A rescan in between that saw a hand edit changes it, so the item ends `changed`.
+
+## Risks / Trade-offs
+
+- [Parsers face untrusted bytes] → Bounds on reads, boxes, entries, and depth; offsets checked against the size; fuzz targets per format in CI, with seeds; long fuzzing behind the `slow` tag; a recover net that logs.
+- [The service account does not own the files] → `not_owner` per item, the action goes on, and writes stay on. The operator guide's deployment section says how to grant ownership or `CAP_FOWNER`, and the smoke and deploy tasks check it first.
+- [Floating times read in the wrong zone] → One explicit setting, warned about when unset and shown on the Dates screen; confidence `medium` for a time without an offset; corrections fix the rest.
+- [FAT mounts in another zone] → Documented (D7); flags tolerate ±1 h only.
+- [MP4 `mvhd` written in local time by some cameras] → `medium` confidence, the candidates shown in the panel, and the owner's correction.
+- [Offsets of 6 h or less go undetected] → Documented (D8); the owner shifts by hand.
+- [Medians of different shooting moments] → A candidate needs every capture outside the other cameras' widened range, a suggestion needs two events or GPS, and the preview lists the photos and their new dates before anything changes.
+- [A power loss right after `utimensat`, before the inode reaches the disk] → The index reads `done` while the disk may keep the old time. The next scan sees a change and re-reads the file. Nothing is lost, and an undo ends `changed` instead of writing.
+- [The first run opens every photo] → Device-bound bulk class, yields, and progress. Later runs read only what changed.
+- [Hard links] → `set_mtime` refuses them at planning, intent, and the step (D13), since one write would change every name.
+- [Corpus ripple] → New folders only. The corpus task lists and updates every test with hard-coded corpus numbers (ScoutCorpus's list).
+
+## Migration Plan
+
+- **Upgrade.** Migration 0008 rebuilds `actions` and `action_items`, keeping IDs and history, and adds five empty tables. At start, the `media` job reads every online source's media once, and derives offline sources' dates from the index.
+- **Configuration.** `[dates] time_zone` is optional, warned about when unset. The example configurations and the operator guide set it.
+- **Deployment.** Write-back needs the files owned by the service account, or `CAP_FOWNER` (D12); after a `chown`, a rescan before any write-back (it re-hashes and re-reads the media).
+- **Rollback.** Restore the backup taken before deploying: an r4 binary refuses a newer schema.
+
+## Addendum: decisions made during implementation
+
+- **Z1. `"Local"` is refused.** `time.LoadLocation("Local")` returns `time.Local`, so `time_zone = "Local"` would choose the server's zone while silencing the unset warning. `Dates.Location` refuses it, like an unknown name, with a problem naming `dates.time_zone`. Any name `time.LoadLocation` resolves, `"UTC"` included, is accepted; the config tests link `time/tzdata`, as the binary does, so they need no host zone files.
+- **Z2. Where check-config shows the zone.** The effective zone is a comment line above the TOML on standard output: `# Media dates are read in America/Sao_Paulo (-03, UTC-03:00).`, or `# dates.time_zone is unset: media dates are read in the server's local zone (UTC, UTC+00:00).` The abbreviation and offset are taken at the current time, since `time.Local`'s name is always "Local". The warning is one line on standard error and the exit status stays 0; the TOML prints `time_zone = ""`, so the output still loads back to the same configuration.
+- **Z3. The start warning is the first thing `serve` does.** A `WARN` record with the same text as check-config's warning and a `zone` attribute describing the local zone, logged before anything else starts. An unknown name stops `serve` in the shared `loadConfig`, before the state directory is touched, as it stops `check-config`.
+- **Z4. Example zone.** Both example configurations set `time_zone = "America/Sao_Paulo"`, the name the spec uses; the Compose steps (in `compose.yaml` and the operator guide) say to edit it with `external_origin`.
+- **W1. synthfs `SetModTime` checks in `utimensat`'s order.** The name is looked up first (absent), then the device's read-only state (`ErrReadOnly`), then the foreign mark (`EPERM`, `ErrPermission`), so an absent name on a read-only device is absent, as on a read-only tmpfs remount. The other synthfs writes keep checking read-only first, as their system calls do.
+- **W2. The foreign mark is `(*synthfs.Node).Foreign()`.** It marks the file a hard link's names share, does not advance the change time (it models ownership as built, not a `chown`), and affects only `SetModTime`: renames and unlinks depend on the folder, not the owner.
+- **W3. synthfs stores a set time as its device would.** With capabilities: truncated to `TimeResolution`, and with `LocalTime` as the wall time of `t` in the zone the device is mounted with when it is set (so moving that zone later shifts it, as for built times). A device without capabilities stores `t` exactly (monotonic reading dropped). The change time advances on the FS clock; the folder's times do not change. A folder or a symlink can be set, as `utimensat` allows; refusing anything but a regular file is the executor's step (D13).
+- **W4. `instrument.Call` gains `ModTime`,** the time a `SetModTime` asked for (additive), so executor tests can assert the written time from the log.
+- **W5. Linux error mapping goes through `WriteError`.** `ENOENT` is absent, `EPERM`/`EACCES` `ErrPermission`, `EROFS` `ErrReadOnly`, anything else unavailable; a time a 32-bit `timespec` cannot hold (`ERANGE` from `unix.TimeToTimespec`) is unavailable before any system call.
+- **W6. The "another user" e2e test runs only as real root.** `inUserNamespace` maps a single user, so no second owner exists there; the test skips unless root, and `scripts/e2e-docker.sh` runs it. It drops to another user on one locked OS thread with raw `setgroups`/`setresgid`/`setresuid` (Go's wrappers change every thread), never unlocking it, so the thread exits with the goroutine. The foreign file is mode `0666`, so the refusal shows write permission is not enough, and a file that thread owns is set as a control.
+- **I1. 0008 is exactly Interfaces, and the guard covers what it adds.** Tables, columns, CHECKs, and indexes are as listed; the rebuilt tables keep 0007's column order with the new columns last, and every 0007 index is recreated. The store's foreign-key guard checks every reference into `entries`, `actions`, `action_items`, and `purge_checks`, and the references into `sources` of `actions`, `media_cameras`, and `media_sources`. `jobs.source_id` and `review_rows.source_id` predate R5 and are searched without a usable index; 0008 leaves them as they are. The 0007 column and index test now pins the v7 schema (`migrationsUpTo(7)`), as the 0006 one pins v6.
+- **I2. One list of content tables.** `index.contentTables` (`file_content`, `archives`, `media_meta`) is what `keepContent` and `ApplyModTime` carry, so a further cache keyed by entry identity is added in one place. `stDropMedia` runs beside `stDropContent` and `stDropArchive` in the same `opUpdate`, so the delete commits or fails with the `entries` update.
+- **I3. `ApplyModTime`'s guards and carry.** It refuses any entry that is not a present file of the source (folders, the root, links, special files, missing entries, other sources, unknown IDs). It carries the content rows only when the post-step inode equals the stored one, as `keepContent` does; the carried rows take the new `mtime_ns` and `ctime_ns` (NULL for an unknown change time), and their size and inode stay. The entry's own `newest_ns`/`oldest_ns` follow `ownRange`, as a scan writes them.
+- **I4. A correction is intent everywhere `intentCond` is.** `MissingIntentAt`, `IntentBelow`, `freePath` (moves and new folders), and `RemoveFolder`'s check of missing children all count a `date_corrections` row; `ErrMissingIntent`'s message names it. The item reasons table's `name_taken_by_missing` text ("your decision, tags, or category"), owned by slice D, should add "or a date correction".
+- **P1. A bad template is `media.ErrInvalidTemplate`.** `media` stays standard-library only, and `internal/domain` imports `golang.org/x/text`, so `ParseTemplate` cannot return a `domain.Error`. Every refusal wraps the exported sentinel `media.ErrInvalidTemplate` (`errors.Is`), and slice D's `plan-date-organize` maps it to `400 invalid_request` with `domain.Wrap`. Agreed with the coordinator.
+- **P2. A malformed structure gives nothing from that file.** A fault in a file's structure (a header, an IFD or box outside the file or its parent, a loop between IFD0, Exif, and GPS IFDs, more than 1,024 IFD entries or boxes or `iloc` items, depth over 8, the budget spent) makes `Read` return an empty `Meta` for the whole file. A single tag whose value lies outside the file only leaves that value out. Only an error of the `ReaderAt` is returned; a short read at the file's end is a fault, not an error. Text values over 256 bytes, and Exif items and CMT boxes past 256 KiB, are cut there.
+- **P3. The offset and subseconds belong to `DateTimeOriginal`.** `OffsetTimeOriginal` and `SubSecTimeOriginal` apply only when the capture comes from `DateTimeOriginal`; the `DateTimeDigitized` and IFD0 `DateTime` fallbacks, taken when the one above is absent or does not parse, carry neither. A blank or impossible EXIF date (`0000:00:00`, February 30th) is no date. Dates use `:` or `-` in the date and a space or `T` before the time.
+- **P4. Years 1700–2200.** Every date read or set (EXIF, GPS, names, folders, the owner's `set`, the `mvhd` time up to 2201-01-01) has a year from 1700 to 2200, so every instant fits `effective_ns`; `DateFromRow` reads back years 1600–2300, which a UTC instant at the bounds can show in another zone. Fuzzing found both cases (checked-in seeds `pxl-year-0001`, `pxl-year-1700`).
+- **P5. A known modification time is the last resort.** D5 says "none" happens only for an unknown modification time, so a known one wins when no other candidate is plausible, even an implausible one (a FAT default 1980-01-01); its candidate reads `plausible: false`, and it never sets `implausible`. Name and folder candidates are tested for plausibility like the others, without the flag.
+- **P6. Instants keep their fractions; `local` is to the second.** The EXIF subseconds (as milliseconds), PXL's milliseconds, GPS's fractional seconds, and the modification time's nanoseconds stay in the instant, so a date taken from the modification time equals it and plans no change. `Meta.CaptureLocal` carries ".000" when there are subseconds; `Date.Local` never does.
+- **P7. `offset_min` only when the source records one.** EXIF with `OffsetTimeOriginal` and an owner's `set` with an offset carry it; GPS, container, name, folder, and modification-time dates have their `local` in the zone and no offset.
+- **P8. Distances.** `mtime_disagrees` measures from the instant at second precision, and from the period otherwise (an owner's `2012-02` containing the modification time does not disagree); its limit is 24 h, plus 1 h on a `LocalTime` filesystem. Refinement widens the period by 1 h on a `LocalTime` filesystem and by nothing otherwise.
+- **P9. Corrections in `Derive`.** A `shift` moves the EXIF capture even when implausible, else the uncorrected effective date (refined if it was), keeping its precision and offset; a date coarser than a second starts its new period. With nothing to shift, or a `use_name`/`use_folder` without that candidate, or a `set` whose text does not parse, the correction does not apply (`Corrected` is empty). `use_name` and `use_folder` force their candidate even when implausible, with refinement as usual. The owner's date is listed first among the candidates.
+- **P10. `InputsKey` also covers the capabilities.** `LocalTime` and `Resolution` change refinement and flags, so they are in the key with D9's inputs; every field is length-prefixed. `Now` is not.
+- **P11. Detection details.** Own-GPS candidates arise only in events, and replace that camera's plain candidate there. The `gps` reference needs at least one of the other cameras' photos in the event with GPS, and all of those within 10 minutes. An event's folder date is its photos' `FolderDate`, which the caller sets to the event folder's D6 date; without a zone, its period ends by the offset its instant implies. A median of an even count is the mean of the middle two; deltas round to the second, the suggestion (minus the median of the candidates' deltas) to the minute, half away from zero. Results are by key; `ok` cameras list no events; `disagrees` cameras list the events of their candidates without the `offset` cameras; `Photos` counts all the camera's photos given.
+- **P12. Small choices.** `CameraKey` is "" when make, model, and serial are all empty, and such photos have no camera. `FormatOf` also reads `jpe` and `jfif` as JPEG. A name pattern followed by a digit is no match (`IMG_20150312_1430001`). A folder named `2010-13 x` dates to the year 2010 (the longest valid form). `EventName` strips D6's syntax without the read-year bound (it has no clock). A template component left as `.` or `..` after an empty `{event}` goes, like an empty one.
+- **P13. The corpus's date truth.** `DateTruth.flags` are flag names in bit order, as the list API names them, and include `camera_offset` on the Sony's 12 photos, since the truth is what the `media` job leaves, cameras pass included. `GroundTruth.Cameras` lists every camera the cameras pass lists: the Sony with its shift and two folders, and the Canon (8 photos) and the Nikon (3: `DSCN0004.JPG`'s capture is implausible, so detection is not given it) with `shift_s` 0 and no folders. The FAT fixture has no cameras (`null`).
+- **P14. The corpus's own rule.** Which files are media is the policy's image and video extensions, copied into `internal/corpus` so the truth depends on no rules code. A media file without hand-declared truth is dated by the nearest ancestor whose name starts with `YYYY`, `YYYY-MM`, or `YYYY-MM-DD` (then the end, a space, `-`, `_`, or `.`; from 1990): the modification time, refined, when it lies in that period, else the period; with no such folder, the modification time; always with `no_date_metadata`. `TestDateTruthMatchesMedia` (test only) reads every media file through `media.Read`, derives with `media.Derive` and `media.Detect` for the zone UTC, and finds the hand-declared truth and the rule equal to them.
+- **P15. Fixture details D19 leaves open.** EXIF is written big-endian, with IFD0 `DateTime` equal to the capture. The Nikon's subseconds are "12", "34", "56" (.120, .340, .560 s), and `DSCN0004.JPG` carries the same `-03:00` offset as its siblings. The MP4 is `ftyp`, `moov/mvhd`, and 24,000 random bytes of `mdat` (not playable). The corpus grows from 518 to 562 entries (23.7 to 23.9 MB); its root time is unchanged. `TestOlderFoldersUnchanged` pins a hash of the r4 corpus's `Fotos`, `Fotos - Copia`, `Midia`, and pendrive copies (132 entries: paths, kinds, times, digests, order). No Go test's hard-coded corpus numbers changed.
+- **C1. `content.Opener` is the hashing chain, exported.** The unexported `chain` became `Opener` (`NewOpener(root, nil)` watches nothing); `Open` answers `OpenAt`'s errors and `OpenAt` is `NewOpener` + `Open` + `Close`. The hashing job holds one `Opener` per attempt and calls its unexported `open`, which keeps the raw walk errors its `classify` reads, so its behaviour is unchanged. A media read classifies `Open`'s errors thus: `fsaccess.OutcomeOf` is `unreadable` → `unreadable`; `absent` or `changed_during_observation` → changed; `invalid_entry_state` with no outcome (the lstat no longer matches the row) → changed; anything else is an I/O error, which hashing checks against the source root.
+- **C2. `set_mtime` has a name and columns, no step.** `opSetMtime` and the item's `newMtime`/`prevMtime` (read with `itemColumns`) exist; intent's default ends the item `failed`, detail `unknown step set_mtime`, with nothing asked of the disk or the index (r4 F6). The intent `UPDATE` does not write `new_mtime_ns` or `prev_mtime_ns`: task 2.8 journals `prev_mtime_ns` in its own transaction. The executor test fake gains `ApplyModTime`, which writes the entry's new facts and records the call.
+- **C3. `Validate(single)`: `single` is "this command takes `entry_id`".** The correction commands pass `true`, the date plans `false`, which refuses `entry_id`. A member ref is `400` as `entry_id` and in `folder_ids`; in `entry_ids` it passes, and `ExpandTargets` skips it `not_media`. An empty `entry_ids` or `folder_ids` array counts as the form given and fails its bounds. `ExpandTargets` parses `t` as `Validate(true)` does; its caller validates with its own `single` first.
+- **C4. `ExpandTargets` details.** IDs repeated collapse. An unknown ID is `not_found`, and so is a folder ID whose entry is not present; a folder ID of anything but a folder is `invalid_request`. The quarantine test is `index.IsQuarantinePath` on each target's own path (the quarantine folder included), after the one-source test. `Media` is in path order; `Skipped` lists the entries in path order, then member refs as given (their source is not checked; `Source` is empty when only members are named). With `camera_key`, a photo belongs to the camera when the `media.CameraKey` of its `read` `media_meta` row equals it, directly in a target folder (`parent_id`) and under `MediaCond`; no plausibility filter applies, so a photo whose capture is implausible is still its camera's.
+- **C5. `Rederive`'s inputs and writes.** Inputs: the entry's path; its `mtime_ns` when `domain.KnownModTime`; the source's recorded `capabilities` (`local_time`, `time_resolution_ns`); `media_meta` (no row is `pending`; `Meta` only for `read`); the `date_corrections` row; `Options.Zone` (nil is `time.Local`); `Now` from the service clock. `inputs_key` stores the `uint64` as its two's-complement `int64`. On a rewrite the `camera_offset` bit is kept unless the entry's correction row is `set` or `shift`, whether or not it applied. `camera_key` is the read metadata's key, NULL when empty; `computed_at` is in milliseconds. IDs no longer indexed are skipped; rows of entries `MediaCond` leaves out are deleted. IDs go in chunks of 500 per read.
+- **C6. The stored summary and its recount.** `media_sources.summary` holds `media`, `metadata`, `by_source`, `by_confidence`, `flags`, and `cameras`, every key always present; the read adds `time_zone`, `time_zone_set`, `summary_at`, and `detected_at`. `Rederive` adds and subtracts the rows it writes and deletes, creating the `media_sources` row when needed; it never sets `summary_at`. `recount` (unexported, for slice A) counts the `media_dates` rows of `MediaCond` entries and the `media_cameras` states; pass 3's last window stores it with `writeSummary`. Slice A must also: (1) re-derive, in pass 3, the entries of the source that hold a `media_dates` row but that `MediaCond` leaves out, so no stale row outlives a rewrite and is subtracted later; (2) keep the `camera_offset` and `cameras` counts right when pass 4 writes the bits and `media_cameras` (adjust them, or store a recount in the same transaction).
+- **C7. `EnqueueMedia` details.** An unknown source is `unknown_source`, checked before anything is written. `dirty` is set by an upsert of `media_sources`. The payload is `ifDirtyPayload` (`{"if_dirty":true}`) and the scopes come from `mediaScope`/`mediaNextScope`, for slice A's handler to share. Until slice A registers `KindMedia`, its jobs stay queued (the runner claims registered kinds only).
+- **C8. `datestest.Seed` does not import `dates`.** A test of package `dates` cannot import a package that imports `dates`, so `Seed(t, st, srcs, svc, src)` takes `svc` as `datestest.Deriver` (`*dates.Service` satisfies it) and selects media by `MediaCond`'s Go twin: present regular files outside the quarantine whose `file_kind` `media.IsMediaKind` accepts (`TestMediaCondAgreesWithIsMediaKind` checks the twins agree). It writes `media_meta` with the entries row's identity (`read`, `none` for formats D1 does not read, `unreadable` when the open is refused as unreadable; empty texts NULL; `read_at` NULL), then `Rederive` in windows of 256. No cameras pass runs.
+- **C9. The dates test env.** `helpers_test.go` gives `newEnv` (a migrated store) and `newCorpusEnv` (the corpus as source `corpus` at `/mnt/corpus`, posix, writes on, scanned): the scanned database is built once per package and copied per test, with a synthfs built the same way, which gives every file the same device, inode, and times. The env has the store, a synthfs behind an instrument recorder, the sources service, a runner that is not started, a settable clock at 2026-10-01 12:00 UTC, and the service in the zone UTC; helpers `disk`, `addSource`, `mount`, `scan`, `runJob` (with an attempt number), `move` (disk and `index.MoveEntry` with a refold), `facts`, `open`, `write`, `rederive`, `expand`, `id`, `ref`, `mediaIDs`, `storedSummary`, and `recounted`. The organize test world builds `dates.New` as serve does (`w.dates`).
+- **C10. Serve.** `dates.New` is built after the scanner's hooks and before organize, with the zone `cfg.Dates.Location()` resolves (validated at load, so its error is unreachable in practice), the runner, the sources, the clock, and the logger; `organize.Options.Dates` is set from it.
+- **E1. A planned item's `detail` names the siblings it leaves behind.** D16 names them "through the items' `detail`" without a format, so the interface shows a planned item's `detail` as it comes, under "Leaves behind: …"; a failed item's `detail` stays the system's error text. The server should write the siblings' names, comma-separated, and nothing else in a planned item's `detail`.
+- **E2. A refused `set_mtime` item shows by its path and reason only.** `action_items` requires `new_mtime_ns` on every `set_mtime` row, refused ones included, but a file refused `date_too_coarse`, `not_dated_yet`, `hard_link`, or `not_media` has no time to set. The interface ignores `mtime` on a refused item and shows `from.path` (else `entry.path`) with its reason; a planned, running, or ended item shows `mtime.from` → `mtime.to` (`from` null reads "unknown"). Items without `mtime` or `copy_of` (other ops and reasons) may omit them or send `null`.
+- **E3. "Discard these copies" takes the entries of the refused `identical_copy` items.** The preview pages `GET /api/history/{id}/items?state=refused`, keeps the items with reason `identical_copy`, and sends their `entry.id` (so `entry` must be set on them) to `set-decision` `discard`, 1,000 to a request, after its own confirmation; the plan itself does not change. `copy_of.entry` is a string ID, as every ID.
+- **E4. The shift preview lists the photos the camera target takes.** Before confirming a suggested shift, the dialog lists, for each event, `GET /api/dates?source=&camera=<key>&within=<event folder>` and keeps the photos directly in that folder (D11's camera target), with their date now and the date after, computed by adding `shift_s` to `local` at its precision. After the confirmation the dates are refetched, so the server's derivation is what the list shows.
+- **E5. The media job's progress comes from events only.** No read names a source's running `media` job, so the Dates screen keeps the last `job` event of kind `media` per `source_id` and shows it until a terminal event, which also refetches every dates response. After a reload, progress shows from the job's next event.
+- **B1. The commands audit as organize does.** `internal/dates` also imports `auth` (`WriteAudit`) and `web/clientip` for the events' client address; neither imports `dates`. `date_correction_set`'s detail is `{targets, correction, applied, skipped, batch_id}`, with `targets` and `correction` as the request gave them and `skipped` a count; `date_correction_cleared`'s is `{targets, cleared, batch_id}`. An event is written for every accepted request, even one that changed nothing.
+- **B2. What a correction can apply to is what `Derive` says.** Each expanded media file is derived with the new correction in place of its own (P9): an empty `Corrected` skips it `no_name_date` (use_name), `no_folder_date` (use_folder), or `no_date` (a shift with nothing to shift, possible only for source `none`; a reason D11 does not list); a shift whose result lies after now plus one day skips it `in_future`. A `set` after now plus one day (its period's start, read in the zone or its offset) refuses the whole request `400`. A shift of 0 is `400`. A single request fails `409 invalid_entry_state` on any skip, `not_media` included; a single `clear-date-correction` of a file that is not media answers `cleared: 0`.
+- **B3. Writes.** Applied targets get their row by upsert (replacing an earlier correction) with one `batch_id` from `crypto/rand.Text`, then `Rederive`, then `EnqueueMedia`, only when something was applied or cleared. Skipped targets keep their correction. `skipped` lists entries in path order (ExpandTargets' skips and the refusals merged), then member refs, whose path is the archive's and the member's joined, or empty for an unknown member.
+- **B4. The list reads one range in order, pinned.** Each statement names D10's index with `INDEXED BY` and fixes the join order with `CROSS JOIN` (entries by primary key); `within` reads `sqlite_autoindex_entries_1`'s `(source_id, path)` range with `media_dates NOT INDEXED` (its primary key only), because with the flag as a bound residual SQLite chose to scan a partial index for the inner loop. Date order is two segments, each one index range: the dated rows by `(effective_ns, entry_id)`, then the dateless by `entry_id`. The cursor is unpadded base64url of a small JSON (`t`+`id`, `n`+`id`, or `p`), checked strictly against the request's order; after it, the range is `effective_ns >= ? AND (effective_ns > ? OR entry_id > ?)`, since a row-value comparison made SQLite skip-scan the source index and sort on analyzed data. `limit` above 1,000 is capped, as other reads do; `count=only` refuses `cursor` and `limit`. `within` is the folder's subtree (its top: the whole source); an unknown or missing folder is `404`, a non-folder or a folder of another source `400`. For the camera preview (slice E), `camera` + `within` is that camera's media in the event folder's subtree in path order; an item directly in the folder is one whose `entry.path` is the folder's path, `/`, and a name.
+- **B5. The summary read.** With `source`, an unknown source is `404 unknown_source`; without, it adds every source's stored summary. `summary_at` and `detected_at` are then the oldest source's, `null` while any source has none. `time_zone_set` is false exactly when the service's zone is `time.Local` (Z1 refuses the name "Local"), and `time_zone` is then the local zone's abbreviation and offset at the service clock's now, `MST (UTC-07:00)`, as check-config shows it; otherwise the zone's name.
+- **B6. The cameras read shows detection's figures, filtered live.** `photos`, `state`, the suggestion, and each event's `delta_s`, `photos`, and `reference` are the stored ones (detection's counts, P11 and P13). Each event's folder is read from `entries`: its current path, or the event is left out when it is not a present folder of the source outside the quarantine. A camera with no media file left (no `media_dates` row of its key under `MediaCond`, through `media_dates_by_camera`) is left out. `basis` is decoded leniently: only `events[].folder_id`, `delta_s`, `photos`, and `reference` are read.
+- **B7. One entry's dates.** The date, flags, metadata state, and camera are the stored row's when there is one; a media file not derived yet is derived on read (no `camera_offset` bit). Candidates are always derived on read. A member ref answers `null` when the member exists, else `404`; an unknown entry `404`.
+- **B8. Tests.** The command and read harness (`apiB`) is in `commands_test.go`; slice B adds nothing to `helpers_test.go`. The plan guard runs `ANALYZE` on the seeded corpus and checks every list segment, with and without a cursor, `count=only`, and the cameras read. `cmd/precious/serve_dates_test.go` checks serve's wiring.
+- **X1. Intent's re-checks, in order.** After R3's common checks: the entry present, a regular file of the source, still at the item's `from_parent`/`from_name` when the plan set them (else `changed`, no reason, as a rename); no `new_mtime_ns` is `failed`; then `refused in_quarantine` (`index.IsQuarantinePath`), `refused hard_link` (index `nlink > 1`; NULL passes, the step checks the disk), `refused no_change` (`sameTime` of the index time and the new one). The recorded identity is the index row's kind, device, inode, size, `mtime_ns`, and `ctime_ns`; the shared intent `UPDATE` now writes `ctime_ns` for every op, which is the item's own value for every other op (a cleanup rename keeps its draft-time one).
+- **X2. Undo's written-time check is the resolution only.** The index's `mtime_ns` must be within `TimeResolution` of the original item's `new_mtime_ns` (a NULL on either side fails), without the local-time hour: a time an hour off was not written by Precious. Else `changed identity_changed`. Slice D's planning uses the same comparison (agreed by message).
+- **X3. The step checks the link count before the identity.** `link(2)` advances the change time, so a link made after the scan would otherwise read `changed`; a regular file with `Nlink > 1` is `refused hard_link` first, then kind, `matches` (size, time, device and inode where stable), and the change time (`sameTime` when both are known) give `changed identity_changed`. A file that is a mount boundary is `refused other_filesystem`, as for a rename.
+- **X4. The journal is its own write transaction,** `UPDATE … SET prev_mtime_ns = ? WHERE id = ? AND state = 'intent'`, of the `lstat` the step just compared. Its failure ends the attempt with the item `intent`; the reconcile finds the old time and sends it back to `planned`.
+- **X5. Errors.** `ErrPermission` is `failed`, reason `not_owner`, detail the system's message, the action going on; `ErrReadOnly` is `failed` and stops the action; an absent name is `changed`; anything else (including a Dir without a Writer, `ErrNoReplaceUnsupported`, and EIO) is `failed` with the system's message, recorded at once without looking at the disk again (D13), so `settleAfterError` is never used for `set_mtime`.
+- **X6. Settling compares the identity without the times.** Kind, device and inode where stable, and size; then the time: `sameTime` to the new one and not to the old is done (outcome with `ApplyModTime` of the `lstat`'s facts, `MarkStale` of `from_path`, `reversed_by` for an undo); the old one and not the new while reconciling is `planned` (or `not_attempted` once the action stopped); anything else, including the old time right after a successful call or a time that matches both on a local-time filesystem, is `manual_recovery` with `{"from":"absent"|"other","to":"absent"}`, stopping a running action.
+- **X7. Tests.** The executor tests' fake index applies `ApplyModTime` as organize's adapter does (`index.ApplyModTime`, then a `Refold` of the entry), so the carry of `file_content` and `media_meta` is exercised for real. Task 2.9 runs on the corpus with copies of `DSCN0001–0003.JPG` added in `Copias Ouro Preto` so the real hashing job (on a runner started for it) reads them; the scanned, hashed database is built once per package and copied per test, with a synthfs built the same way. `media_meta` rows are inserted with the entries' identity (state `read`); the executor's tests import neither `dates` nor `media`. The crash before journaling is a SQLite trigger that aborts the journal's `UPDATE`. synthfs models no access time; task 1.2's tmpfs test covers it. The foundation's `TestSetMtimeWithoutAStep` is removed.
+- **X8. Compose and `CAP_FOWNER`.** Task 2.8 names `cap_add: [FOWNER]` for Compose, but Docker clears added capabilities when the container starts as a non-root user, and the image runs as UID 65532, so it only reaches the bounding set. The guide says so and gives ownership by UID 65532 as the Compose way; the systemd drop-in (`CapabilityBoundingSet=CAP_FOWNER`, `AmbientCapabilities=CAP_FOWNER`) works, since ambient capabilities survive the switch to `User=`. The deploy and smoke tasks should check ownership, not the capability, under Compose.
+- **A1. The start's order.** One write transaction: the `media_sources` row is created when missing; `passes_job` naming another job whose `jobs.state` is `running` defers 3 s (`media_running`); a first attempt with `if_dirty` and `dirty` clear ends there (succeeded, nothing run); then `active` (`DeferWhile`) defers 3 s with `index.DeferOrganizing` (`organizing`, the scan's reason); then `passes_job` is taken. The organizing check comes after `if_dirty`, so a job with nothing to do ends instead of waiting. The payload is decoded strictly (`{"if_dirty":true}` or `{}`); anything else fails the job `invalid_request`. A failure before `passes_job` is taken also runs the failure transaction, which then only sets `dirty`.
+- **A2. The failure transaction releases only its own hold** (`passes_job = CASE WHEN passes_job = <own id> THEN NULL …`) and always sets `dirty`, under `context.WithoutCancel`. Read results finished before a cancel or failure are committed first, with the I9 check, so a cancel keeps what was read. A hook error after the end read (which already released `passes_job`) only sets `dirty`.
+- **A3. The read pass's details.** Pending rows are loaded 64 at a time in entry-ID order (`media_meta_by_source`), with their `entries` identity (path, size, `mtime_ns`, `ctime_ns`, `ino`, `dev`), read one by one with a `Yield` after each file, and committed in one write per batch. A pending row whose format `media.FormatOf` does not read is committed `none` unopened. Every `ReadAt` of `media.Read` is a watched call that checks `ctx` first and counts `bytes`. The restat after the read requires the fstat to equal the open's lstat exactly (hashing's `sameFile`: kind, device, inode, size, both times). Errors follow C1 for the open, the reads, and the fstat alike: unreadable outcome → `unreadable`; absent, changed during observation, or `invalid_entry_state` without an outcome → changed (no write, progress `changed`); anything else is checked with `FSInfo` on the root: `unreadable` while it answers, else the pass stops.
+- **A4. A source lost during the read pass ends that pass, not the job.** When the root stops answering, the results finished are committed, a warning is logged, and passes 3 and 4 run from the index, as for a source that could not be opened (`sources.Open`'s `source_offline`); the job succeeds. Its pending files wait for the next request (the next scan once it is back, or the next start).
+- **A5. Pass 3's windows.** `SELECT e.id FROM entries e WHERE e.source_id = ? AND e.id > ? AND (MediaCond(e) OR EXISTS (a media_dates row)) ORDER BY e.id LIMIT 256`, then `Rederive` of those IDs, in one write each (C6 (1)). The window that returns fewer than 256 IDs also stores `recount` with `writeSummary` and stamps `summary_at`. `of_media` is the source's MediaCond count at the pass's start; `media` counts the IDs derived, capped at `of_media`.
+- **A6. Pass 4's input and write.** The snapshot is one read transaction: `read` `media_meta` rows with a `capture_local` of MediaCond entries, with their parent folder and correction. A photo is given to `media.Detect` when its camera key is not empty, it has no correction or a `shift`, and `media.Derive` of its uncorrected inputs lists a plausible `exif` candidate; its capture is that candidate's instant plus the shift, its GPS the read GPS time, and its `FolderDate` the D6 date of its parent folder's own name (none for the source's top). The write transaction replaces the source's `media_cameras` rows (`make`, `model`, `serial` are the key's cleaned parts, NULL when empty; `basis` as Interfaces, with the snapshot's folder paths, `reference` null when none, `others` never null), sets `camera_offset` on exactly the photos given to detection of an `offset` camera directly in its event folders and clears it on every other row of the source (by difference with the rows flagged now, one `UPDATE` per changed row), adjusts the summary's `flags.camera_offset` by the rows changed, sets `cameras` from the new rows (C6 (2)), and stamps `detected_at`.
+- **A7. Progress per loop.** Every key (`phase`, `files`, `of_files`, `bytes`, `changed`, `unreadable`, `media`, `of_media`) is reset when a loop iteration starts, so a job that loops shows the last iteration's figures.
+- **A8. Wiring.** `Startup` requests every source, in any state, in one transaction. `AfterScan` logs a failed request. In `serve`, `dates.New` now comes before `scanner.OnScanDone` (C10 placed it after), because the after-scan hook calls `AfterScan`; `DeferWhile(executor.OrganizeActive)` and `Register` follow it. The organize and cleanup test worlds (`internal/organize/helpers_test.go`, `internal/cleanup/helpers_test.go`) do the same, since `ActionDone` now requests media jobs and their tests wait for every job to end.
+- **A9. Test hooks.** `Service` gains one unexported field, `job` (`jobWiring`: the `DeferWhile` function and a test hook called at named stages: started, planned, read_commit, read, derived, snapshot, detected, ended). The tests run handlers directly under job rows they mark running (`runScopeA`), with the runner's deferral rule (a `*jobs.Defer` requeues without the attempt).
+- **O1. A `set_mtime` item's shape.** It names the entry, with `from_parent`, `from_name`, and `from_path` at its current place, no `to_*`, `bytes` its size and `files` 1, and `new_mtime_ns`; an undo item adds `reverses`, the original whose `new_mtime_ns` the index must still hold (agreed with the executor's step, task 2.8). The schema's CHECK gives every `set_mtime` row a `new_mtime_ns`, so a refused one (`not_dated_yet`, `date_too_coarse`, `hard_link`, `not_media`) carries the entry's index time, or 0 when that is unknown or the target is an archive member; `mtime` is answered on every `set_mtime` item, and the interface ignores it on refused ones (E2).
+- **O2. `plan-set-mtime`'s order and tests.** Per file, in path order: `not_dated_yet` (the `media_dates` row's `meta_state` is `pending`, or there is no row, and `media.FormatOf` reads the extension), then `date_too_coarse` (no date, or precision not `second`), then `hard_link` (index `nlink > 1`), else the instant truncated down (floor, so dates before 1970 too) to `TimeResolution`. A file whose known index time is `sameTime` to it under the source's capabilities (R1 D8: the resolution, or exactly ±1 h on a `LocalTime` filesystem; the test the step's `no_change` uses) counts in `summary.unchanged`. The targets `ExpandTargets` skipped follow the media items as `not_media` items, in its order; an archive member's item has no entry and its path is the archive's path, then the member's, as plan-move's `inside_archive` items have.
+- **O3. A date organize's items.** Every file's folder path and name are decided first; then the folders on the way are resolved with `merge.go`'s resolver in path order, so every `mkdir` (once each, parents first) comes before the first move; then one item per file in path order; then the `not_media` items; `dropUnusedMkdirs` runs last. A refused file's item names the place it would have gone when the template could be applied (`invalid_name`), else only its `from`. Targets that name only archive members are planned on the destination's source; otherwise targets and destination must share one source (`400`).
+- **O4. Collisions, read against D17 and the owner-intent spec.** The name is checked against the folder's present children (the file itself aside), the plan's moves into that folder (by entry, so a copy can be named), the plan's `mkdir` names there, and `index.MissingIntentAt`. A missing entry with intent holding the file's own name makes the item `conflict name_taken_by_missing` with no suffix ("A missing corrected photo keeps its name"); a present child or earlier move holding it is `refused identical_copy` when both are hashed with one `content_id` (`copy_of` that entry), else the first `stem (k)ext` free in all four sets, k ≤ 999, a candidate over 255 bytes ending the search (`conflict name_taken`). `already_there` and the other move refusals are decided before the name. Items refused `identical_copy` carry their `entry` (E3).
+- **O5. `invalid_name`.** A template folder or a file name (renamed or not) that fails `fsaccess.ValidateName`, is over 255 bytes, or holds a character a FAT, exFAT, or NTFS source cannot (plan-rename's `holdable`, design V3), or a first template folder named `.precious-quarantine` at a source's top, refuses the file `invalid_name`.
+- **O6. Siblings and copies.** A file's siblings are the non-folder, non-missing entries of its current folder with the same stem (up to the last `.` that is not the first byte, compared by `sameName` under the source's case rule), that are not planned into the same destination folder. A planned item's `detail` is their display names in name order, joined by `", "`, and nothing else (E1); only planned date-organize items get it, and the executor's end of the item clears it, so it is a preview field. `files_with_copies` counts planned files with another present, hashed file of the same `content_id` on the source, outside the quarantine, that is a target or lies at or below the destination.
+- **O7. The template is checked at decode.** `ParseTemplate`'s refusal (`media.ErrInvalidTemplate`) is `400 invalid_request` through `domain.Wrap`, with the parser's reason, before the transaction. `actions.template` stores the canonical text (`media.DefaultTemplate` when omitted) and is `null` in the Action JSON for every other kind; `rename` is stored and answered for every kind (false). `camera_key` and `entry_id` are refused `400` (`Validate(false)`).
+- **O8. Undo of a file date.** `reversibleCond`, one SQL fragment, is what `reversible()` and the Action's undo counts share: renames, created folders, and done `set_mtime` items with a journaled `prev_mtime_ns`. Its undo item goes to `prev_mtime_ns`, refused `missing` (not a present file of the source), `in_quarantine`, `hard_link`, or `identity_changed` when the index time is NULL or more than the source's `TimeResolution` from the original's `new_mtime_ns` (the executor's intent compares the same way, without the ±1 h).
+- **O9. The date plans need `Options.Dates`.** Both call `dates.ExpandTargets` (at most 10,000 media), check the source, `Rederive` the media in the command's transaction, then prune and plan from `media_dates`; without `Options.Dates` they fail as an internal error. Item JSON: `mtime.from` is `prev_mtime_ns` when journaled, else the entry's index time when `domain.KnownModTime`, else `null`; `copy_of` reads the copy's current path and is left out once that entry is gone.
+- **O10. R5.5's race.** `TestR5_5OrganizingByYearAndMonth` creates the file at the screenshot's planned name from the instrument recorder's before-call hook on that file's `RenameNoReplace`, after the run made its folder; the item ends `conflict` with both files unchanged and every other item `done`.
+- **G1. The job's window queries read `entries NOT INDEXED`.** The store never runs `ANALYZE`, and without statistics SQLite took `source_id = ?` on `sqlite_autoindex_entries_1` for pass 1's and pass 3's windows, walking the whole source and (pass 3) sorting per window. Both read `FROM entries e NOT INDEXED WHERE e.id > ? …`, the rowid range in rowid order, with `source_id` and `MediaCond` residual; `TestJobWindowPlansWithoutStatistics` checks the plans on the seeded corpus with no statistics (A5's query is otherwise unchanged).
+- **G5. Folder targets collapse by their subtrees' ranges.** `expandFolders` sorts the folders by path with a `/` appended (the source's top first), not by path: a sibling that extends a target's name with a byte below `/` (`Fotos - Copia` beside `Fotos`) then sorts before the target rather than between it and its descendants, so a nested target always follows the top it is below and is dropped, and the tops' disjoint ranges come in path order. `Media` holds each file once, in path order (C4), as the date plans and the correction counts assume.
+- **G2. A suggested shift takes exactly the photos detection flagged.** In `set-date-correction`, `{folder_ids, camera_key}` expands (`expandTargets` with `flagged`) to the photos directly in those folders whose `media_dates` row has that `camera_key` and the `camera_offset` bit and that hold no correction or a `shift`, the photos A6 gives detection and D8 flags; the camera's photos there holding a `set`, `use_name`, or `use_folder` correction are skipped with the new reason `has_correction` and keep it. A photo of that camera with an implausible or no capture (a reset clock) is never flagged, so it is neither shifted nor listed. The exported `ExpandTargets` keeps C4's camera target (the camera's photos directly in the folders, by `media_meta`), which `plan-set-mtime` and `clear-date-correction` take: after a shift clears the bits, "set file dates" or "clear" for that camera must still find its photos. Left as it was: a flagged photo already holding a `shift` gets the new shift in place of the old one (B3's upsert), while its suggestion was computed from its capture moved by the old one.
+- **G9. A shift stays within P4's years.** `media.shift` refuses a result whose year, as it reads where it was taken, lies outside 1700–2200, and `Derive` then leaves the correction unapplied (`Corrected` empty), as for a shift with nothing to shift (P9). An EXIF capture of 1700–1727 shifted back 50 years would otherwise have stored an `effective_ns` outside int64 nanoseconds. The command skips such a target `no_date` (B2), and a single target's refusal says "it has no date to shift, or the shift would move it outside the years 1700 to 2200". `DeriveVersion` is now 2, so every stored date is derived again under this and G7's and G12's rules at the next `media` job.
+- **G7. A period runs from its first instant to the next period's, built from the wall fields.** `time.Date` moves a wall time a clock change skips by the zone in effect after the change, so in America/Sao_Paulo midnight of 2018-11-04 read as 23:00 of the 3rd, and `start.AddDate` carried that hour into the end: the 4th ran from 02:00 to 01:00 UTC, and a modification time at 23:30 on the 3rd was refined into a name date of the 4th (I7). A year, month, or day now starts at `dayStart` of its first day and ends at `dayStart` of the next period's first day, from the civil fields (`d+1`, `m+1`, `y+1`): the day's midnight, or, when a change skips it, the instant of the change (`ZoneBounds`). So every period is exactly the instants whose wall date lies in it. A second-precision wall time a change skips is still read as `time.Date` reads it.
+- **G8. A box's fields are read within its own payload.** `field(v, b, off, n)` refuses (as P2's malformed structure) a read past `b.end`, where `view.at` checked only the file or parent bounds: `mvhd` needs 4 bytes for its version and 4 (v0) or 8 (v1) more for `creation_time`; `meta` 4 before its children; `iinf` 6 (v0) or 8; an `infe` 4, then its ID (2 or 4), protection index (2), and type (4). An empty `mvhd` before a 12-byte `free` no longer reads "free" as a 1958 `container` date, and a truncated `infe` no longer reads its sibling's header as its type: the file gives nothing (P2).
+- **G6. A candidate's photos lie all before or all after the others'.** D8's test "every one of them lies outside the other cameras' range" is read as one side: C is a candidate in F only when all its captures lie before `min − 6 h` or all lie after `max + 6 h`. A correct camera that shot at 04:00 and 20:00 around a GPS phone's noon lay outside the range on both sides, its medians 10 minutes apart, and was flagged `offset` with a 10-minute suggestion below D8's 6-hour floor.
+- **G3. A camera's shift previews and counts what the server applies.** The preview keeps the camera's photos directly in the folders of its events and splits them as the server does (G2). Those flagged `camera_offset` whose correction is none or a shift are the photos it moves. Each shows its date now and after, the after being the camera's own date (the date less any earlier shift) moved by the suggested shift, and a photo that held a shift says that shift is replaced. Those holding a set, name, or folder correction keep it: they are listed apart as keeping the owner's correction and do not move (the server skips them `has_correction`). The camera's other photos there are not listed. The confirmation counts the photos it moves, not the events' photo count, and is off when there are none. The after is still computed on the wall time (E4), so across a daylight saving change in the zone it can read an hour off what the server derives.
+- **G4. A folder in the address must be one of the source's.** The Dates list uses `?within=` only once the entry is known to be a folder of the chosen source. A folder of another source, or anything that is not a folder, leaves the address (replaced, not pushed) and limits nothing. While the entry is loading it is not offered as a target of a correction or a date plan. When the list request fails, Correct dates, Set file dates, and Organize by date are off.
+- **G10. The interface names every skip reason and a refused shift's reason.** A bulk correction's report names `no_date` (no date to shift, or a shift beyond the years 1700 to 2200) and `has_correction` (the owner's earlier correction is kept) as well as the earlier reasons. A single shift can be refused for more than one reason, so its refusal shows the server's reason, the end of its message, rather than one fixed text. Set, name, and folder refusals keep their own text.
+- **G11. A camera's shift over more than 100 folders goes in parts.** The server takes at most 100 `folder_ids` a request, so the interface sends a camera's event folders 100 at a time, one request after another, each with the camera and the shift, and adds up their counts and skipped files (the last `batch_id` is kept). A failed part shows its error and leaves the parts before it applied. Confirming again is harmless because a shift replaces the one before, and the applied photos are no longer flagged.
+- **G12. D6 also reads the layout a date organize writes.** A folder named by two digits 01–12 right below one named by a year alone (`2010/07`) is that month, and two digits below those (`2010/07/17`) that day, when the date is valid; the month and day may be followed by a space, `-`, `_`, or `.` and more (`{year}/{month} {event}` writes `2010/07 Bahia`), except a day-first name (K2), the year may not (`Album 2010/07` is no date). At each ancestor, nearest first, this nested reading comes before the folder's own name (`media.folderDateAt`). So a file dated, unrefined, by `Viagens/2010-07 Bahia` and moved to `Fotos/2010/07` keeps `2010-07` from the folder name instead of becoming the year 2010 refined to its modification time (and moving again on the next organize). The cameras pass reads an event folder's date the same way, through the new `media.FolderPathDate(path, zone, now)`, as does the corpus test that mirrors it. The corpus holds no such layout, so `TestDateTruthMatchesMedia` and the Playwright truth are unchanged, and P14's independent rule stays as it is. Templates whose folders carry text before the date (`Fotos {year}`) still give no folder date, and `{event}` still reads `07 Bahia` as an event name in `2010/07 Bahia` (P12's `EventName` strips D6's own syntax only).
+- **H1. A set time must be one the disk keeps (review).** Linux's `notify_change` clamps every `utimensat` time to the superblock's `s_time_min`/`s_time_max` without an error, so a 1975 owner date on a FAT card would be stored as 1980-01-01 and end `manual_recovery` with a time nobody approved. `fsaccess.WritableModTimes(fs_type)` is the range Precious writes: `vfat`, `exfat`, and any other type (`fuseblk` included) 1980-01-02 to 2107-12-31 00:00 UTC (FAT's local range with a day's margin for every zone); `ext2/3/4`, `xfs`, and `zfs` the 32-bit seconds, 1901-12-13T20:45:52Z to 2038-01-19T03:14:07Z (small inodes, no bigtime, and ZFS's `EOVERFLOW` are not visible in mountinfo); `btrfs`, `f2fs`, `tmpfs`, `ntfs`, and `ntfs3` any nanosecond time. A time must also be `domain.KnownModTime`, since the index reads every time before 1970-01-02 as unknown (not only the epoch's first day) and would plan it again forever; so the lower ends before 1970 never take effect (K3). `plan-set-mtime` refuses the rest `date_out_of_range` (a time that is not known `date_before_1970` since K3) after `hard_link` and before the unchanged test, and the executor's intent refuses it again after `hard_link` and before `no_change`, from the source's recorded `fs_type`. An undo item is not checked: its time is the one the disk held.
+- **H2. synthfs clamps a set time as the kernel does.** A device whose volume (else mount row) names `vfat` stores a set time clamped to 1980-01-01 00:00:00 to 2107-12-31 23:59:58 in its zone, `exfat` the same in UTC to 23:59:59, and `ext2/3/4` and `xfs` from 1901-12-13T20:45:52Z; any other type keeps any time. The clamp comes before W3's local-time reading and truncation.
+- **H3. A date organize's siblings are grouped by stem (review).** `siblings()` reads each source folder's non-folder children once, as before, and groups them by stem under the source's case rule (`nameKey`: the bytes, or `foldKey`), so each planned file looks only at its own stem's group: the cost is the folder's size plus the planned files, not their product, inside the plan's write transaction. O6's result (names in name order, the file itself and siblings planned into the same folder left out) is unchanged. A test bounds the siblings looked at for 3,000 planned files of one folder.
+- **H4. A written time carries up its folders without a refold (review).** `index.ApplyModTime` now also updates the file's folders, so the adapter (and the executor tests' fake) no longer runs `Refold` per `set_mtime` outcome, which read and reclassified every child of every ancestor. A written time changes no name, kind, or size, so only `newest_ns`, `oldest_ns`, and `dir_stats.by_year` can change: each folder up the chain moves the file's size from its old year's cell to its new one (an emptied cell is dropped, as a fold never writes one), and its span is widened by the child's new span, or, when the child's old span held an end the new one gives up, that end is read again from the children's stored rows: the newest and the oldest file by `entries_by_newest` (a file's `oldest_ns` is its `newest_ns`), plus, for the oldest end of a folder whose `dir_stats.dirs` is not 0, the minimum `oldest_ns` of its folders. As in a refold, missing children, links, and special files are left out, a folder that is not present or is a mount boundary keeps what it stores (and stops the climb), and the root leaves `.precious-quarantine` out. The climb stops once a folder's span and the years no longer change. Each outcome still updates the index in its own transaction (no deferred refold that a crash could lose). A test checks, step by step, that a full `Refold` changes nothing after it, and a rescan writes nothing. This supersedes I3's and X7's "then a `Refold`".
+- **K1. The job's windows stay inside the source's ID range (review).** G1's pass 3 window had no upper rowid bound, so a window finding fewer than 256 rows, which always ends the pass, read every entry after it: a small source added before a large one read all of the large one's rows, inside one write transaction, on every media job (a set-date correction included). Pass 1, from ID 0 to the table's last, read every other source's rows too. Each job now reads its source's `min(id) - 1` and `max(id)` once, by `sqlite_autoindex_entries_1` (`source_id = ?`, a covering index range: the source's entries, no scan), and both passes walk only that range, in spans of at most `idSpan` (50,000) IDs read `NOT INDEXED` by `e.id > ? AND e.id <= ?`, so no window reads past the source's last ID. Pass 1 takes one write per span, as before. A pass 3 window takes at most 256 rows of its span: a full one continues after its last ID, a short one with the next span, and the window of the last span writes the summary. Other sources' rows inside the source's range (sources scanned in turn, a rescan's new entries) are still read; a migration adding an index by `(source_id, id)` would avoid even those, and was left out. Entries a scan adds past `max(id)` while the passes run are left to the loop's next iteration, which that scan's after-scan request starts (D4), as pass 1's single read of the last ID already did. `TestMediaJobReadsNoEntryPastItsSource` instruments both window queries' source test through a registered SQL function that notes each row's ID: a 300-photo source added before 2,000 rows of another source at IDs 100,000 on is never read past its last ID, and once 20 photos land past those rows, the job crosses the empty spans and the other source's rows and enrols and dates all 320. G1's plan test checks the bounded ranges and the ID-range read.
+- **K2. A day-first folder under a year is no month (review).** G12's two digits followed by `-`, `_`, or `.` took `Fotos/2010/05-07-2010 Festa junina` (5 July, the common Brazilian form) as May 2010, so a file there with a July modification time stayed unrefined in May and an organize by `{year}/{month}` moved it into `2010/05`. A month followed by `-`, `_`, or `.` and two more digits is now read only when those are over 12, the order `{month}-{day}` writes (`07-17`); `05-07-2010`, `05.07.2010`, `05_07`, and `12-12` give no nested date, so the folder falls through to its own name (FolderDate, which reads no day-first date) and then to the year above it, refined to the modification time inside it. A space or a non-digit after the separator (`07 Bahia`, `07-Bahia`) and a year after it (`05-2010`) still give the month. Only the month position is checked: a day's own name (`2010/07/17_praia`) never holds the month. The corpus holds no such layout, so its truth and P14's rule are unchanged.
+- **K3. A date before 1970 has its own refusal (review).** H1 refused every time before 1970-01-02, on every disk, `date_out_of_range`, whose text ("Its disk cannot record that date") is false for a 1965 date on ext4 or btrfs. Such a time is now refused `date_before_1970` ("Precious cannot record a file date before 1970"), checked before the disk's range, at planning and at the executor's intent: the index reads it back as unknown, so the written date would never test as unchanged and would be planned again. A time in 1970's first day, which the same rule refuses, gets the same reason. `date_out_of_range` is left for the disk's range, and the `ItemReason` union, the catalog, the operator guide, and `fsaccess`'s comments say so.

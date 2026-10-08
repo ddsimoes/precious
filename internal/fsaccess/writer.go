@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"syscall"
+	"time"
 
 	"precious/internal/domain"
 )
@@ -66,6 +67,14 @@ type Writer interface {
 	// AT_REMOVEDIR); a folder fails with ErrIsDir and stays (r4 design D12).
 	// The executor calls it only inside a source's quarantine.
 	Unlink(name []byte) error
+	// SetModTime sets the modification time of the entry name itself to t,
+	// a symlink's own time and never its target's (r5 design D12). Nothing
+	// is opened, the access time stays, and the change time becomes the
+	// system's. The filesystem keeps t to its own resolution, FAT in its
+	// mount's local time. An explicit time needs the entry's owner or
+	// CAP_FOWNER, not write permission: anyone else fails with
+	// ErrPermission. The executor calls it only for the set_mtime step.
+	SetModTime(name []byte, t time.Time) error
 }
 
 // AsWriter returns the write surface of d. ok is false for a Dir that has
@@ -102,12 +111,13 @@ var (
 
 // Writer method names, the Op of their errors.
 const (
-	opRename = "RenameNoReplace"
-	opMkdir  = "Mkdir"
-	opRmdir  = "Rmdir"
-	opSync   = "Sync"
-	opCreate = "CreateExclusive"
-	opUnlink = "Unlink"
+	opRename     = "RenameNoReplace"
+	opMkdir      = "Mkdir"
+	opRmdir      = "Rmdir"
+	opSync       = "Sync"
+	opCreate     = "CreateExclusive"
+	opUnlink     = "Unlink"
+	opSetModTime = "SetModTime"
 )
 
 // errForeignDir refuses a rename whose destination Dir comes from another FS.

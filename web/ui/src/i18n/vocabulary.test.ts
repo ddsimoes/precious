@@ -70,6 +70,22 @@ describe('vocabulary', () => {
     expect(catalogStrings(r4).filter(([, text]) => /\bpurge/i.test(text))).toEqual([])
   })
 
+  it('keeps internal terms out of the dates screens (R5)', () => {
+    const r5 = {
+      dates: en.dates,
+      reasons: en.organize.reason,
+      items: en.organize.item,
+      titles: [en.organize.title, en.organize.titleNoDestination, en.organize.status],
+      history: en.history,
+    }
+    expect(catalogStrings(en.dates).length).toBeGreaterThan(100)
+    expect(violations(r5)).toEqual([])
+    // The owner reads "modification time", "camera information", and "set
+    // file dates", never the API's names for them.
+    const apiNames = /\bmtime\b|set_mtime|date_organize|\bexif\b|metadata|utimensat|\bowner\b|effective/i
+    expect(catalogStrings(r5).filter(([, text]) => apiNames.test(text))).toEqual([])
+  })
+
   it('catches every banned term in any case and nesting', () => {
     const sample = {
       a: 'An Atomic folder',

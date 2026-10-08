@@ -7,7 +7,8 @@
 // ground_truth.json in DIR's parent, so that DIR holds exactly the entries the
 // ground truth lists. Besides the entries, with each file's sha256, it holds
 // the duplicate groups, each archive's members, the declared relations (R2
-// design D19), and the rescue card's rows (r2c design D6). -fat writes the
+// design D19), the rescue card's rows (r2c design D6), each image's and
+// video's effective date, and the cameras (r5 design D19). -fat writes the
 // small FAT-capability fixture instead of the corpus. The corpus's folder
 // privado gets mode 000; run chmod 755 on it before removing DIR.
 package main

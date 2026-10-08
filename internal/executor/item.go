@@ -56,6 +56,14 @@ const (
 	reasonCheckStale         = "check_stale"
 	reasonFileChanged        = "file_changed"
 	reasonCopyChanged        = "copy_changed"
+	// R5 (r5 D13).
+	reasonHardLink = "hard_link"
+	reasonNoChange = "no_change"
+	reasonNotOwner = "not_owner"
+	// r5 H1: a time the source's filesystem would clamp.
+	reasonDateOutOfRange = "date_out_of_range"
+	// r5 K3: a time before 1970-01-02, which the index reads as unknown.
+	reasonDateBefore1970 = "date_before_1970"
 )
 
 // Action kinds the executor treats apart (r4 D3, D6, D11); every other kind
@@ -70,15 +78,17 @@ const (
 // duplicates list, whose items need a verified copy (r4 D5).
 const groundDuplicate = "duplicate"
 
-// Item ops: R3's, and R4's cleanup steps (r4 D3, D4, D10, D11).
+// Item ops: R3's, R4's cleanup steps (r4 D3, D4, D10, D11), and R5's
+// set_mtime (r5 D13).
 const (
-	opRename = "rename"
-	opMkdir  = "mkdir"
-	opRmdir  = "rmdir"
-	opRecord = "record"
-	opUnlink = "unlink"
-	opPurge  = "purge"
-	opVerify = "verify"
+	opRename   = "rename"
+	opMkdir    = "mkdir"
+	opRmdir    = "rmdir"
+	opRecord   = "record"
+	opUnlink   = "unlink"
+	opPurge    = "purge"
+	opVerify   = "verify"
+	opSetMtime = "set_mtime"
 )
 
 // Audit event written when the executor turns a source's writes off (D2):
@@ -109,11 +119,14 @@ type item struct {
 	// R4's draft-time identity of a cleanup rename (r4 D3): ctime_ns, and a
 	// folder's total bytes and files.
 	ctime, draftBytes, draftFiles sql.NullInt64
+	// A set_mtime's time to write, and the time its step found on disk,
+	// journaled before the write (r5 D13).
+	newMtime, prevMtime sql.NullInt64
 }
 
 const itemColumns = `i.id, i.action_id, i.seq, i.op, i.entry_id, i.from_parent, i.from_name, i.from_path,
 	i.to_parent, i.to_dir_seq, i.to_name, i.to_path, i.kind, i.dev, i.ino, i.size, i.mtime_ns, i.reverses, i.state,
-	i.ctime_ns, i.draft_bytes, i.draft_files`
+	i.ctime_ns, i.draft_bytes, i.draft_files, i.new_mtime_ns, i.prev_mtime_ns`
 
 func scanItem(s interface{ Scan(...any) error }) (item, error) {
 	var (
@@ -123,7 +136,7 @@ func scanItem(s interface{ Scan(...any) error }) (item, error) {
 	)
 	err := s.Scan(&it.id, &it.action, &it.seq, &it.op, &entry, &fromParent, &it.fromName, &it.fromPath,
 		&toParent, &toDirSeq, &it.toName, &it.toPath, &kind, &it.dev, &it.ino, &it.size, &it.mtime, &reverses,
-		&it.state, &it.ctime, &it.draftBytes, &it.draftFiles)
+		&it.state, &it.ctime, &it.draftBytes, &it.draftFiles, &it.newMtime, &it.prevMtime)
 	it.entry, it.fromParent, it.toParent = entry.Int64, fromParent.Int64, toParent.Int64
 	it.toDirSeq, it.reverses, it.kind = toDirSeq.Int64, reverses.Int64, kind.String
 	return it, err
@@ -258,6 +271,8 @@ func (r *run) item(it item) (verdict, error) {
 		return r.stepVerify(it)
 	case opPurge:
 		return r.stepPurge(it, false)
+	case opSetMtime:
+		return r.stepSetMtime(it)
 	default:
 		// An op this executor has no step for never reaches the disk.
 		return r.record(it, end{state: stateFailed, detail: "unknown step " + it.op})
@@ -271,6 +286,7 @@ type entryRow struct {
 	name, path   []byte
 	kind, state  string
 	dev, ino     sql.NullInt64
+	nlink        sql.NullInt64
 	size         int64
 	mtime, ctime sql.NullInt64
 	boundary     bool
@@ -288,11 +304,11 @@ func loadEntry(ctx context.Context, q *sql.Tx, id int64) (entryRow, bool, error)
 		mounts sql.NullInt64
 	)
 	err := q.QueryRowContext(ctx, `SELECT e.id, e.parent_id, e.source_id, e.name, e.path, e.kind, e.state, e.dev,
-			e.ino, e.size, e.mtime_ns, e.ctime_ns, e.mount_boundary, e.decision, e.eff_decision, d.mount_boundaries,
-			e.total_bytes, e.total_files
+			e.ino, e.nlink, e.size, e.mtime_ns, e.ctime_ns, e.mount_boundary, e.decision, e.eff_decision,
+			d.mount_boundaries, e.total_bytes, e.total_files
 		FROM entries e LEFT JOIN dir_stats d ON d.entry_id = e.id WHERE e.id = ?`, id).
-		Scan(&e.id, &parent, &e.source, &e.name, &e.path, &e.kind, &e.state, &e.dev, &e.ino, &e.size, &e.mtime,
-			&e.ctime, &e.boundary, &e.decision, &e.eff, &mounts, &e.totalBytes, &e.totalFiles)
+		Scan(&e.id, &parent, &e.source, &e.name, &e.path, &e.kind, &e.state, &e.dev, &e.ino, &e.nlink, &e.size,
+			&e.mtime, &e.ctime, &e.boundary, &e.decision, &e.eff, &mounts, &e.totalBytes, &e.totalFiles)
 	if errors.Is(err, sql.ErrNoRows) {
 		return entryRow{}, false, nil
 	}
@@ -411,6 +427,8 @@ func (r *run) intent(it item, pre *preflight) (item, verdict, error) {
 			rec, e, err = r.intentVerify(ctx, q, it)
 		case opPurge:
 			rec, e, err = r.intentPurge(ctx, q, it)
+		case opSetMtime:
+			rec, e, err = r.intentSetMtime(ctx, q, it)
 		default:
 			e = &end{state: stateFailed, detail: "unknown step " + it.op}
 		}
@@ -420,12 +438,14 @@ func (r *run) intent(it item, pre *preflight) (item, verdict, error) {
 		if e != nil {
 			return ends(*e)
 		}
+		// ctime_ns is the identity's change time: a cleanup rename's
+		// draft-time one, kept, or a set_mtime's from the index (r5 D13).
 		res, err := q.ExecContext(ctx, `UPDATE action_items SET state = 'intent', entry_id = ?, from_parent = ?,
 			from_name = ?, from_path = ?, to_parent = ?, to_name = ?, to_path = ?, kind = ?, dev = ?, ino = ?,
-			size = ?, mtime_ns = ?
+			size = ?, mtime_ns = ?, ctime_ns = ?
 			WHERE id = ? AND state = 'planned'`, nullID(rec.entry), nullID(rec.fromParent), rec.fromName,
 			rec.fromPath, nullID(rec.toParent), rec.toName, rec.toPath, nullString(rec.kind), rec.dev, rec.ino,
-			rec.size, rec.mtime, it.id)
+			rec.size, rec.mtime, rec.ctime, it.id)
 		if err != nil {
 			return err
 		}

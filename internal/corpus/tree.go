@@ -40,8 +40,13 @@ func buildCorpus() *Tree {
 	d.junk()
 	d.phone()
 	d.media()
+	d.viagens()
+	d.celular2011()
+	d.whatsApp2009()
 	d.private()
-	return d.finish(expectations, relationDecls, rescueDeclarations)
+	t := d.finish(expectations, relationDecls, rescueDeclarations)
+	t.cameras = corpusCameras
+	return t
 }
 
 // sized is a file name and its size.

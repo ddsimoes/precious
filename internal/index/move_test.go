@@ -165,17 +165,19 @@ func (m *mover) move(rows map[string]entry, from, to, name string) bool {
 }
 
 // intentRows reads the owner's intent and the content rows of src by entry
-// ID: own decisions, tags, overrides, and the file_content and archives
-// rows.
+// ID: own decisions, tags, overrides, and date corrections, and the
+// file_content, archives, and media_meta rows.
 func intentRows(t *testing.T, e *env, src domain.SourceID) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	for what, q := range map[string]string{
-		"decision": `SELECT id, decision FROM entries WHERE source_id = ? AND decision IS NOT NULL`,
-		"tag":      `SELECT t.entry_id, group_concat(t.tag_id) FROM entry_tags t JOIN entries e ON e.id = t.entry_id WHERE e.source_id = ? GROUP BY 1`,
-		"override": `SELECT o.entry_id, coalesce(o.category, '') || '/' || coalesce(o.group_mark, '') FROM entry_overrides o JOIN entries e ON e.id = o.entry_id WHERE e.source_id = ?`,
-		"content":  `SELECT entry_id, state || '/' || coalesce(content_id, '') FROM file_content WHERE source_id = ?`,
-		"archive":  `SELECT a.entry_id, a.format || '/' || a.state FROM archives a JOIN entries e ON e.id = a.entry_id WHERE e.source_id = ?`,
+		"decision":   `SELECT id, decision FROM entries WHERE source_id = ? AND decision IS NOT NULL`,
+		"tag":        `SELECT t.entry_id, group_concat(t.tag_id) FROM entry_tags t JOIN entries e ON e.id = t.entry_id WHERE e.source_id = ? GROUP BY 1`,
+		"override":   `SELECT o.entry_id, coalesce(o.category, '') || '/' || coalesce(o.group_mark, '') FROM entry_overrides o JOIN entries e ON e.id = o.entry_id WHERE e.source_id = ?`,
+		"correction": `SELECT c.entry_id, c.kind || '/' || c.batch_id FROM date_corrections c JOIN entries e ON e.id = c.entry_id WHERE e.source_id = ?`,
+		"content":    `SELECT entry_id, state || '/' || coalesce(content_id, '') FROM file_content WHERE source_id = ?`,
+		"archive":    `SELECT a.entry_id, a.format || '/' || a.state FROM archives a JOIN entries e ON e.id = a.entry_id WHERE e.source_id = ?`,
+		"media":      `SELECT entry_id, state || '/' || capture_local || '/' || make FROM media_meta WHERE source_id = ?`,
 	} {
 		rows, err := e.st.Reader().Query(q, string(src))
 		if err != nil {
@@ -276,8 +278,9 @@ func rescanWritesNothing(t *testing.T, e *env, src domain.SourceID) map[string]e
 
 // giveIntent gives some entries of src the owner's intent and content rows,
 // deterministically by path: own decisions, tags, overrides (applied by a
-// rescan), and file_content and archives rows matching the files as
-// indexed. It returns the moved-entry candidates it touched.
+// rescan), and date corrections, and file_content, archives, and media_meta
+// rows matching the files as indexed. It returns the moved-entry candidates
+// it touched.
 func giveIntent(t *testing.T, e *env, src domain.SourceID) {
 	t.Helper()
 	rows := e.entries(src)
@@ -334,6 +337,19 @@ func giveIntent(t *testing.T, e *env, src domain.SourceID) {
 						SELECT id, 'zip', 'complete', size, mtime_ns, ctime_ns, ino FROM entries WHERE id = ?`, r.ID); err != nil {
 						return err
 					}
+				}
+			}
+			if r.Kind == "file" && i%4 == 1 {
+				if _, err := tx.Exec(`INSERT INTO media_meta (entry_id, source_id, state, size, mtime_ns, ctime_ns,
+					ino, capture_local, make, read_at) SELECT id, source_id, 'read', size, mtime_ns, ctime_ns, ino,
+					'2010-07-17T10:00:00', 'Canon', 0 FROM entries WHERE id = ?`, r.ID); err != nil {
+					return err
+				}
+			}
+			if r.Kind == "file" && i%11 == 3 {
+				if _, err := tx.Exec(`INSERT INTO date_corrections (entry_id, kind, shift_s, batch_id, created_at)
+					VALUES (?, 'shift', 3600, 'b', 0)`, r.ID); err != nil {
+					return err
 				}
 			}
 		}
@@ -477,11 +493,16 @@ func TestR3_5RescanAfterMovesWritesNothing(t *testing.T) {
 	if got := intentRows(t, e, "corpus"); fmt.Sprint(got) != fmt.Sprint(intent) {
 		t.Errorf("own decisions, tags, overrides, or content rows changed:\n before %v\n after  %v", intent, got)
 	}
-	// The moved files' content rows took their new change time.
-	var stale int
-	if err := e.st.Reader().QueryRow(`SELECT count(*) FROM file_content f JOIN entries e ON e.id = f.entry_id
-		WHERE f.ctime_ns IS NOT e.ctime_ns`).Scan(&stale); err != nil || stale != 0 {
-		t.Errorf("%d file_content rows have another change time than their entry (%v)", stale, err)
+	// The moved files' content and media rows took their new change time.
+	for _, table := range contentTables {
+		var stale, n int
+		if err := e.st.Reader().QueryRow(`SELECT count(*), total(f.ctime_ns IS NOT e.ctime_ns) FROM `+table+` f
+			JOIN entries e ON e.id = f.entry_id`).Scan(&n, &stale); err != nil || stale != 0 {
+			t.Errorf("%d %s rows have another change time than their entry (%v)", stale, table, err)
+		}
+		if n == 0 {
+			t.Errorf("no %s rows to carry", table)
+		}
 	}
 	if len(moved) < steps/2 || folderMoves < 5 || renames < 5 {
 		t.Errorf("only %d entries moved, %d folder moves, %d renames", len(moved), folderMoves, renames)
@@ -547,6 +568,7 @@ func TestMoveOntoMissingEntries(t *testing.T) {
 		{"tag", `INSERT INTO entry_tags (entry_id, tag_id, added_at) VALUES (?, 1, 0)`, `DELETE FROM entry_tags WHERE entry_id = ?`},
 		{"decision", `UPDATE entries SET decision = 'keep' WHERE id = ?`, `UPDATE entries SET decision = NULL WHERE id = ?`},
 		{"override", `INSERT INTO entry_overrides (entry_id, category, updated_at) VALUES (?, 'documents', 0)`, `DELETE FROM entry_overrides WHERE entry_id = ?`},
+		{"correction", `INSERT INTO date_corrections (entry_id, kind, batch_id, created_at) VALUES (?, 'use_name', 'b', 0)`, `DELETE FROM date_corrections WHERE entry_id = ?`},
 	} {
 		exec(intent.set, b)
 		exec(intent.set, c)

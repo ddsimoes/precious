@@ -16,10 +16,12 @@ import { ErrorBanner } from '@/app/ErrorBanner'
 import { CompareWith } from '@/compare/CompareWith'
 import { Button } from '@/components/ui/button'
 import { ArchiveNoteSection, ArchiveSection, CopiesSection, RelationsSection } from '@/detail/ContentSections'
+import { DatesSection } from '@/detail/DatesSection'
 import { ClassificationControls } from '@/detail/ClassificationControls'
 import { DecisionControls } from '@/detail/DecisionControls'
 import { InsideList } from '@/detail/InsideList'
 import { Preview } from '@/detail/Preview'
+import { Fact, Section } from '@/detail/parts'
 import { TagEditor } from '@/detail/TagEditor'
 import { useEntryLink } from '@/detail/useEntryLink'
 import { BarList } from '@/home/BarList'
@@ -296,6 +298,14 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
         )}
       </dl>
 
+      {/* A photo or video has a Dates section, except as an archive
+          member, in quarantine, or missing, which have no date (R5). */}
+      {entry.kind === 'file' &&
+        (entry.file_kind === 'image' || entry.file_kind === 'video') &&
+        !member &&
+        quarantined === null &&
+        entry.state !== 'missing' && <DatesSection key={entry.id} entry={entry} />}
+
       {detail.content !== null && (
         <Section title={t('detail.copies')}>
           <CopiesSection entry={entry} content={detail.content} coverage={detail.coverage} />
@@ -492,27 +502,6 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
 // hexBytes shows base64 bytes as hexadecimal pairs.
 function hexBytes(b64: string): string {
   return Array.from(atob(b64), (c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' ')
-}
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  const headingId = useId()
-  return (
-    <section aria-labelledby={headingId} className="grid gap-2 border-t pt-3">
-      <h3 id={headingId} className="text-sm font-semibold">
-        {title}
-      </h3>
-      {children}
-    </section>
-  )
-}
-
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd>{children}</dd>
-    </>
-  )
 }
 
 function Notice({ children }: { children: ReactNode }) {
