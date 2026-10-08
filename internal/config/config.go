@@ -5,7 +5,10 @@
 // these fields. Loading and validation live in this package's other files.
 package config
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Config is the whole configuration file.
 type Config struct {
@@ -20,6 +23,7 @@ type Config struct {
 	Hashing    Hashing    `toml:"hashing"`
 	Archives   Archives   `toml:"archives"`
 	Duplicates Duplicates `toml:"duplicates"`
+	Dates      Dates      `toml:"dates"`
 }
 
 // Server is the HTTP listener and browser-origin policy (§12.3).
@@ -106,6 +110,34 @@ type Archives struct {
 // runs (R2 design D5).
 type Duplicates struct {
 	RefreshInterval Duration `toml:"refresh_interval"` // default 10m; 1m–24h
+}
+
+// Dates holds how media dates are read (R5 design D7).
+type Dates struct {
+	// TimeZone is the IANA zone, such as "America/Sao_Paulo", that wall times
+	// without an offset (EXIF capture times, dates in file and folder names)
+	// are read in, and that instants are shown in. Empty selects the server's
+	// local zone, which check-config and the server's start warn about.
+	TimeZone string `toml:"time_zone"`
+}
+
+// Location resolves TimeZone: time.Local when it is empty, else the named
+// zone. Validate rejects a name it cannot resolve, so after Load it does not
+// fail.
+func (d Dates) Location() (*time.Location, error) {
+	if d.TimeZone == "" {
+		return time.Local, nil
+	}
+	if d.TimeZone == "Local" {
+		// time.LoadLocation's alias for time.Local, not a zone name: it would
+		// hide that no zone was chosen.
+		return nil, fmt.Errorf("%q is not an IANA time zone name; leave the key unset for the server's local zone", d.TimeZone)
+	}
+	loc, err := time.LoadLocation(d.TimeZone)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a known IANA time zone, such as \"America/Sao_Paulo\" or \"UTC\"", d.TimeZone)
+	}
+	return loc, nil
 }
 
 // Duration is a time.Duration decoded from TOML strings such as "30s" or "1h".
