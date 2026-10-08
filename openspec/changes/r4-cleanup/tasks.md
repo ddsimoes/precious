@@ -115,7 +115,7 @@
 
 ## 3. Cleanup service (after group 2)
 
-- [ ] 3.1 `internal/cleanup` commands and reads, owning `internal/cleanup` (commands, reads, and plans), the small additions in `decisions`, `organize`, `content`, and `sources`, `cmd/precious/serve.go`, and the `docs/operator.md` Cleanup section with its commands, reads, and errors:
+- [x] 3.1 `internal/cleanup` commands and reads, owning `internal/cleanup` (commands, reads, and plans), the small additions in `decisions`, `organize`, `content`, and `sources`, `cmd/precious/serve.go`, and the `docs/operator.md` Cleanup section with its commands, reads, and errors:
   - `plan-cleanup`, with its scope, folding, refusals, draft-time identity, light summary, duplicates rules, `quarantine_name_taken`, and the 30,000-step cap (design D1, D3–D5);
   - `plan-restore`, with the quarantine-parent and destination refusals (D6);
   - `check-purge`, `confirm-purge`, and `plan-purge` (D7, D8, D11);
@@ -128,19 +128,19 @@
   - the wiring.
 
   Verify: `go test -race ./internal/cleanup/... ./internal/organize ./internal/decisions ./internal/sources ./cmd/precious`.
-- [ ] 3.2 Test of R4.1: a discarded folder holding a kept file is listed `blocked` with the file among its kept entries. After running, no entry of it is in quarantine and the other item is. Owns `internal/cleanup/r4_1_test.go`.
-- [ ] 3.3 Test of R4.3: a restore to the free original path keeps the IDs and removes the record and item folder. A restore whose path was taken asks for a destination, moves the item there, and leaves the newcomer unchanged. Owns `internal/cleanup/r4_3_test.go`.
-- [ ] 3.4 Test of R4.4: a plan from the duplicates list with both copies of `curriculo.doc` discarded plans one and refuses `last_copy`, and running it leaves one copy outside quarantine. Both discarded sides of a relation give `both_sides`. Owns `internal/cleanup/r4_4_test.go`.
-- [ ] 3.5 Test of R4.5: a purge on a source whose filesystem type is `zfs`, through commands and the real executor on synthfs, deletes the files and reports `deleted_files`, `deleted_bytes`, and `freed_bytes`. The action JSON carries what the interface needs for the snapshot note. Owns `internal/cleanup/r4_5_test.go`.
-- [ ] 3.6 Test of R4.7: `plan-purge` answers `409 purge_not_allowed`, naming the unconfirmed photos, until the junk group and each photo are confirmed, or until the photo's item is restored, or the photo moved out, and the set checked again. Owns `internal/cleanup/r4_7_test.go`.
-- [ ] 3.7 Test of R4.8 through commands and the real executor:
+- [x] 3.2 Test of R4.1: a discarded folder holding a kept file is listed `blocked` with the file among its kept entries. After running, no entry of it is in quarantine and the other item is. Owns `internal/cleanup/r4_1_test.go`.
+- [x] 3.3 Test of R4.3: a restore to the free original path keeps the IDs and removes the record and item folder. A restore whose path was taken asks for a destination, moves the item there, and leaves the newcomer unchanged. Owns `internal/cleanup/r4_3_test.go`.
+- [x] 3.4 Test of R4.4: a plan from the duplicates list with both copies of `curriculo.doc` discarded plans one and refuses `last_copy`, and running it leaves one copy outside quarantine. Both discarded sides of a relation give `both_sides`. Owns `internal/cleanup/r4_4_test.go`.
+- [x] 3.5 Test of R4.5: a purge on a source whose filesystem type is `zfs`, through commands and the real executor on synthfs, deletes the files and reports `deleted_files`, `deleted_bytes`, and `freed_bytes`. The action JSON carries what the interface needs for the snapshot note. Owns `internal/cleanup/r4_5_test.go`.
+- [x] 3.6 Test of R4.7: `plan-purge` answers `409 purge_not_allowed`, naming the unconfirmed photos, until the junk group and each photo are confirmed, or until the photo's item is restored, or the photo moved out, and the set checked again. Owns `internal/cleanup/r4_7_test.go`.
+- [x] 3.7 Test of R4.8 through commands and the real executor:
   - a `set-decision` on a relied-on copy's folder makes `plan-purge` and `run-action` answer `409 check_stale`;
   - a restore of an item of the set, and a move out of one of its files, each make the check stale;
   - a copy modified on disk only, with no rescan, stops the purge at `verify` with nothing deleted.
 
   Owns `internal/cleanup/r4_8_test.go`.
-- [ ] 3.8 Test of R4.9: the export of a drafted plan with a blocked item has the header and one row per item, with `holds_kept`, and formula-like cells are neutralized. Owns `internal/cleanup/r4_9_test.go`.
-- [ ] 3.9 Tests of the remaining scenarios through the API:
+- [x] 3.8 Test of R4.9: the export of a drafted plan with a blocked item has the header and one row per item, with `holds_kept`, and formula-like cells are neutralized. Owns `internal/cleanup/r4_9_test.go`.
+- [x] 3.9 Tests of the remaining scenarios through the API:
   - "Drafting from the discards of a source";
   - "A keep set after drafting";
   - "A quarantined folder keeps its intent";
