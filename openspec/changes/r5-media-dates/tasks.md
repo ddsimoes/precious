@@ -75,14 +75,14 @@
 
 Each slice owns its implementation task and the test tasks labelled with its letter. A test task depends only on its own slice and group 1. Corpus tests in `internal/dates` use the shared helper's corpus, so the package stays under about 60 s.
 
-- [ ] 2.1 Slice A, the `media` job (design D3, D4, D8, D9, Concurrency). Owns:
+- [x] 2.1 Slice A, the `media` job (design D3, D4, D8, D9, Concurrency). Owns:
   - `internal/dates/job*.go`, `plan.go`, `read.go`, and `cameras.go`;
   - the `cmd/precious/serve.go` lines for `Register`, `DeferWhile(executor.OrganizeActive)`, `AfterScan` in `OnScanDone`, and `Startup`;
   - the `ActionDone` line in `internal/organize/index.go` that calls `EnqueueMedia`;
   - the `docs/operator.md` section "Media dates": when the job runs, what it reads, the sources of a date, precision and refinement, the flags, the cameras and the detection's blind spot, and progress.
 
   The job covers D4's lifecycle (the start transaction with `passes_job`, `if_dirty` on first attempts, the clear-and-reread loop, the failure transaction), the passes (3–4 only when the source cannot be opened), the I9 commit against the identity loaded at the read's start, the summary rewrite, the cameras write at the end of every pass, deferral, quarantine exclusion, and progress. Verify: `go test -race ./internal/dates ./internal/organize ./cmd/precious`.
-- [ ] 2.2 Slice A: job tests, owning `internal/dates/job_test.go`:
+- [x] 2.2 Slice A: job tests, owning `internal/dates/job_test.go`:
   - "A malformed file is read safely" (a random-byte `.jpg`, and a truncated JPEG), and "Reading leaves the disk untouched" (instrument: no Writer call);
   - "A rescan reads nothing again" (rescan and a `MoveEntry`: zero reads), and "A file changed during its read" (a hook edits the file between the read and the commit: dropped, read after the next scan);
   - a `set_mtime` outcome (`ApplyModTime`) between the read and the commit drops the result, and the carried row is read exactly once more;
@@ -98,19 +98,19 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - quarantined photos are never enrolled or opened;
   - a correction committed during the cameras pass: the pass still writes; the loop runs again and its write leaves the corrected photos unflagged;
   - on an offline source, a correction's request recomputes the cameras without opening anything.
-- [ ] 2.3 Slice A: test of R5.1, owning `internal/dates/r5_1_test.go`. The corpus on synthfs with zone `UTC` is scanned and its `media` job run:
+- [x] 2.3 Slice A: test of R5.1, owning `internal/dates/r5_1_test.go`. The corpus on synthfs with zone `UTC` is scanned and its `media` job run:
   - every image and video entry's date, precision, source, refinement, and flags equal its `DateTruth`;
   - `mtime_disagrees` is set on exactly the truth's photos;
   - "An implausible capture date is skipped", and "A folder year that disagrees with the modification time";
   - "An unreadable photo" (a synthfs unreadable file): state `unreadable`, no `no_date_metadata`; and no `pending` photo carries `no_date_metadata` while the job runs.
-- [ ] 2.4 Slice A: test of R5.3, owning `internal/dates/r5_3_test.go`. Each WhatsApp-named image without EXIF has source `file_name` and its name's date: precision `day` for the 2012 copies, and refined to the modification time for `IMG-20090612-WA0001.jpg`.
-- [ ] 2.5 Slice A: test of R5.2's detection, owning `internal/dates/r5_2_detect_test.go`. On the corpus, the cameras pass lists `SONY|DSC-W55|` as `offset`:
+- [x] 2.4 Slice A: test of R5.3, owning `internal/dates/r5_3_test.go`. Each WhatsApp-named image without EXIF has source `file_name` and its name's date: precision `day` for the 2012 copies, and refined to the modification time for `IMG-20090612-WA0001.jpg`.
+- [x] 2.5 Slice A: test of R5.2's detection, owning `internal/dates/r5_2_detect_test.go`. On the corpus, the cameras pass lists `SONY|DSC-W55|` as `offset`:
   - its suggestion is +31,546,800 s for 12 photos, with events `Viagens/2010-07 Bahia` and `Viagens/2010-12 Natal`, each with reference `gps`;
   - exactly its 12 photos carry `camera_offset`;
   - the Canon and the Nikon are `ok`.
 
   Also "Two cameras and no reference", "Two events and no reference", and "A camera used on another day of a trip", on synthetic disks.
-- [ ] 2.6 Slice B, corrections and reads (design D10, D11, Interfaces). Owns:
+- [x] 2.6 Slice B, corrections and reads (design D10, D11, Interfaces). Owns:
   - `internal/dates/commands*.go` and `reads*.go`, with `RegisterCommands` and `Routes`;
   - their `cmd/precious/serve.go` lines;
   - the `docs/operator.md` sections "Correcting dates" and "Dates API" (commands, reads, errors), and the audit events list.
@@ -121,7 +121,7 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - a query-plan guard on analyzed data: the list by each flag, by date source, by camera, and `within`, and `count=only`, each use the index D10 names and no `USE TEMP B-TREE`.
 
   Run `go test -race ./internal/dates ./cmd/precious`.
-- [ ] 2.7 Slice B: test of R5.2's correction, owning `internal/dates/r5_2_correct_test.go`. The corpus is seeded with `datestest.Seed`, and the Sony's camera bits are set as detection would. Then one `set-date-correction` with `{folder_ids: [Bahia, Natal], camera_key: "SONY|DSC-W55|"}` and `shift` 31,546,800:
+- [x] 2.7 Slice B: test of R5.2's correction, owning `internal/dates/r5_2_correct_test.go`. The corpus is seeded with `datestest.Seed`, and the Sony's camera bits are set as detection would. Then one `set-date-correction` with `{folder_ids: [Bahia, Natal], camera_key: "SONY|DSC-W55|"}` and `shift` 31,546,800:
   - it applies 12;
   - each Sony photo's effective date equals its truth plus the shift, which is the Canon's timeline;
   - `camera_offset` is clear;
@@ -137,12 +137,12 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - `clear-date-correction` restoring the derived date.
 
   Run `go test -race ./internal/dates`.
-- [ ] 2.8 Slice C, the executor's `set_mtime` (design D12, D13). Owns `internal/executor` and these `docs/operator.md` sections, for file dates:
+- [x] 2.8 Slice C, the executor's `set_mtime` (design D12, D13). Owns `internal/executor` and these `docs/operator.md` sections, for file dates:
   - "How Precious changes a disk", and "Recovery after an interruption";
   - "Allowing changes in the deployment": the files to date must be owned by the service account, or the deployment opts in to `CAP_FOWNER` (systemd `AmbientCapabilities=`/`CapabilityBoundingSet=CAP_FOWNER`, Compose `cap_add: [FOWNER]`), with its risk stated. After changing ownership, rescan the source before setting file dates: `chown` advances every file's change time, so until a rescan every item ends `changed` (and the rescan hashes and reads the media again).
 
   It covers intent re-checks (`in_quarantine`, `hard_link`, `no_change`, undo's written-time check), the step (identity with change time, link count, journaling `prev_mtime_ns`, no folder sync), its error mapping (`not_owner`), settle, reconcile, and an outcome with `ApplyModTime` and `MarkStale`. Verify: `go test -race ./internal/executor`.
-- [ ] 2.9 Slice C: test of R5.4 at run time, owning `internal/executor/r5_4_test.go`. Actions are driven by inserting `queued` rows on a synthfs corpus with hashed photos:
+- [x] 2.9 Slice C: test of R5.4 at run time, owning `internal/executor/r5_4_test.go`. Actions are driven by inserting `queued` rows on a synthfs corpus with hashed photos:
   - "Setting a time changes nothing else": instrument shows one `SetModTime` and no other Writer call; the bytes re-hashed with `content.HashEntry` are equal; `file_content` keeps its `content_id`; a hashing job after reads nothing;
   - the undo item restores each journaled previous time, exactly on a FAT device whose index time differs within tolerance;
   - "A file changed since is skipped": an undo after a hand edit ends `changed` with nothing written, and the rest run;
@@ -154,13 +154,13 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - "A rescan after writing back".
 
   Run `go test -race ./internal/executor`.
-- [ ] 2.10 Slice D, organize plans (design D14, D16, D17, Interfaces). Owns `internal/organize` (not the `ActionDone` line) and the `docs/operator.md` sections "Organizing" (Set file dates, Organize by date), "Exporting an action" operations, and the item reasons table. It covers:
+- [x] 2.10 Slice D, organize plans (design D14, D16, D17, Interfaces). Owns `internal/organize` (not the `ActionDone` line) and the `docs/operator.md` sections "Organizing" (Set file dates, Organize by date), "Exporting an action" operations, and the item reasons table. It covers:
   - `plan-set-mtime` with `Rederive` first, and `plan-undo`'s `set_mtime` reversal to `prev_mtime_ns`;
   - `plan-date-organize` with `Rederive` first: the template, folder resolution, renames, collisions, suffixes, `identical_copy` with `copy_of`, `not_dated_yet`, siblings, and `summary`;
   - the Action and Item JSON additions, the `op=set_mtime` filter, and `reversible()` and the undo counts.
 
   Verify: `go test -race ./internal/organize`.
-- [ ] 2.11 Slice D: test of R5.5, owning `internal/organize/r5_5_test.go`. The corpus is on synthfs and hashed, seeded with `datestest.Seed`, and the Sony's shift is seeded as a `date_corrections` row. `{year}/{month}` into `Fotos`, for `folder_ids` `Viagens` and `celular_2011`:
+- [x] 2.11 Slice D: test of R5.5, owning `internal/organize/r5_5_test.go`. The corpus is on synthfs and hashed, seeded with `datestest.Seed`, and the Sony's shift is seeded as a `date_corrections` row. `{year}/{month}` into `Fotos`, for `folder_ids` `Viagens` and `celular_2011`:
   - the preview lists each missing year and month folder once, then one move per file into its truth month;
   - `Sent/IMG-20110416-WA0003.jpg` is refused `identical_copy` with `copy_of` the other copy, and `summary.files_with_copies` counts them;
   - Ana's `IMG_0102.JPG` is planned as `IMG_0102 (1).JPG`.
@@ -171,7 +171,7 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - "A missing corrected photo keeps its name" (`name_taken_by_missing`, the correction kept);
   - `{day}` on a month-precision photo refused `date_too_coarse`;
   - `rename` applied once.
-- [ ] 2.12 Slice D: test of R5.4 at planning, owning `internal/organize/r5_4_test.go`:
+- [x] 2.12 Slice D: test of R5.4 at planning, owning `internal/organize/r5_4_test.go`:
   - `plan-set-mtime` over `Viagens/2008-03 Ouro Preto` plans the three capture instants and refuses `DSCN0004.JPG` `date_too_coarse`;
   - a file already at its date counts in `unchanged`;
   - FAT truncation, and `hard_link`;
@@ -181,7 +181,7 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - the export names `set_mtime`.
 
   Run `go test -race ./internal/organize`.
-- [ ] 2.13 Slice E, the interface (design D10, D21, Interfaces), built against the contract with stubbed responses. Owns `web/ui/src` and the `docs/operator.md` interface paragraphs (Dates, the detail panel, History, the top bar). It covers:
+- [x] 2.13 Slice E, the interface (design D10, D21, Interfaces), built against the contract with stubbed responses. Owns `web/ui/src` and the `docs/operator.md` interface paragraphs (Dates, the detail panel, History, the top bar). It covers:
   - the Dates page and navigation item, for the chosen source: summary with metadata states and the time zone (with a notice when unset), live `media` progress, cameras with "Shift … — N photos" (preview of the events' photos, then confirm, sending their `folder_ids` and `camera_key`), and the list with filters, its metadata state, and multi-select on the page;
   - bulk corrections (set to a year, month, day, or time; shift in years, days, hours, and minutes; use name; use folder; clear);
   - "Set file dates…" and "Organize by date…" (template, destination, rename), both through `PreviewDialog`, with `mtime` from→to lines, the dedupe notice linking to the duplicates list, the siblings warning, and "Discard these copies" after a confirmation;
@@ -191,7 +191,7 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - the catalog.
 
   Verify: `cd web/ui && npm run -s lint && npx vitest run && npm run -s build`.
-- [ ] 2.14 Slice E: interface tests (Vitest), owning `web/ui/src/**/*.test.tsx` for these:
+- [x] 2.14 Slice E: interface tests (Vitest), owning `web/ui/src/**/*.test.tsx` for these:
   - "R5.2 A camera's suggested shift in one confirmation" (the body sent is `{folder_ids: [<Bahia>, <Natal>], camera_key: "SONY|DSC-W55|", correction: {kind: "shift", shift_s: 31546800}}`);
   - "R5.4 Setting file dates from the screen" (old and new times, refused reasons, nothing run before confirming);
   - R5.5's display: the dedupe notice, the `identical_copy` items, the siblings warning, and "Discard these copies" sending `set-decision` only after confirmation;
