@@ -77,6 +77,9 @@ type run struct {
 	root  fsaccess.Dir
 	caps  fsaccess.Capabilities
 	total int64
+	// fsType is the source's filesystem type, as recorded when it was
+	// added.
+	fsType string
 }
 
 // verdict is what follows an item.
@@ -118,7 +121,7 @@ func (r *run) do() error {
 		return err
 	}
 	defer opened.Root.Close()
-	r.root, r.caps = opened.Root, opened.Source.Caps
+	r.root, r.caps, r.fsType = opened.Root, opened.Source.Caps, opened.Source.Volume.FSType
 
 	if err := r.reconcile(); err != nil {
 		if r.ctx.Err() != nil {

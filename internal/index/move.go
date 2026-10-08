@@ -173,6 +173,23 @@ func MissingIntentAt(ctx context.Context, q store.Queryer, src domain.SourceID, 
 	return intentAt(ctx, q, src, path)
 }
 
+// IntentBelow reports whether an entry strictly below the folder at path in
+// src carries owner intent (its own decision, a tag, or an override),
+// whatever its state. A missing one is not a child the disk shows, yet
+// removing the folder above it would lose that intent (design V2); a present
+// one is a child anyway. path is a folder's, never the source root's.
+func IntentBelow(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error) {
+	if len(path) == 0 {
+		return false, errors.New("index: IntentBelow needs a folder below the source root")
+	}
+	lo, hi := subtree(path)
+	var yes bool
+	if err := q.QueryRowContext(ctx, intentBelowSQL, string(src), lo, hi).Scan(&yes); err != nil {
+		return false, fmt.Errorf("index: look for the owner's intent below %q: %w", displayPath(path), err)
+	}
+	return yes, nil
+}
+
 // freePath makes the path of a step's new entry free in the index: a
 // missing row there goes, with its subtree and their entry_names rows, when
 // none of them carries the owner's intent (ErrMissingIntent otherwise); a
@@ -558,10 +575,9 @@ func RemoveFolder(ctx context.Context, tx *sql.Tx, id domain.EntryID, parentFact
 		}
 		return err
 	}
-	lo, hi := subtree(p.path)
-	var intent bool
-	if err := tx.QueryRowContext(ctx, intentBelowSQL, string(p.source), lo, hi).Scan(&intent); err != nil {
-		return fmt.Errorf("index: look for the owner's intent below %q: %w", displayPath(p.path), err)
+	intent, err := IntentBelow(ctx, tx, p.source, p.path)
+	if err != nil {
+		return err
 	}
 	if intent {
 		return fmt.Errorf("%w: below %q", ErrMissingIntent, displayPath(p.path))

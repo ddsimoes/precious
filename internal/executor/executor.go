@@ -70,6 +70,9 @@ type Index interface {
 	ActionDone(ctx context.Context, tx *jobs.Tx, src domain.SourceID) error
 	// MissingIntentAt is index.MissingIntentAt, so the executor builds before slice 2.1 lands.
 	MissingIntentAt(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error)
+	// IntentBelow is index.IntentBelow: owner intent on an entry below a
+	// folder, which keeps an undo from removing it (design V2).
+	IntentBelow(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error)
 }
 
 // Options configures New.
