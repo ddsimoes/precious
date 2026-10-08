@@ -14,6 +14,8 @@
 // design D19): each file's SHA-256, the members of each archive, the
 // duplicate groups, and the folder and archive relations the corpus
 // declares; and the rows of the rescue card (r2c design D6). See truth.go.
+// Every image and video carries its effective date, and the truth lists
+// the cameras the media job's cameras pass finds (r5 design D19; dates.go).
 // LargeFiles adds synthfs-only files of at least 16 MiB for the hashing
 // tests.
 package corpus
@@ -42,6 +44,10 @@ type Tree struct {
 	relations []relation
 	// rescue are the rescue card's declared rows (rescue.go).
 	rescue []rescueDecl
+	// dates are the hand-declared media dates, and cameras what the
+	// cameras pass lists (dates.go).
+	dates   dateDecls
+	cameras []CameraTruth
 }
 
 // item is one entry of a tree, in creation order: every folder comes before
@@ -130,6 +136,8 @@ type GroundTruth struct {
 	Relations []Relation `json:"relations"`
 	// Rescue are the rows of the rescue card, in its order.
 	Rescue []Rescue `json:"rescue"`
+	// Cameras are what the media job's cameras pass lists (r5 design D19).
+	Cameras []CameraTruth `json:"cameras"`
 }
 
 // Entry is one ground-truth entry. Size is set for files only. Category,
@@ -150,6 +158,9 @@ type Entry struct {
 	FileKind   string           `json:"file_kind,omitempty"`
 	// SHA256 is a file's content digest, in hex; empty for other kinds.
 	SHA256 string `json:"sha256,omitempty"`
+	// Date is an image's or video's effective date (r5 design D19); nil
+	// for other entries.
+	Date *DateTruth `json:"date,omitempty"`
 }
 
 // RawPath returns the entry's raw '/'-joined path bytes.
@@ -182,6 +193,7 @@ items:
 			size := int64(len(it.data))
 			e.Size = &size
 			e.SHA256 = hex.EncodeToString(it.sum[:])
+			e.Date = t.dateOf(it)
 		}
 		if x, ok := asserted[it.path]; ok {
 			if x.category != "" {
@@ -196,7 +208,7 @@ items:
 		entries = append(entries, e)
 	}
 	return GroundTruth{Entries: entries, Duplicates: t.duplicates(), Members: t.members(),
-		Relations: t.relationTruth(), Rescue: t.rescueTruth()}
+		Relations: t.relationTruth(), Rescue: t.rescueTruth(), Cameras: t.cameraTruth()}
 }
 
 // WriteFile writes the ground truth as indented JSON.
@@ -221,9 +233,10 @@ func displayPath(p string) string {
 type def struct {
 	items []item
 	index map[string]int
+	dates dateDecls
 }
 
-func newDef() *def { return &def{index: make(map[string]int)} }
+func newDef() *def { return &def{index: make(map[string]int), dates: dateDecls{}} }
 
 func (d *def) add(it item) {
 	if _, dup := d.index[it.path]; dup {
@@ -317,7 +330,8 @@ func (d *def) data(p string) []byte {
 // entries, resolves the declared relations, checks the rescue declarations,
 // and returns the tree.
 func (d *def) finish(expects []expect, rels []relationDecl, rescue []rescueDecl) *Tree {
-	t := &Tree{items: d.items, expects: expects}
+	d.checkDates()
+	t := &Tree{items: d.items, expects: expects, dates: d.dates}
 	explicit := make([]bool, len(d.items))
 	for i, it := range d.items {
 		explicit[i] = !it.mtime.IsZero()
