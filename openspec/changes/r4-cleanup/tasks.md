@@ -78,13 +78,13 @@
   - the scenarios "Deletion stays inside the quarantine" and "An origin record never replaces a file".
 
   Owns `internal/executor/r4_*_test.go`. Verify: `go test -race ./internal/executor`.
-- [ ] 2.5 The check job (design D7, D8, D10's end transaction). Owns `internal/cleanup/check*.go` (not commands) and the docs on the pre-delete check:
+- [x] 2.5 The check job (design D7, D8, D10's end transaction). Owns `internal/cleanup/check*.go` (not commands) and the docs on the pre-delete check:
   - `KindPurgeCheck` and `Service.Register`;
   - listing the set, hashing in full, the copy search and verification, verdicts and classes;
   - progress and cancellation.
 
   Verify: `go test -race ./internal/cleanup/...`.
-- [ ] 2.6 Check tests:
+- [x] 2.6 Check tests:
   - R4.6 (scenario "A purge set with copies and unique files", on the corpus with a duplicate, a unique photo, and a zip): every file and member is read exactly once (instrument), symlinks and empty folders are recorded `no_content`, and the exact counts and bytes are right;
   - the scenario "A copy on an offline disk";
   - an item holding an unreadable folder is reported `unreadable`;
