@@ -21,14 +21,18 @@ import (
 
 // Conditions on a purge_check_files row f of the check c (D8, U10):
 // gatedSQL holds for a file that needs a confirmation (its own, or its
-// group's for likely junk); confirmedSQL for one that has it.
+// group's for likely junk), outside an item that is not readable, which is
+// refused and never purged; confirmedSQL for one that has it.
 const (
-	gatedSQL = `(f.verdict IN ('unique', 'copy_offline', 'unreadable')
-		OR (f.verdict = 'opaque_archive' AND f.copy_path IS NULL))`
+	gatedSQL = `((f.verdict IN ('unique', 'copy_offline', 'unreadable')
+			OR (f.verdict = 'opaque_archive' AND f.copy_path IS NULL))
+		AND NOT EXISTS (SELECT 1 FROM purge_check_items i WHERE i.check_id = f.check_id AND i.entry_id = f.item_id
+			AND i.readable = 0))`
 	confirmedSQL = `(f.confirmed_at IS NOT NULL
 		OR (f.verdict = 'unique' AND f.class IS 'likely_junk' AND c.junk_confirmed_at IS NOT NULL))`
-	// ownSQL holds for a file confirmed one by one: gated and not likely
-	// junk, which its group confirms.
+	// ownSQL holds for a file confirmed one by one: of a gated verdict and
+	// not likely junk, which its group confirms. A file of an item that is
+	// not readable is accepted too, though it gates nothing.
 	ownSQL = `(f.verdict IN ('copy_offline', 'unreadable')
 		OR (f.verdict = 'opaque_archive' AND f.copy_path IS NULL)
 		OR (f.verdict = 'unique' AND f.class IS NOT 'likely_junk'))`

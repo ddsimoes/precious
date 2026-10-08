@@ -23,7 +23,8 @@ type done struct {
 // planUndo plans plan-undo (r3 design D11): the reverse of the action's done
 // items that no undo has reversed yet, in reverse seq order. A rename goes
 // back from wherever its entry is now to its previous folder and name; a
-// folder the action created is removed. An item whose previous name is
+// folder the action created is removed. Either is refused in_quarantine
+// while its entry is in the quarantine (r4 D13). An item whose previous name is
 // taken, or whose previous folder is gone, is a conflict, unless
 // destination_id names a folder for those items, which then go there under
 // their previous names. An undo is an individual action: it may take an
@@ -90,8 +91,13 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 		if it.op == opMkdir {
 			rm := &item{op: opRmdir, entry: n.id, fromParent: n.parent, fromName: n.name, fromPath: n.path,
 				state: statePlanned, reverses: it.id}
-			if n.source != src || n.state == "missing" || !n.dir() {
+			switch {
+			case n.source != src || n.state == "missing" || !n.dir():
 				rm.state, rm.reason = stateRefused, reasonMissing
+			case index.IsQuarantinePath(n.path):
+				// A created folder since quarantined is restored or purged,
+				// never removed by an undo (r4 D13).
+				rm.state, rm.reason = stateRefused, reasonInQuarantine
 			}
 			if err := p.push(rm); err != nil {
 				return 0, nil, err

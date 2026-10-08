@@ -27,11 +27,14 @@ import (
 // a file it recorded still needs a confirmation (design Interfaces, U10): a
 // unique file not likely junk, or likely junk before its group was
 // confirmed; a copy_offline or unreadable one; an opaque archive without a
-// verified copy.
+// verified copy. The records of an item that is not readable gate nothing:
+// such an item is refused, never purged (r4 D11).
 const gateSQL = `SELECT c.source_id, c.state, EXISTS (SELECT 1 FROM purge_check_files f WHERE f.check_id = c.id
 		AND f.confirmed_at IS NULL AND (f.verdict IN ('copy_offline', 'unreadable')
 			OR (f.verdict = 'opaque_archive' AND f.copy_path IS NULL)
-			OR (f.verdict = 'unique' AND (f.class IS NOT 'likely_junk' OR c.junk_confirmed_at IS NULL))))
+			OR (f.verdict = 'unique' AND (f.class IS NOT 'likely_junk' OR c.junk_confirmed_at IS NULL)))
+		AND NOT EXISTS (SELECT 1 FROM purge_check_items i WHERE i.check_id = f.check_id AND i.entry_id = f.item_id
+			AND i.readable = 0))
 	FROM purge_checks c WHERE c.id = ?`
 
 // PurgeGate reads a pre-delete check by its ID: its source, its state, and
@@ -185,20 +188,22 @@ func (r *run) verifyCheck(check int64) (reason, detail string, err error) {
 			return reasonFileChanged, domain.DisplayName(diff), nil
 		}
 	}
-	return r.verifyCopies(check)
+	return r.verifyCopies(check, 0, tol)
 }
 
 // verifyCopies compares every copy the check relied on (a recorded copy of
-// a file that needs no confirmation of its own) with the disk: its index
-// row present at its path and outside the quarantine, its source online,
-// and its lstat the identity recorded.
-func (r *run) verifyCopies(check int64) (reason, detail string, err error) {
+// a file that needs no confirmation of its own), of the set item item or,
+// when item is 0, of the whole set, with the disk: its index row present at
+// its path and outside the quarantine, its source online, and its lstat the
+// identity recorded. A change time is not compared on an inode of which
+// this purge removed a name (tol): a hard-link copy of a file purged before.
+func (r *run) verifyCopies(check, item int64, tol map[inode]bool) (reason, detail string, err error) {
 	rd := r.e.st.Reader()
 	rows, err := rd.QueryContext(r.bg, `SELECT DISTINCT copy_source, copy_path, copy_entry, copy_size, copy_mtime_ns,
 			copy_ctime_ns, copy_ino, copy_dev
-		FROM purge_check_files WHERE check_id = ? AND copy_path IS NOT NULL AND confirmed_at IS NULL
-			AND verdict <> 'copy_offline'
-		ORDER BY copy_source, copy_path`, check)
+		FROM purge_check_files WHERE check_id = ?1 AND (?2 = 0 OR item_id = ?2) AND copy_path IS NOT NULL
+			AND confirmed_at IS NULL AND verdict <> 'copy_offline'
+		ORDER BY copy_source, copy_path`, check, item)
 	if err != nil {
 		return "", "", err
 	}
@@ -261,7 +266,7 @@ func (r *run) verifyCopies(check int64) (reason, detail string, err error) {
 		if info.Kind != domain.EntryFile || info.MountBoundary || !c.size.Valid || c.size.Int64 != info.Size ||
 			!c.mtime.Valid || !sameTime(c.mtime.Int64, info.ModTime.UnixNano(), s.caps) ||
 			(c.ctime.Valid && c.ctime.Int64 != 0 && !info.Ctime.IsZero() &&
-				!sameTime(c.ctime.Int64, info.Ctime.UnixNano(), s.caps)) ||
+				!sameTime(c.ctime.Int64, info.Ctime.UnixNano(), s.caps) && !tol[inode{info.Dev, info.Ino}]) ||
 			(s.caps.StableIdentity && (!c.ino.Valid || uint64(c.ino.Int64) != info.Ino ||
 				(c.devNo.Valid && uint64(c.devNo.Int64) != info.Dev))) {
 			return bad()
@@ -643,11 +648,15 @@ type purge struct {
 // stepPurge deletes one checked item for good (r4 D11). It walks the whole
 // tree of the item in its <seq> folder and compares it with the check's
 // records before the first deletion: any entry that differs, or that the
-// check did not record, ends the item changed with nothing deleted. Then it
-// deletes depth first, comparing each entry again just before, unlinks the
-// item's origin record, removes <seq>, and syncs. A replay (after a crash,
-// its re-checks passed again) takes records no longer on disk as deleted
-// before, and finishes the rest.
+// check did not record, ends the item changed with nothing deleted. The
+// copies the item's records rely on are compared again too (verifyCopies):
+// a copy gone, offline, or changed since verify ends the item changed
+// copy_changed, the check stale, and the action stopped. Then it deletes
+// depth first, comparing each entry again just before, unlinks the item's
+// origin record, removes <seq>, and syncs. A replay (after a crash, its
+// re-checks passed again) takes records no longer on disk as deleted before,
+// compares the copies again before deleting the rest, and finishes it; a
+// lasting difference on the way to the item ends it manual_recovery.
 func (r *run) stepPurge(it item, replay bool) (verdict, error) {
 	rd := r.e.st.Reader()
 	check, err := r.purgeCheck(r.bg, rd, it)
@@ -667,11 +676,10 @@ func (r *run) stepPurge(it item, replay bool) (verdict, error) {
 			return r.preflight(it, err)
 		}
 		if o, _ := fsaccess.OutcomeOf(err); o != domain.OutcomeAbsent {
-			if !isDisk(err) {
+			if !lastingDiff(err) {
 				return halt, err
 			}
-			return r.purgeOutcome(it, p.gone(end{state: stateManualRecovery, detail: findings(foundOther, foundAbsent),
-				stop: true}, nil))
+			return r.purgeOutcome(it, p.gone(unsurePurge(), nil))
 		}
 		// The crash came after <seq> was removed: the item is gone, and
 		// only its record may be left.
@@ -704,10 +712,13 @@ func (r *run) stepPurge(it item, replay bool) (verdict, error) {
 	}
 	tree, err := r.collect(seq.dir, it.fromName, it.fromPath)
 	if err != nil {
-		if !isDisk(err) || replay {
+		if !replay && isDisk(err) {
+			return r.record(it, end{state: stateFailed, detail: osText(err)})
+		}
+		if !replay || !lastingDiff(err) {
 			return halt, err
 		}
-		return r.record(it, end{state: stateFailed, detail: osText(err)})
+		return r.purgeOutcome(it, p.gone(unsurePurge(), nil))
 	}
 	if !replay && (tree == nil || len(p.recs) == 0) {
 		// The item is gone, or the check recorded nothing of it.
@@ -721,6 +732,23 @@ func (r *run) stepPurge(it item, replay bool) (verdict, error) {
 			return r.record(it, e)
 		}
 		return r.purgeOutcome(it, p.gone(e, gone))
+	}
+	if tree != nil {
+		// The copies may have gone since verify: after a restart, a lost
+		// lease, or a crash, or while a scan of their source ran (r4 D10).
+		reason, detail, err := r.verifyCopies(check, it.entry, p.tol)
+		if err != nil {
+			return halt, err
+		}
+		if reason != "" {
+			r.e.log.Warn("executor: a copy the check relied on changed; the item is not deleted", "check", check,
+				"item", it.id, "detail", detail)
+			e := end{state: stateChanged, reason: reason, detail: detail, stop: true, staleCheck: check}
+			if !replay {
+				return r.record(it, e)
+			}
+			return r.purgeOutcome(it, p.gone(e, gone))
+		}
 	}
 	p.gone(end{state: stateDone}, gone)
 	if tree != nil {
@@ -1014,15 +1042,19 @@ func (r *run) purgeOutcome(it item, res purgeResult) (verdict, error) {
 			res.files, res.bytes, res.freed, it.action); err != nil {
 			return err
 		}
-		if err := r.markStale(tx, it, e.state == stateDone, parentPath(it.fromPath), res.record); err != nil {
-			return err
-		}
+		// The difference found is the check's stale reason: marked before
+		// the paths the step removed would mark it index_changed.
 		if e.staleCheck != 0 {
 			if err := markCheckStale(r.bg, q, e.staleCheck); err != nil {
 				return err
 			}
 		}
-		if e.stop && r.action != 0 {
+		if err := r.markStale(tx, it, e.state == stateDone, parentPath(it.fromPath), res.record); err != nil {
+			return err
+		}
+		// Only the item's own action stops: another action's job that
+		// reconciles the item goes on with its own items.
+		if e.stop && r.action != 0 && r.action == it.action {
 			return r.stop(tx)
 		}
 		return nil
@@ -1044,7 +1076,9 @@ func (r *run) purgeOutcome(it item, res purgeResult) (verdict, error) {
 // reconcilePurge decides a purge left intent (r4 D11). When its intent's
 // re-checks pass again, the step is replayed and deletes the rest once.
 // Otherwise the item ends changed with the re-check's reason, the part the
-// crash left deleted recorded, and nothing more unlinked.
+// crash left deleted recorded, and nothing more unlinked. A lasting
+// difference on the way to the item, or inside it, ends it manual_recovery
+// with nothing recorded as deleted.
 func (r *run) reconcilePurge(it item) (verdict, error) {
 	var e *end
 	if err := r.write(func(tx *jobs.Tx) error {
@@ -1069,7 +1103,10 @@ func (r *run) reconcilePurge(it item) (verdict, error) {
 	seq, err := r.openFolder(it.fromParent)
 	if err != nil {
 		if o, _ := fsaccess.OutcomeOf(err); o != domain.OutcomeAbsent {
-			return halt, err
+			if !lastingDiff(err) {
+				return halt, err
+			}
+			return r.purgeOutcome(it, purgeResult{end: unsurePurge()})
 		}
 		// The item and its folder are gone.
 		res := p.gone(*e, nil)
@@ -1086,10 +1123,35 @@ func (r *run) reconcilePurge(it item) (verdict, error) {
 	tree, err := r.collect(seq.dir, it.fromName, it.fromPath)
 	seq.close()
 	if err != nil {
-		return halt, err
+		if !lastingDiff(err) {
+			return halt, err
+		}
+		return r.purgeOutcome(it, purgeResult{end: unsurePurge()})
 	}
 	gone, _ := r.compareTree(tree, p.recs, true, p.tol)
 	res := p.gone(*e, gone)
 	res.whole = tree == nil
 	return r.purgeOutcome(it, res)
+}
+
+// lastingDiff reports whether err, met while reconciling a purge, is a
+// difference on the disk that stays until the disk changes back, as R3's
+// lookIn reads one: a folder on the way with another identity or kind
+// (errChanged, ErrNotDirectory, ErrIdentityChanged), a mount boundary,
+// something changed during the observation, or an entry that cannot be read.
+// The item ends manual_recovery then. A database error, or a device that
+// is unavailable, is returned, and the item stays intent for a later
+// attempt.
+func lastingDiff(err error) bool {
+	if !isDisk(err) {
+		return false
+	}
+	o, _ := fsaccess.OutcomeOf(err)
+	return o != domain.OutcomeUnavailable
+}
+
+// unsurePurge is the end of a purge item whose place or tree reconciling
+// could not compare with the check: manual_recovery, and its action stops.
+func unsurePurge() end {
+	return end{state: stateManualRecovery, detail: findings(foundOther, foundAbsent), stop: true}
 }

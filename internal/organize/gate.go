@@ -16,12 +16,15 @@ const unconfirmedListed = 10
 
 // unconfirmedSQL lists, by path, the files of a check that still need the
 // owner's confirmation (r4 D8, U10), as executor.PurgeGate counts them:
-// check, limit. A member reads as its path inside its archive's.
+// check, limit. A member reads as its path inside its archive's. The records
+// of an item that is not readable are left out: it is refused, never purged.
 const unconfirmedSQL = `SELECT f.path, m.path FROM purge_check_files f JOIN purge_checks c ON c.id = f.check_id
 	LEFT JOIN archive_members m ON m.id = f.member_id
 	WHERE f.check_id = ? AND f.confirmed_at IS NULL AND (f.verdict IN ('copy_offline', 'unreadable')
 		OR (f.verdict = 'opaque_archive' AND f.copy_path IS NULL)
 		OR (f.verdict = 'unique' AND (f.class IS NOT 'likely_junk' OR c.junk_confirmed_at IS NULL)))
+		AND NOT EXISTS (SELECT 1 FROM purge_check_items i WHERE i.check_id = f.check_id AND i.entry_id = f.item_id
+			AND i.readable = 0)
 	ORDER BY f.path, f.id LIMIT ?`
 
 // GatePurge refuses acting on the pre-delete check check of source src (r4
