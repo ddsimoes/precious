@@ -45,7 +45,7 @@ const (
 func (s *Service) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/dates/summary", s.summaryRead)
 	mux.HandleFunc("GET /api/dates", s.list)
-	mux.HandleFunc("GET /api/dates/cameras", s.cameras)
+	mux.HandleFunc("GET /api/dates/cameras", s.camerasRead)
 	mux.HandleFunc("GET /api/entries/{id}/dates", s.entryDates)
 }
 
@@ -788,13 +788,13 @@ var camerasSQL = `SELECT c.camera_key, c.make, c.model, c.serial, c.photos, c.st
 		WHERE d.source_id = c.source_id AND d.camera_key = c.camera_key AND ` + MediaCond("e") + `)
 	ORDER BY CASE c.state WHEN 'offset' THEN 0 WHEN 'disagrees' THEN 1 ELSE 2 END, c.photos DESC, c.camera_key`
 
-// cameras answers GET /api/dates/cameras: the source's media_cameras rows,
+// camerasRead answers GET /api/dates/cameras: the source's media_cameras rows,
 // offset, then disagrees, then ok, each by photos (most first), then key.
 // Applying MediaCond, an event whose folder is no longer a present folder
 // of the source outside the quarantine is left out, its path is the
 // folder's current one, and a camera none of whose photos is still a media
 // file of the source is left out.
-func (s *Service) cameras(w http.ResponseWriter, r *http.Request) {
+func (s *Service) camerasRead(w http.ResponseWriter, r *http.Request) {
 	s.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		qv := r.URL.Query()
 		if err := checkParams(qv, "source"); err != nil {
