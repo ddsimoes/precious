@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"precious/internal/domain"
@@ -24,11 +25,13 @@ const (
 
 // childOrder is a validated children order. Each sort key has its index
 // (parent_id, key, id), so a page is one range of that index read in order
-// (design D11).
+// (design D11). kind limits the children to one kind: "" for every child,
+// or domain.EntryDirectory for folders only (r3 design D16).
 type childOrder struct {
 	sort string // a search.Sort* key
 	col  string // its column
 	desc bool
+	kind domain.EntryKind
 }
 
 // parseChildOrder reads sort (bytes, files, newest, or name; default bytes)
@@ -59,6 +62,16 @@ func parseChildOrder(sort, order string) (childOrder, error) {
 	return o, nil
 }
 
+// parseChildKind reads kind: empty for every child, or directory for folders
+// only, which leaves archives out since an archive is a file.
+func parseChildKind(kind string) (domain.EntryKind, error) {
+	switch domain.EntryKind(kind) {
+	case "", domain.EntryDirectory:
+		return domain.EntryKind(kind), nil
+	}
+	return "", domain.Errorf(domain.CodeInvalidRequest, "unknown kind %q; only directory is accepted", kind)
+}
+
 func (o childOrder) order() string {
 	if o.desc {
 		return search.OrderDesc
@@ -67,12 +80,14 @@ func (o childOrder) order() string {
 }
 
 // childCursor is the continuation token of a children page: base64url of
-// this JSON, holding the order and the last row's sort key and ID (an
-// entry ID, or a member ID inside an archive). N is the key of a numeric
-// sort, nil for a folder with no newest time (NULL); B is the name.
+// this JSON, holding the order, the kind filter, and the last row's sort key
+// and ID (an entry ID, or a member ID inside an archive). N is the key of a
+// numeric sort, nil for a folder with no newest time (NULL); B is the name;
+// K is the kind filter, empty for every child.
 type childCursor struct {
 	Sort  string `json:"s"`
 	Order string `json:"o"`
+	Kind  string `json:"k,omitempty"`
 	N     *int64 `json:"n,omitempty"`
 	B     []byte `json:"b,omitempty"`
 	ID    int64  `json:"i"`
@@ -80,7 +95,7 @@ type childCursor struct {
 
 // cursorAfter is the cursor continuing after r.
 func (o childOrder) cursorAfter(r *search.Row) string {
-	c := childCursor{Sort: o.sort, Order: o.order(), ID: int64(r.ID)}
+	c := childCursor{Sort: o.sort, Order: o.order(), Kind: string(o.kind), ID: int64(r.ID)}
 	if r.Member != 0 {
 		c.ID = int64(r.Member)
 	}
@@ -102,7 +117,8 @@ func (o childOrder) cursorAfter(r *search.Row) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// parseCursor reads a cursor made by cursorAfter for the same order.
+// parseCursor reads a cursor made by cursorAfter for the same order and kind
+// filter.
 func (o childOrder) parseCursor(token string) (*childCursor, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
@@ -112,7 +128,7 @@ func (o childOrder) parseCursor(token string) (*childCursor, error) {
 	if err := json.Unmarshal(raw, &c); err != nil || c.ID <= 0 {
 		return nil, domain.Errorf(domain.CodeInvalidRequest, "malformed cursor")
 	}
-	ok := c.Sort == o.sort && c.Order == o.order()
+	ok := c.Sort == o.sort && c.Order == o.order() && c.Kind == string(o.kind)
 	switch o.sort {
 	case search.SortName:
 		ok = ok && c.N == nil
@@ -122,7 +138,7 @@ func (o childOrder) parseCursor(token string) (*childCursor, error) {
 		ok = ok && c.B == nil && c.N != nil
 	}
 	if !ok {
-		return nil, domain.Errorf(domain.CodeInvalidRequest, "the cursor belongs to another sort order")
+		return nil, domain.Errorf(domain.CodeInvalidRequest, "the cursor belongs to another sort order or kind")
 	}
 	return &c, nil
 }
@@ -171,7 +187,8 @@ func (o childOrder) segments(c *childCursor) []segment {
 	return []segment{after}
 }
 
-// sql is the statement reading up to limit children of a parent in seg.
+// sql is the statement reading up to limit children of a parent in seg, of
+// the order's kind when it has one.
 func (o childOrder) sql(seg segment) string {
 	dir := " ASC"
 	if o.desc {
@@ -183,6 +200,10 @@ func (o childOrder) sql(seg segment) string {
 	b.WriteString(` FROM `)
 	b.WriteString(search.From)
 	b.WriteString(` WHERE e.parent_id = ?`)
+	if o.kind != "" {
+		// The kind is one of the validated constants, never the request's text.
+		b.WriteString(` AND e.kind = '` + string(o.kind) + `'`)
+	}
 	if seg.cond != "" {
 		b.WriteString(` AND `)
 		b.WriteString(seg.cond)
@@ -202,10 +223,11 @@ type childrenBody struct {
 }
 
 // children serves GET /api/entries/{ref}/children: one page of the entry's
-// children in every state, sorted and continued by keyset cursor. A file
-// has no children, except a complete archive, whose top members are its
-// children; a member folder's children are its members (R2 design D16),
-// sorted in memory, which one archive bounds.
+// children in every state, sorted and continued by keyset cursor; with
+// kind=directory, only its folders (r3 design D16), and any other kind is
+// invalid_request. A file has no children, except a complete archive, whose
+// top members are its children; a member folder's children are its members
+// (R2 design D16), sorted in memory, which one archive bounds.
 func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var (
@@ -214,12 +236,15 @@ func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 		after  *childCursor
 		limit  int
 	)
-	err := checkParams(q, "sort", "order", "cursor", "limit")
+	err := checkParams(q, "sort", "order", "cursor", "limit", "kind")
 	if err == nil {
 		parent, err = pathRef(r)
 	}
 	if err == nil {
 		o, err = parseChildOrder(q.Get("sort"), q.Get("order"))
+	}
+	if err == nil {
+		o.kind, err = parseChildKind(q.Get("kind"))
 	}
 	if err == nil && q.Get("cursor") != "" {
 		after, err = o.parseCursor(q.Get("cursor"))
@@ -266,6 +291,9 @@ func (h *handler) memberPage(ctx context.Context, tx *sql.Tx, l level, o childOr
 	ms, err := l.members(ctx, tx, h.pol)
 	if err != nil {
 		return nil, "", err
+	}
+	if o.kind != "" {
+		ms = slices.DeleteFunc(ms, func(m member) bool { return m.row.Kind != o.kind })
 	}
 	o.sortMembers(ms)
 	items := make([]search.Row, 0, min(limit+1, len(ms)))

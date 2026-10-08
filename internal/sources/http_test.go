@@ -40,7 +40,7 @@ func wantKeys(t *testing.T, what string, v any, want ...string) map[string]any {
 
 var (
 	sourceKeys = []string{"id", "label", "state", "state_reason", "mount_point", "path", "rel_root", "volume", "capabilities",
-		"root_entry_id", "totals", "last_scan_at", "active_job", "schedule", "next_scan_at", "schedule_skipped"}
+		"root_entry_id", "totals", "last_scan_at", "active_job", "schedule", "next_scan_at", "schedule_skipped", "writes"}
 	volumeKeys = []string{"kind", "id", "label", "fs_type", "strong"}
 	capsKeys   = []string{"known", "read_only", "case_sensitive", "normalization_sensitive", "stable_identity",
 		"local_time", "hard_links", "time_resolution_ns", "no_replace_rename"}
@@ -102,6 +102,9 @@ func TestSourcesEndpoint(t *testing.T) {
 	c := wantKeys(t, "fotos capabilities", s["capabilities"], capsKeys...)
 	if c["known"] != true || c["case_sensitive"] != true || c["time_resolution_ns"] != 1.0 {
 		t.Fatalf("fotos capabilities = %v", c)
+	}
+	if w := wantKeys(t, "fotos writes", s["writes"], "enabled", "unavailable"); w["enabled"] != false || w["unavailable"] != nil {
+		t.Fatalf("fotos writes = %v", w)
 	}
 	tot := wantKeys(t, "fotos totals", s["totals"], "bytes", "files", "dirs")
 	if tot["bytes"] != 1024.0 || tot["files"] != 2.0 || tot["dirs"] != 1.0 {

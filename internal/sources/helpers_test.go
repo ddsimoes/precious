@@ -65,10 +65,11 @@ func newEnv(t *testing.T) *env {
 }
 
 // service returns a new registry over e's store and filesystem with the
-// given allowed roots (a restart: it has its own handle key).
+// given allowed roots (a restart: it has its own handle key), and writes
+// allowed by the configuration, as by default.
 func (e *env) service(roots ...string) *Service {
 	e.t.Helper()
-	svc, err := New(e.st, e.fs, config.Sources{AllowedRoots: roots}, fixedClock{testNow})
+	svc, err := New(e.st, e.fs, config.Sources{AllowedRoots: roots, AllowWrites: true}, fixedClock{testNow})
 	if err != nil {
 		e.t.Fatal(err)
 	}

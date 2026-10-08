@@ -1,7 +1,9 @@
 // Package sources is the source registry (§6.1, design D4/D5): the sources
 // table, where each source's volume is mounted now, the picker that is the
 // only way to name a folder, and the add-source, rename-source,
-// remove-source, and set-source-schedule commands.
+// remove-source, set-source-schedule, and set-source-writes commands. It also
+// says whether a source may be changed now (CheckWrites, r3 design D1), which
+// the commands that organize a source and the executor check.
 //
 // A source is recorded as a volume identity plus its root folder relative to
 // that volume, never as an absolute path. Resolving it reads the current mount
@@ -121,6 +123,9 @@ type Service struct {
 	// key signs picker handles; it is made at start, so a restart
 	// invalidates every handle.
 	key []byte
+	// allowWrites is [sources] allow_writes (r3 design D1), which
+	// set-source-writes and the sources list read.
+	allowWrites bool
 
 	// refresh coalesces concurrent refreshes (Refresh).
 	refreshMu sync.Mutex
@@ -138,7 +143,8 @@ var _ jobs.Registry = (*Service)(nil)
 
 // New returns the registry over st and fsys. Allowed roots are cfg's, or the
 // platform defaults that exist when cfg has none, resolved through symlinks
-// once here. The picker's signing key is generated here.
+// once here, and cfg.AllowWrites says whether a source's writes may be turned
+// on at all. The picker's signing key is generated here.
 func New(st *store.Store, fsys fsaccess.FS, cfg config.Sources, clk clock.Clock) (*Service, error) {
 	roots, err := allowedRoots(cfg.AllowedRoots)
 	if err != nil {
@@ -155,7 +161,7 @@ func New(st *store.Store, fsys fsaccess.FS, cfg config.Sources, clk clock.Clock)
 	if clk == nil {
 		clk = clock.Real{}
 	}
-	return &Service{st: st, fs: fsys, clk: clk, roots: roots, stateDir: stateDir, key: key}, nil
+	return &Service{st: st, fs: fsys, clk: clk, roots: roots, stateDir: stateDir, key: key, allowWrites: cfg.AllowWrites}, nil
 }
 
 // AllowedRoots returns the resolved allowed roots, in the order the picker
