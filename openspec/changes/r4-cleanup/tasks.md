@@ -163,7 +163,7 @@
   - Home's quarantine bucket.
 
   Verify: `npx playwright test` passes headless.
-- [ ] 4.2 Full verification:
+- [x] 4.2 Full verification:
   - gofmt, `go vet ./...`, and `go vet -tags e2e,slow ./...`;
   - `go test -race ./...`;
   - `make test-slow`;
@@ -172,7 +172,7 @@
   - Playwright;
   - `scripts/e2e-docker.sh`;
   - `openspec validate --strict`.
-- [ ] 4.3 A smoke check of the built binary, with a throwaway script on a copy of an r3 database:
+- [x] 4.3 A smoke check of the built binary, with a throwaway script on a copy of an r3 database:
   - the migration applies, and History keeps its actions;
   - a plan with a blocked item;
   - a quarantine, then a restore;
