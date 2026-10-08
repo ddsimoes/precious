@@ -443,3 +443,17 @@ The predicate is a residual written as `NOT (...)`, which SQLite does not use fo
 
 - **Upgrade.** Migration 0007 rebuilds two small tables, adds three, and adds one column to `sources`. Existing actions keep their IDs and history.
 - **Rollback.** Restore the backup taken before deploying, since an r3 binary refuses a newer schema.
+
+## Addendum: decisions made during implementation
+
+- **U1.** `GET /api/checks/{id}/files` takes `confirmed=1` or `confirmed=0`, as the review lists take `decided=`.
+- **U2.** The interface lists a cleanup's or restore's entries with `op=rename`, and a purge's with `op=purge`: in the preview, and in History's Show items. History's list of items that need a check stays unfiltered. Counts come from `action.entries`; the other kinds keep `counts`. `kept_count` is read as optional, absent on items that are not blocked.
+- **U3.** Delete for good plans first (`plan-purge`, index-only), then asks the final question with the purge plan's own `files` and `bytes`, and its `entries` counts, then runs it. Keep them leaves the plan to expire. The interface never adds up check buckets for this question, since archive members and their archive would count twice.
+- **U4.** Check again rebuilds the set from `GET /api/quarantine?source=` (500 to a page, every page), keeping the items whose `check.id` is the stale check. Restored items are therefore left out; with none left, the report says so and starts nothing.
+- **U5.** The Cleanup screen fetches each shown source's quarantine whatever `sources.quarantine` says, since a quarantined empty folder has no files and no bytes.
+- **U6.** Home always shows In quarantine as the fifth decision bar, zero included, measured against the totals like the four others.
+- **U7.** The detail panel hides the decision, tags, organize, and category controls for any entry with `in_quarantine`, nested ones included; the classification facts, the preview, Open, Show in Map, and Compare stay. A missing date reads "In quarantine, from …", and a missing origin "an unknown place".
+- **U8.** History offers no Undo for `cleanup`, `restore`, and `purge` even if an answer said it could, and adds Export CSV to every action.
+- **U9.** `purge_check` events store their progress by job ID. A running event refetches the checks themselves but not their file lists; a terminal one refetches every check response and the quarantine. A terminal organize event refetches the quarantine and the checks too.
+- **U10.** A check file needs its own confirmation when it is `unique` and not `likely_junk`, `copy_offline`, `unreadable`, or `opaque_archive` with no copy. Only those files offer Confirm, Restore its item, and, when `entry_id` is set, Move out…. A member is shown as "<member> inside <path>".
+- **U11.** The Sources card also names a `.precious-quarantine` folder of the owner's own (`quarantine.name_taken`), as D1 asks.

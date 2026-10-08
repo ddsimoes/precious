@@ -1320,9 +1320,9 @@ Then turn **Changes by Precious** on for that source in Sources. The service's `
 
 ## Interface
 
-Precious is used through a web interface served by `precious serve` at the address in `server.external_origin`. Everything it needs is built into the binary: it loads nothing from the internet and works on a network with no outside access. The top bar links the screens, Home, Map, Search, Opportunities, History, and Sources, and has the Sign out button. Sizes are shown in binary units (KiB, MiB, GiB, where 1 GiB is 1,024 MiB). The interface is in English, the only language in this release, and shows numbers and dates in English formats.
+Precious is used through a web interface served by `precious serve` at the address in `server.external_origin`. Everything it needs is built into the binary: it loads nothing from the internet and works on a network with no outside access. The top bar links the screens, Home, Map, Search, Opportunities, Cleanup, History, and Sources, and has the Sign out button. Sizes are shown in binary units (KiB, MiB, GiB, where 1 GiB is 1,024 MiB). The interface is in English, the only language in this release, and shows numbers and dates in English formats.
 
-Decisions and tags are recorded in Precious's database only. The interface changes a disk only when you organize it: moving, renaming, or creating folders on a source where you allowed changes (see [The Sources screen](#the-sources-screen)). Precious never replaces a file, and every change is listed in [History](#history), where it can be undone.
+Decisions and tags are recorded in Precious's database only. The interface changes a disk only when you organize it or clean it up: moving, renaming, or creating folders, or moving discarded items to quarantine, restoring them, and deleting a checked set for good, on a source where you allowed changes (see [The Sources screen](#the-sources-screen) and [The Cleanup screen](#the-cleanup-screen)). Precious never replaces a file, and every change is listed in [History](#history), where a move can be undone and a quarantine can be restored.
 
 ### Signing in
 
@@ -1334,7 +1334,7 @@ Home answers "how is my disk?" for all sources together, or for the one chosen i
 
 - **Totals:** the size, files, and folders counted.
 - **Scans in progress,** with folders, files, and bytes so far, updating as they run.
-- **Decisions:** the bytes and files you have decided to keep, discard, or look at later, and the undecided rest. The four add up to the total. They count files present on the disk at the last scan.
+- **Decisions:** the bytes and files you have decided to keep, discard, or look at later, and the undecided rest. The four add up to the total. They count files present on the disk at the last scan. **In quarantine** follows them: the bytes and files moved to quarantine and not yet restored or deleted for good. They are outside the totals and the four decisions, since nothing outside the Cleanup screen shows them.
 - **Size by category, by file type, and by year of last change.** Categories are grouped into four families, counted from what each folder holds; see [What a folder is made of](#what-a-folder-is-made-of).
 
 When some folder could not be read, Home says its figures are incomplete rather than presenting them as complete.
@@ -1347,7 +1347,8 @@ The Sources screen lists each source with its state (online, offline, or unavail
 - **Open in Map** browses the source, also while it is offline.
 - **Change schedule** sets the rescan schedule: off, daily, or weekly on a day, at a time in your browser's time zone. See [Rescan schedule](#rescan-schedule).
 - **Rename** changes the label only.
-- **Remove** asks first. It forgets the source with its decisions and tag assignments; no file on the disk is changed.
+- **Remove** asks first. It forgets the source with its decisions and tag assignments; no file on the disk is changed. It is refused while the source's quarantine holds items: restore them or delete them for good first.
+- **A folder named `.precious-quarantine`** that you made yourself at the top of the source is named on its card: Precious hides that name everywhere, as its own quarantine, and cannot clean up the source until you rename the folder on the disk.
 - **Changes by Precious** says whether Precious may change the source. Every source starts with it off, and Precious only reads it. **Allow changes…** asks first, saying that Precious will then move, rename, and create folders on that source only when you ask, never replaces a file, and keeps a history you can undo; nothing changes until you confirm. **Turn off** stops it at once, with no question. Where changes cannot be allowed, the row says why instead of offering the button: the server's configuration forbids changes on every source (`sources.allow_writes = false`), the disk is mounted read-only, or its file system cannot rename without the risk of replacing a file. This is separate from the file system's own **Writable** or **Read-only** line above it.
 
 **Add source** opens the folder picker. It starts at the locations Precious may use and lists folders only; open folders until the one you want is current, optionally give it a name, and add it. Then choose Scan now. See [Adding a source](#adding-a-source), [Allowed roots](#allowed-roots), and [Offline and unavailable sources](#offline-and-unavailable-sources).
@@ -1398,7 +1399,7 @@ A decision applied to many items never changes a kept one, whether it was kept i
 
 Clicking an item on the Map or in Search opens its details beside the screen, or over it in a window narrower than 1,600 pixels (Escape or × closes it). They show:
 
-- **Where it is,** each folder above it a link to its own details, and its kind, size, file and folder counts, and dates of last change (for a folder, its newest and oldest change inside). A notice says when the item was not found in the last scan or could not be read.
+- **Where it is,** each folder above it a link to its own details, and its kind, size, file and folder counts, and dates of last change (for a folder, its newest and oldest change inside). A notice says when the item was not found in the last scan or could not be read. An item in quarantine says so, with when it was moved there and where from (or that its origin is unknown), and links to the Cleanup screen. It keeps its preview, figures, and Open, but shows no decision, tags, category, or Organize controls: restore it first.
 - **A preview of a file,** without choosing Open: a photo scaled to the panel (click it to see it full size), a video or audio player, a PDF, or the first 40 lines of a text, source, or Markdown file. Other types offer the download. A file changed on disk since the last scan, or on a disk that is not connected, says so instead.
 - **For a folder, its size by category** (its composition) and **Inside this folder**, the notable entries below it with their category and size, each opening its own details. See [What a folder is made of](#what-a-folder-is-made-of).
 - **Size by file type and by year** for a folder.
@@ -1442,7 +1443,7 @@ Files from a disk are never run as part of Precious:
 
 **Opportunities** (in the main menu) lists the eight cards: **Your files inside programs** first while it has open rows, then the others largest first. Each card shows its bytes, how many items it holds, and whether it rests on the rules or on the same content found by hashing; **Your files inside programs**, and a card whose open items hold no bytes, lead with their count instead. A card counts only what is still open, so it shrinks as you decide, and reads **Nothing left to review** once nothing is.
 
-**A review list** shows one card's items, largest first. Each row gives its path, size, dates, suggestion, and a one-line summary (category, years, files, size, and up to two notable things inside, such as an Office document or version history), with the decision buttons. A row of **Your files inside programs** also says which program or disposable folder it is inside, with a link to that folder on the Map. **Show decided rows** also lists the rows you already decided, with their decision. **Select all rows** works as Search's select all: it confirms the count, size, and kept items, then a decision skips kept items and reports them. The duplicates list has no select all: show a row's copies and decide each copy on its own (Precious never picks a copy for you); a folder pair also offers **Compare**.
+**A review list** shows one card's items, largest first. Each row gives its path, size, dates, suggestion, and a one-line summary (category, years, files, size, and up to two notable things inside, such as an Office document or version history), with the decision buttons. A row of **Your files inside programs** also says which program or disposable folder it is inside, with a link to that folder on the Map. **Show decided rows** also lists the rows you already decided, with their decision. **Select all rows** works as Search's select all: it confirms the count, size, and kept items, then a decision skips kept items and reports them. The duplicates list has no select all: show a row's copies and decide each copy on its own (Precious never picks a copy for you); a folder pair also offers **Compare**. **Draft a cleanup plan from this list** drafts a plan of the list's rows you discarded, on the source chosen at the top, and opens its preview (see [The Cleanup screen](#the-cleanup-screen)). It is off, with the reason, while all sources are shown, the disk is not connected, or changes are not allowed on the source. A plan from the duplicates list never takes the last copy of a file or both sides of a folder pair.
 
 Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J** or **↓** next row, **↑** previous row, and **Enter** opens the row's details (in the duplicates list, Enter shows or hides a row's copies, and the keys then act on the selected copy). The keys do nothing while you type in a field or while a dialog or the detail panel has the focus.
 
@@ -1456,11 +1457,43 @@ Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J
 
 **The detail panel** adds **Copies** for a file (its other copies, each with its path and decision, or why there is none: no other file of its size, different from every file of its size, or not checked yet), **Related folders** for a folder or archive (same content, contained in, or mostly shared, each with its bytes in common and **Compare**, which is where the files only on one side are counted), **Archive** for an archive file (format, what was read, items, size unpacked, and **Open as a folder**), the **Has copies** share, with a line under it saying that it counts every copy and is not the space you could free, which Opportunities shows, and the SHA-256 in the technical details. Every "no other copy" statement carries the share checked on all disks, because a copy can be on any of them; archives Precious does not open (7z, rar, and those over the limits) count as plain files.
 
+### The Cleanup screen
+
+**Cleanup** (in the main menu) is where discarded items leave a disk. Nothing is deleted in one step: a plan first moves them to the source's quarantine, a folder named `.precious-quarantine` at the top of the source, on the same disk, where they keep their names and can be restored; only a checked set is ever deleted for good. The screen shows each source, or the one chosen in the **Source** list at the top, with its plans and its quarantine.
+
+**Draft a cleanup plan** makes a plan of the items you discarded on that source, the outermost ones (a discarded file inside a discarded folder goes with the folder). It needs the disk connected and changes allowed (see [The Sources screen](#the-sources-screen)); otherwise the button is off and says why. A source whose top already holds a folder of your own named `.precious-quarantine` explains that instead. Review lists draft the same plan from their discarded rows (see [Opportunities and Compare](#opportunities-and-compare)).
+
+**The plan's preview** changes nothing until you approve it. It shows:
+
+- how many items will move to quarantine, how many are blocked, and how many are not included, with the total files and size;
+- what is known of copies, from the last scan and hashing: the bytes that have a copy elsewhere, the bytes with no known copy, the bytes not checked for copies yet, and how many items hold personal material;
+- every item, paged, under Planned, Blocked by kept items, or Not included, with its size and reason. A blocked item is a discarded folder that holds something kept: nothing of it moves. **Show the kept items inside** lists them, 100 at a time;
+- **Export CSV**, which downloads the plan's items as in History.
+
+**Approve and run** runs it; the result follows live, with a link to History. An item that changed since the plan was drafted, or that you kept meanwhile, is left in place and reported. **Close** leaves everything as it is. A plan can be run for 24 hours; after that, draft it again.
+
+**The quarantine** lists the source's quarantined items, newest first: where each came from (or "origin unknown" for an item Precious found there without its record), its size and files, when it was moved, and its last check, which links to the check's report. Tick items, or **Select all shown**, then:
+
+- **Restore** puts them back where they came from, after a preview. When an item's place is taken, or its folder is gone, or its origin is unknown, the preview says so and offers **Choose a folder for them…**: the destination chooser picks a folder, and those items go there under their own names. Nothing is ever merged or replaced. It needs changes allowed on the source.
+- **Check before deleting** starts a check of the selected items and opens its report. The check reads every file in full, archive members included, and looks for an identical copy outside the quarantine, which it reads too. It changes nothing on the disk.
+
+**The check's report** shows its progress while it runs (files and bytes read), with **Stop the check**. Then it gives the files and bytes of each finding: has a verified copy, copy only on a disk not connected, no copy found, could not be read, archive not opened, and nothing to copy (folders, links, empty files); and, for the files with no copy, how many look possibly valuable, uncertain, or likely junk. The files are listed below, filterable by finding, by kind, and by whether they are confirmed, each with the copy that was found.
+
+Before anything can be deleted, every file without a verified copy must be confirmed:
+
+- **Confirm all likely junk** confirms the likely junk at once;
+- every other such file has its own **Confirm**, one click per file. Or take it out of the set: **Restore its item**, or **Move out…** to a folder outside the quarantine with the destination chooser. Either makes the check out of date.
+
+A check is out of date as soon as something it read or relied on changes: an item restored, a file moved out, a copy moved, decided again, or changed. The report then says so and offers **Check again**, which checks what is left of the set.
+
+**Delete for good…** is on once everything is confirmed. It asks one last time, stating how many items, files, and bytes will be deleted; **Keep them** cancels. Precious first compares every checked file and copy with the disk, and deletes nothing if anything changed. The result gives the files and bytes deleted and the space freed. On ZFS, space held by snapshots taken before the deletion returns only when they expire, and the result says so.
+
 ### History
 
-**History** (in the main menu) lists every change Precious made on a disk, newest first: what it was (such as "Move into “Documentos”" or "Rename"), its source, when it ran, its size, its state (waiting for its turn, in progress, done, or stopped), and how many of its items were done, left as they were because their place was taken, not included, not done, or not attempted. The list follows running changes live.
+**History** (in the main menu) lists every change Precious made on a disk, newest first: what it was (such as "Move into “Documentos”", "Rename", "Move discarded items to quarantine", "Restore from quarantine", or "Delete for good"), its source, when it ran, its size, its state (waiting for its turn, in progress, done, or stopped), and how many of its items were done, blocked by kept items, left as they were because their place was taken, not included, not done, or not attempted. A cleanup, restore, or deletion counts the items you see on the Cleanup screen, not each of its steps. A deletion for good also gives the files and bytes deleted and the space freed. The list follows running changes live.
 
-- **Undo** puts a done change back: each moved or renamed item returns to its previous folder and name, and each folder the change created is removed if it is still empty. When an item's previous name is taken, or its previous folder is gone, the preview opens and offers to choose a folder for those items, where they go under their previous names. An undo is itself a change in the list, and an item already undone reads Undone.
+- **Export CSV** downloads the change's items as a spreadsheet file, one row per item with its path, size in bytes, operation, state, and reason. Cells are written so that no spreadsheet reads them as formulas.
+- **Undo** puts a done change back: each moved or renamed item returns to its previous folder and name, and each folder the change created is removed if it is still empty. When an item's previous name is taken, or its previous folder is gone, the preview opens and offers to choose a folder for those items, where they go under their previous names. An undo is itself a change in the list, and an item already undone reads Undone. A cleanup, a restore, and a deletion for good have no Undo: items moved to quarantine come back with Restore on the Cleanup screen, and what was deleted for good cannot come back.
 - **Cancel**, on a change waiting for its turn or running, stops it after the step in progress; nothing more of it runs.
 - **Show items** lists every item with its paths and what became of it, such as Done, Name taken, or Changed on disk since the last scan.
 - **Needs your check** marks an item whose step Precious could not confirm, for example after a power cut. It shows the item's path before and after and what was found at each (nothing, the item, or something else). Put things right on the disk, then choose **I fixed it**: Precious marks the item resolved and scans the source again. Until then, no other change can be planned on that source.
@@ -1472,3 +1505,4 @@ Review lists work from the keyboard: **K** keep, **D** discard, **L** later, **J
 - **Decide many files:** search for them, select all results (or tick some), check the confirmation, and choose the decision. Read the report for the kept items that were skipped.
 - **Label things:** tag a folder in its details, and everything inside it carries the tag. Search by the tag, or color the Map by it, to see them.
 - **Tidy up a disk:** allow changes on its source on the Sources screen, then rename or move items from their details, or move many search results at once with Move to…. Check History to undo a change.
+- **Free space for good:** discard what you no longer want, then on the Cleanup screen draft a plan, read its preview, and approve it. Later, select the quarantined items, choose Check before deleting, confirm what the check asks for, and choose Delete for good.

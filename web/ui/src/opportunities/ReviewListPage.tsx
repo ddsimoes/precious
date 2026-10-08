@@ -15,9 +15,11 @@ import {
   type ReviewListName,
   type ReviewRow,
 } from '@/api/opportunities'
+import { useSources } from '@/api/sources'
 import { ErrorBanner } from '@/app/ErrorBanner'
 import { NotFoundPage } from '@/app/NotFoundPage'
 import { PageTitle } from '@/app/PageTitle'
+import { DraftCleanup } from '@/cleanup/DraftCleanup'
 import { DecisionButtons } from '@/components/DecisionButtons'
 import { SourceFilter } from '@/components/SourceFilter'
 import { Button } from '@/components/ui/button'
@@ -33,7 +35,7 @@ import { summaryLine } from '@/opportunities/summary'
 // ReviewListPage is the review list of one opportunity card (spec §11.5, R2
 // design D13), /opportunities/<list>?source=&decided=1: its open rows, and
 // the decided ones when asked, decided with the usual controls or from the
-// keyboard.
+// keyboard, and a cleanup plan of its discarded rows on the chosen source.
 export function ReviewListPage() {
   const { list } = useParams()
   if (!isReviewList(list)) {
@@ -127,6 +129,7 @@ function ReviewList({ list }: { list: ReviewListName }) {
   const entryLink = useEntryLink()
   const [params, setParams] = useSearchParams()
   const source = useSourceParam()
+  const sources = useSources()
   const showDecided = params.get('decided') === '1'
   const decidedId = useId()
   const listRef = useRef<HTMLDivElement>(null)
@@ -362,6 +365,7 @@ function ReviewList({ list }: { list: ReviewListName }) {
             card !== undefined && rows.length > 0 && <ListSelectAll list={list} source={source} />
           )}
         </div>
+        <DraftCleanup source={sources.data?.sources.find((s) => s.id === source)} list={list} />
         {decide.isError && <ErrorBanner error={decide.error} onDismiss={() => decide.reset()} />}
 
         {openRows.isPending && (

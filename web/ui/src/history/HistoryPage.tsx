@@ -5,6 +5,9 @@ import { useTranslation } from 'react-i18next'
 import {
   actionItemsQueryKey,
   cancelAction,
+  cleanupKinds,
+  entryOps,
+  exportUrl,
   fetchActionItems,
   fetchHistory,
   historyQueryKey,
@@ -27,9 +30,10 @@ import { OrganizeOutcome } from '@/organize/OrganizeOutcome'
 import { useActionTitle, useOrganize } from '@/organize/useOrganize'
 
 // HistoryPage lists every action that was run, newest first (R3 design
-// D16): what it did, when, its state and item counts, with Undo, Cancel
-// while it waits or runs, its items on demand, and the items that need the
-// owner's check. Organize job events keep it live.
+// D16): what it did, when, its state and item counts, with Undo (never for
+// a cleanup, restore, or purge, R4 design D13), Cancel while it waits or
+// runs, its items on demand, the export of its items as CSV (D16), and the
+// items that need the owner's check. Organize job events keep it live.
 export function HistoryPage() {
   const { t } = useTranslation()
   const pages = useInfiniteQuery({
@@ -94,16 +98,20 @@ function ActionCard({ action }: { action: Action }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: historyQueryRoot }),
   })
 
-  const c = action.counts
-  // Every way an item can end without being done counts as not done.
+  // A cleanup, restore, or purge counts its entries; other kinds count
+  // their steps. Every way an item can end without being done counts as
+  // not done.
+  const c = action.entries ?? action.counts
   const counts = [
     ['done', c.done],
     ['refused', c.refused],
     ['conflict', c.conflict],
+    ['blocked', c.blocked],
     ['failed', c.failed + c.changed + c.not_permitted + c.offline + c.no_safe_rename + c.not_empty],
     ['not_attempted', c.not_attempted],
-    ['manual_recovery', c.manual_recovery],
+    ['manual_recovery', action.counts.manual_recovery],
   ] as const
+  const undoable = action.undo.possible && !cleanupKinds.includes(action.kind)
 
   return (
     <article aria-labelledby={headingId} className="grid gap-2 rounded-lg border bg-card p-3 text-sm">
@@ -122,6 +130,15 @@ function ActionCard({ action }: { action: Action }) {
           bytes: fmt.bytes(action.bytes),
         })}
       </p>
+      {action.kind === 'purge' && action.state === 'done' && (
+        <p>
+          {t('history.purged', {
+            files: t('units.files', { count: action.deleted_files, formatted: fmt.count(action.deleted_files) }),
+            bytes: fmt.bytes(action.deleted_bytes),
+            freed: fmt.bytes(action.freed_bytes),
+          })}
+        </p>
+      )}
       <ul aria-label={t('history.counts')} className="flex flex-wrap gap-x-4 gap-y-1">
         {counts
           .filter(([key, count]) => key === 'done' || count > 0)
@@ -132,7 +149,7 @@ function ActionCard({ action }: { action: Action }) {
           ))}
       </ul>
 
-      {c.manual_recovery > 0 && (
+      {action.counts.manual_recovery > 0 && (
         <section className="grid gap-2 rounded-md border border-amber-300 bg-amber-50 p-3">
           <h3 className="font-semibold">{t('history.recovery.title')}</h3>
           <p>{t('history.recovery.help')}</p>
@@ -141,7 +158,7 @@ function ActionCard({ action }: { action: Action }) {
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        {action.undo.possible && (
+        {undoable && (
           <Button
             size="sm"
             variant="outline"
@@ -160,6 +177,11 @@ function ActionCard({ action }: { action: Action }) {
         <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? t('history.hideItems') : t('history.showItems')}
         </Button>
+        <Button asChild size="sm" variant="link" className="px-1">
+          <a href={exportUrl(action.id)} download>
+            {t('history.export')}
+          </a>
+        </Button>
       </div>
       {cancel.isError && <ErrorBanner error={cancel.error} onDismiss={() => cancel.reset()} />}
       <OrganizeOutcome organize={organize} />
@@ -172,10 +194,14 @@ function ActionCard({ action }: { action: Action }) {
 // states, or only those that need the owner's check, each with I fixed it.
 function ActionItems({ action, recovery }: { action: Action; recovery: boolean }) {
   const { t } = useTranslation()
-  const states = recovery ? (['manual_recovery'] as const) : []
+  // A cleanup, restore, or purge lists one step per entry; the steps that
+  // need a check are listed whatever they do.
+  const filter = recovery
+    ? { states: ['manual_recovery'] as const }
+    : { ops: entryOps(action.kind) ?? undefined }
   const pages = useInfiniteQuery({
-    queryKey: actionItemsQueryKey(action.id, states),
-    queryFn: ({ pageParam, signal }) => fetchActionItems(action.id, states, pageParam, signal),
+    queryKey: actionItemsQueryKey(action.id, filter),
+    queryFn: ({ pageParam, signal }) => fetchActionItems(action.id, filter, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.next_cursor,
   })

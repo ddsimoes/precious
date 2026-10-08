@@ -64,7 +64,9 @@ export interface Home {
   by_family: FamilyAmount[]
   by_kind: KindAmount[]
   by_year: YearAmount[]
-  decisions: Record<Decision, Amount>
+  // decisions leave the quarantine out; quarantine holds its bytes and
+  // files apart (R4 design D15).
+  decisions: Record<Decision, Amount> & { quarantine: Amount }
   // partial is set when part of a counted tree could not be read.
   partial: boolean
   scans: HomeScan[]
