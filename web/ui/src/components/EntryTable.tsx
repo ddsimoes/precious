@@ -5,6 +5,7 @@ import {
   use,
   useEffect,
   useEffectEvent,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -368,7 +369,7 @@ function isColumnId(id: string | undefined): id is ColumnId {
 // columnLayout gives each column its grid track and its narrowest width, in
 // rem. Columns with a hide rank hide in that order when the card is too
 // narrow for every column: Changed and Suggestion first, then Decision,
-// then Duplicated; name, size, and type or category always stay.
+// then Has copies, then Files; name, size, and type or category always stay.
 const columnLayout: Record<ColumnId, { track: string; min: number; hide?: number }> = {
   select: { track: '2rem', min: 2 },
   name: { track: 'minmax(12rem, 1.5fr)', min: 12 },
@@ -435,6 +436,7 @@ export function EntryTable({
   const entryLink = useEntryLink()
   const sources = useSources()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const duplicatedHintId = useId()
   const headerRef = useRef<HTMLDivElement>(null)
   // width is the room for a row inside the card, in rem, once measured.
   const [width, setWidth] = useState<number | null>(null)
@@ -619,6 +621,11 @@ export function EntryTable({
         tabIndex={tableRef === undefined ? undefined : -1}
         className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-sm"
       >
+        {/* The Has copies column's hint, its header's description (ADR 0010),
+            outside the header so that it stays out of the header's name. */}
+        <span id={duplicatedHintId} hidden>
+          {t('map.columns.duplicatedHint')}
+        </span>
         {/* The header follows the rows' sideways scroll; both reserve the
             scroll bar's gutter, so their columns line up. */}
         <div ref={headerRef} role="rowgroup" className="overflow-hidden border-b bg-muted/50 [scrollbar-gutter:stable]">
@@ -641,6 +648,8 @@ export function EntryTable({
                         : 'descending'
                       : undefined
                   }
+                  title={id === 'duplicated' ? t('map.columns.duplicatedHint') : undefined}
+                  aria-describedby={id === 'duplicated' ? duplicatedHintId : undefined}
                   className="min-w-0 truncate"
                 >
                   {headerCell(id)}

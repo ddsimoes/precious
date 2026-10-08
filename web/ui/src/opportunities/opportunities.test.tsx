@@ -115,7 +115,7 @@ describe('Opportunities', () => {
     const cards = within(await screen.findByRole('list', { name: 'Opportunity cards' }))
     expect(cards.getAllByRole('link').map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
       ['Duplicate folders and files', '/opportunities/duplicates'],
-      ['Old installers, disk images, and downloads', '/opportunities/installers'],
+      ['Old installers and disk images', '/opportunities/installers'],
       ['Partial downloads, empty folders, and empty files', '/opportunities/leftovers'],
     ])
     expect(cards.getAllByRole('listitem')[0]).toHaveTextContent('Based on the same content')
@@ -188,7 +188,7 @@ describe('Opportunities', () => {
     expect(titles()).toEqual([
       'Your files inside programs',
       'Caches, temporary files, and build output',
-      'Old installers, disk images, and downloads',
+      'Old installers and disk images',
     ])
     expect(cards[0]).toHaveTextContent(/^Your files inside programs1 itemYour own documents, photos, and saves/)
     expect(cards[0]).not.toHaveTextContent('20 KiB')
@@ -200,7 +200,7 @@ describe('Opportunities', () => {
     await waitFor(() =>
       expect(titles()).toEqual([
         'Caches, temporary files, and build output',
-        'Old installers, disk images, and downloads',
+        'Old installers and disk images',
         'Your files inside programs',
       ]),
     )
@@ -238,7 +238,7 @@ describe('Similar folders', () => {
     a: copia,
   }
 
-  it('lists each pair with its bytes in common and what is only on each side, with Compare', async () => {
+  it('lists each pair with its bytes in common and Compare, and no count of what is only on each side', async () => {
     const requests = stubApi({
       ...base,
       'GET /api/relations': () => jsonResponse(200, { items: [overlap], next_cursor: null }),
@@ -249,9 +249,10 @@ describe('Similar folders', () => {
     const row = list.children[0] as HTMLElement
     expect(within(row).getByRole('link', { name: 'Fotos - Copia' })).toBeInTheDocument()
     expect(within(row).getByRole('link', { name: 'Fotos' })).toBeInTheDocument()
-    expect(row).toHaveTextContent(
-      '898 MiB in common · Only in Fotos - Copia: 1 file (2 MiB) · Only in Fotos: 3 files (52 MiB)',
-    )
+    expect(within(row).getByText('898 MiB in common')).toBeInTheDocument()
+    // Compare alone counts what is only on each side (ADR 0010).
+    expect(row).toHaveTextContent(/^Fotos - CopiaFotos898 MiB in commonCompare$/)
+    expect(row).not.toHaveTextContent(/only|2 MiB|52 MiB|files?\b/i)
     expect(within(row).getByRole('link', { name: 'Compare' })).toHaveAttribute('href', '/compare?left=5&right=2')
     // Read-only: a similar folder is not a copy.
     expect(within(row).queryByRole('button')).not.toBeInTheDocument()

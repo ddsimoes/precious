@@ -253,6 +253,12 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
                     percent: fmt.percent(duplication.fraction),
                     bytes: fmt.bytes(entry.duplicated_bytes ?? 0),
                   })}
+            <p className="text-xs text-muted-foreground">
+              <Trans
+                i18nKey="detail.duplicatedHint"
+                components={{ opportunitiesLink: <Link to="/opportunities" className="text-primary underline" /> }}
+              />
+            </p>
           </Fact>
         )}
       </dl>

@@ -197,11 +197,13 @@ func compute(ctx context.Context, tx *sql.Tx, gen int64) ([]newRow, error) {
 	return append(out, rescue...), nil
 }
 
-// ruleLists maps a category to its rule card (D12).
+// ruleLists maps a category to its rule card (D12). The installers card
+// takes installer files and disk images only: a downloads folder
+// (download_collection) is on no card, so the installers inside it are rows
+// of their own and the owner's other files there are not (r2d D1).
 var ruleLists = map[string]List{
 	string(domain.CategorySystemJunk):              ListSystemJunk,
 	string(domain.CategoryInstallerDownload):       ListInstallers,
-	string(domain.CategoryDownloadCollection):      ListInstallers,
 	string(domain.CategoryApplicationInstallation): ListPrograms,
 	string(domain.CategoryOSInstallation):          ListPrograms,
 	string(domain.CategoryCache):                   ListCaches,
@@ -230,8 +232,8 @@ func ruleRows(ctx context.Context, tx *sql.Tx) ([]newRow, error) {
 				AND coalesce((SELECT d.unreadable = 0 AND d.mount_boundaries = 0 FROM dir_stats d WHERE d.entry_id = e.id), 1)
 		FROM entries e
 		WHERE e.state <> 'missing' AND e.parent_id IS NOT NULL AND (
-			e.category IN ('system_junk', 'installer_download', 'download_collection', 'application_installation',
-				'os_installation', 'cache', 'temporary_data', 'generated_artifacts')
+			e.category IN ('system_junk', 'installer_download', 'application_installation', 'os_installation',
+				'cache', 'temporary_data', 'generated_artifacts')
 			OR (e.kind = 'file' AND e.size = 0)
 			OR (e.kind = 'directory' AND e.total_files = 0))`, partialDownloadRule)
 	if err != nil {

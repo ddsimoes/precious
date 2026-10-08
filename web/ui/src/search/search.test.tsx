@@ -209,7 +209,7 @@ describe('Search screen', () => {
     for (const name of ['Sem acesso', 'bloqueado.doc']) {
       expect(cellOf(name, 'Type or category')).toHaveTextContent('Could not be read')
       expect(cellOf(name, 'Size▼')).toHaveTextContent('—')
-      expect(cellOf(name, 'Duplicated')).toHaveTextContent('—')
+      expect(cellOf(name, 'Has copies')).toHaveTextContent('—')
       expect(rowOf(name)).not.toHaveTextContent(/0\sB|0%/)
     }
     expect(cellOf('Sem acesso', 'Files')).toHaveTextContent('—')
@@ -255,13 +255,17 @@ describe('Search screen', () => {
         throw new Error(`no row for ${where}`)
       }
       expect(within(row).getByRole('link', { name: 'MOV_0195.mp4' })).toBeInTheDocument()
-      expect(cellIn(row, 'Duplicated')).toHaveTextContent('3 copies')
+      expect(cellIn(row, 'Has copies')).toHaveTextContent('3 copies')
     }
     // A top-level entry shows its source alone.
     expect(cellOf('notas.txt', 'Name')).toHaveTextContent(/^notas\.txtOld disk$/)
-    expect(cellOf('notas.txt', 'Duplicated')).toHaveTextContent('No other copy')
-    expect(cellOf('novo.bin', 'Duplicated')).toHaveTextContent('Not checked')
-    expect(cellOf('Fotos - Copia', 'Duplicated')).toHaveTextContent('90%')
+    expect(cellOf('notas.txt', 'Has copies')).toHaveTextContent('No other copy')
+    expect(cellOf('novo.bin', 'Has copies')).toHaveTextContent('Not checked')
+    expect(cellOf('Fotos - Copia', 'Has copies')).toHaveTextContent('90%')
+    // The Has copies header says it is not the space that can be freed.
+    expect(screen.getByRole('columnheader', { name: 'Has copies' })).toHaveAccessibleDescription(
+      'Files here that also exist elsewhere, counting every copy. Not the space you could free: see Opportunities.',
+    )
     // A source's top folder is named after the source.
     expect(screen.getByRole('link', { name: 'Fotos' })).toHaveAttribute('href', '/map/1')
     expect(screen.getByRole('checkbox', { name: 'Select Fotos' })).toBeInTheDocument()

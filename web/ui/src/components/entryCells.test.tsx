@@ -72,6 +72,6 @@ describe('Map cells', () => {
     expect(cellOf('Sem acesso', 'Type or category')).toHaveTextContent('Could not be read')
     expect(cellOf('Sem acesso', 'Size▼')).toHaveTextContent(/^—$/)
     expect(cellOf('Sem acesso', 'Files')).toHaveTextContent(/^—$/)
-    expect(cellOf('Sem acesso', 'Duplicated')).toHaveTextContent(/^—$/)
+    expect(cellOf('Sem acesso', 'Has copies')).toHaveTextContent(/^—$/)
   })
 })
