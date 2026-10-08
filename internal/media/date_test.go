@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 	"time"
+	_ "time/tzdata" // America/Sao_Paulo wherever the tests run
 )
 
 var (
@@ -56,6 +57,46 @@ func TestNameDate(t *testing.T) {
 	} {
 		if d, ok := NameDate([]byte(name), utc); ok {
 			t.Errorf("NameDate(%q) = %+v, want none", name, d)
+		}
+	}
+}
+
+// r5 review, Addendum G7: in America/Sao_Paulo, daylight saving started
+// at midnight of 2018-11-04 (00:00 -03 became 01:00 -02, at 03:00 UTC).
+// The day named IMG-20181104-WA0001.jpg begins at that change and ends at
+// midnight of the 5th; the 3rd ends at the change. So neither the 3rd's
+// last minutes nor 00:30 on the 5th are taken as the 4th's time.
+func TestPeriodsAroundADaylightSavingStart(t *testing.T) {
+	sp, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, ok := NameDate([]byte("IMG-20181104-WA0001.jpg"), sp)
+	if !ok || d.Local != "2018-11-04" {
+		t.Fatalf("NameDate = %+v %v", d, ok)
+	}
+	change := time.Date(2018, 11, 4, 3, 0, 0, 0, time.UTC)
+	if !d.Instant.Equal(change) {
+		t.Errorf("the 4th begins at %v, want %v", d.Instant, change)
+	}
+	if end, want := d.end(sp), time.Date(2018, 11, 5, 2, 0, 0, 0, time.UTC); !end.Equal(want) {
+		t.Errorf("the 4th ends at %v, want %v", end, want)
+	}
+	day3, _ := NameDate([]byte("IMG-20181103-WA0001.jpg"), sp)
+	if end := day3.end(sp); !end.Equal(change) {
+		t.Errorf("the 3rd ends at %v, want %v", end, change)
+	}
+	month, _ := FolderDate([]byte("2018-10"), sp, now)
+	if end, want := month.end(sp), time.Date(2018, 11, 1, 3, 0, 0, 0, time.UTC); !end.Equal(want) {
+		t.Errorf("October ends at %v, want %v", end, want)
+	}
+	for _, mtime := range []time.Time{time.Date(2018, 11, 3, 23, 30, 0, 0, sp), time.Date(2018, 11, 5, 0, 30, 0, 0, sp)} {
+		if d.contains(mtime, sp, 0) {
+			t.Errorf("the 4th contains %v", mtime)
+		}
+		in := Inputs{Path: []byte("Fotos/IMG-20181104-WA0001.jpg"), Mtime: &mtime, MetaState: MetaNone, Zone: sp, Now: now}
+		if e := Derive(in); e.Refined || e.Date == nil || e.Date.Local != "2018-11-04" {
+			t.Errorf("modified at %v: Derive = %+v refined %v, want the 4th unrefined", mtime, e.Date, e.Refined)
 		}
 	}
 }

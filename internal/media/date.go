@@ -101,8 +101,29 @@ func zoneOf(zone *time.Location, offsetMin *int) *time.Location {
 
 // fromWall builds the Date of a wall time read in loc, at a precision.
 func fromWall(w time.Time, p Precision, loc *time.Location, offsetMin *int) Date {
-	t := time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), w.Nanosecond(), loc)
+	var t time.Time
+	if p == PrecisionSecond {
+		t = time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), w.Nanosecond(), loc)
+	} else {
+		t = dayStart(w.Year(), w.Month(), w.Day(), loc)
+	}
 	return Date{Instant: t.UTC(), Local: w.Format(layouts[p]), OffsetMin: copyInt(offsetMin), Precision: p}
+}
+
+// dayStart is the first instant of the day y-m-d (normalized, so the day
+// after the 31st is the 1st) in loc: its midnight, or, when a clock change
+// skips that midnight, the instant the day begins. time.Date moves a wall
+// time that does not exist by the zone in effect after the change, which
+// for a skipped midnight is the previous day's 23:00 (Addendum G7).
+func dayStart(y int, m time.Month, d int, loc *time.Location) time.Time {
+	y, m, d = time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Date()
+	t := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	if ty, tm, td := t.Date(); ty != y || tm != m || td != d {
+		if _, end := t.ZoneBounds(); !end.IsZero() {
+			return end
+		}
+	}
+	return t
 }
 
 // fromInstant is the second-precision Date of an instant, with its wall
@@ -150,8 +171,11 @@ func DateFromRow(effectiveNs int64, local string, offsetMin *int, precision stri
 }
 
 // end is the end of the date's period (exclusive), read in the zone or its
-// own offset. Without a zone (detection), the offset its instant implies at
-// the start of the period is used.
+// own offset: the next period's first midnight, built from the wall fields,
+// so a period whose own midnight does not exist (a daylight saving start,
+// which Go moves to 01:00) still ends at midnight (Addendum G7). Without a
+// zone (detection), the offset its instant implies at the start of the
+// period is used.
 func (d Date) end(zone *time.Location) time.Time {
 	w, p, err := parseWall(d.Local)
 	if err != nil {
@@ -161,14 +185,13 @@ func (d Date) end(zone *time.Location) time.Time {
 	if zone == nil && d.OffsetMin == nil {
 		loc = time.FixedZone("", int(w.Sub(d.Instant)/time.Second))
 	}
-	start := time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), 0, loc)
 	switch p {
 	case PrecisionYear:
-		return start.AddDate(1, 0, 0)
+		return dayStart(w.Year()+1, time.January, 1, loc)
 	case PrecisionMonth:
-		return start.AddDate(0, 1, 0)
+		return dayStart(w.Year(), w.Month()+1, 1, loc)
 	case PrecisionDay:
-		return start.AddDate(0, 0, 1)
+		return dayStart(w.Year(), w.Month(), w.Day()+1, loc)
 	}
 	return d.Instant.Add(time.Second)
 }
