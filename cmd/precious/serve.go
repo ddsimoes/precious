@@ -179,6 +179,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		hashing:   hashing,
 		organize:  org,
 		cleanup:   clean,
+		dates:     mediaDates,
 		spa:       shell,
 	})
 
@@ -286,6 +287,7 @@ type handlerDeps struct {
 	hashing   *content.Service
 	organize  *organize.Service
 	cleanup   *cleanup.Service
+	dates     *dates.Service
 	spa       http.Handler
 }
 
@@ -311,6 +313,7 @@ func newHandler(d handlerDeps) http.Handler {
 	review.RegisterCommands(cmds, d.decisions)
 	d.organize.RegisterCommands(cmds)
 	d.cleanup.RegisterCommands(cmds)
+	d.dates.RegisterCommands(cmds)
 	mux.Handle("POST /api/commands/{name}", cmds)
 	mux.Handle("GET /api/jobs/{id}", jobs.NewStatusHandler(d.runner))
 	mux.Handle("GET /api/events", jobs.NewEventsHandler(d.runner))
@@ -318,6 +321,7 @@ func newHandler(d handlerDeps) http.Handler {
 	api.Register(mux, d.store, d.policy, d.log)
 	d.organize.Routes(mux)
 	d.cleanup.Routes(mux)
+	d.dates.Routes(mux)
 	viewer.Register(mux, d.store, d.sources, d.hashing, d.log)
 	mux.HandleFunc("/api", apiNotFound)
 	mux.HandleFunc("/api/", apiNotFound)
