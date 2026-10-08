@@ -22,9 +22,11 @@ import (
 	"precious/internal/content"
 	"precious/internal/decisions"
 	"precious/internal/domain"
+	"precious/internal/executor"
 	"precious/internal/fsaccess"
 	"precious/internal/index"
 	"precious/internal/jobs"
+	"precious/internal/organize"
 	"precious/internal/relations"
 	"precious/internal/review"
 	"precious/internal/rules"
@@ -129,6 +131,16 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 			log.Error("relate refresh after a scan", "source", src, "err", err)
 		}
 	})
+	// Organizing (r3 design D3–D14): the executor follows each done step in
+	// the index through organize's adapter, and a scan waits while a change
+	// of its source is queued, running, or has a step recorded as started
+	// (D10).
+	org := organize.New(organize.Options{Store: st, Policy: pol, AllowWrites: cfg.Sources.AllowWrites,
+		Clock: d.Clock, Logger: log})
+	exec := executor.New(executor.Options{Store: st, Sources: srcs, Index: org.Index(),
+		AllowWrites: cfg.Sources.AllowWrites, Clock: d.Clock, Logger: log})
+	exec.Register(runner)
+	scanner.DeferWhile(executor.OrganizeActive)
 	scanner.Register(runner)
 	authSvc := auth.New(st, d.Clock, cfg.Auth, auth.Options{})
 	shell, err := spa.New(d.UI)
@@ -147,6 +159,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 		policy:    pol,
 		decisions: decisions.New(d.Clock, pol, index.StartScan),
 		hashing:   hashing,
+		organize:  org,
 		spa:       shell,
 	})
 
@@ -178,6 +191,9 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 	}
 	if err := relate.Startup(ctx, runner); err != nil {
 		log.Error("enqueue relate at start", "err", err)
+	}
+	if err := exec.Startup(ctx, runner); err != nil {
+		log.Error("check interrupted changes at start", "err", err)
 	}
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	defer stopRefresh()
@@ -249,6 +265,7 @@ type handlerDeps struct {
 	policy    *rules.Policy
 	decisions *decisions.Service
 	hashing   *content.Service
+	organize  *organize.Service
 	spa       http.Handler
 }
 
@@ -272,11 +289,13 @@ func newHandler(d handlerDeps) http.Handler {
 	decisions.RegisterCommands(cmds, d.decisions)
 	content.RegisterCommands(cmds, d.hashing)
 	review.RegisterCommands(cmds, d.decisions)
+	d.organize.RegisterCommands(cmds)
 	mux.Handle("POST /api/commands/{name}", cmds)
 	mux.Handle("GET /api/jobs/{id}", jobs.NewStatusHandler(d.runner))
 	mux.Handle("GET /api/events", jobs.NewEventsHandler(d.runner))
 	sources.Register(mux, d.sources, d.log)
 	api.Register(mux, d.store, d.policy, d.log)
+	d.organize.Routes(mux)
 	viewer.Register(mux, d.store, d.sources, d.hashing, d.log)
 	mux.HandleFunc("/api", apiNotFound)
 	mux.HandleFunc("/api/", apiNotFound)
