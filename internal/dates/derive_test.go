@@ -198,3 +198,31 @@ func TestRederive(t *testing.T) {
 	}
 	e.checkSummary(corpusSource, "after the deletions")
 }
+
+// r5 review, Addendum G12: a file dated, unrefined, by its folder's month
+// keeps that date when a date organize moves it into `{year}/{month}`:
+// re-derived at Fotos/2010/07, it is still 2010-07 from the folder name,
+// not the year 2010 refined to its December modification time.
+func TestRederiveAfterADateOrganizeKeepsTheFolderMonth(t *testing.T) {
+	e, root, _ := newCorpusEnv(t)
+	mtime := time.Date(2010, 12, 26, 15, 0, 0, 0, time.UTC)
+	root.Child("Viagens").Child("2010-07 Bahia").File("scan.jpg", 2048, mtime).Seed(7)
+	root.Child("Fotos").Dir("2010").Dir("07")
+	e.scan(corpusSource)
+	from := bahia + "/scan.jpg"
+	id := e.id(corpusSource, from)
+	check := func(when string) {
+		t.Helper()
+		e.rederive(id)
+		if d, _ := e.date(id); d.source != "folder_name" || d.local.String != "2010-07" || d.precision.String != "month" ||
+			d.refined {
+			t.Errorf("%s: %+v, want 2010-07 from the folder name, unrefined", when, d)
+		}
+	}
+	check("in " + bahia)
+	e.move(corpusSource, corpusRoot, from, "Fotos/2010/07")
+	if got := e.id(corpusSource, "Fotos/2010/07/scan.jpg"); got != id {
+		t.Fatalf("the move made entry %d, want %d", got, id)
+	}
+	check("in Fotos/2010/07")
+}

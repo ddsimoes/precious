@@ -343,3 +343,82 @@ func FolderDate(name []byte, zone *time.Location, now time.Time) (Date, bool) {
 	}
 	return fromWall(w, p, zone, nil), true
 }
+
+// FolderPathDate is the date the folder at path (below the source's top)
+// carries by its own name, as folderDateAt reads it: D6's syntax, or the
+// nested layout a date organize writes (Addendum G12).
+func FolderPathDate(path []byte, zone *time.Location, now time.Time) (Date, bool) {
+	if len(path) == 0 {
+		return Date{}, false
+	}
+	parts := strings.Split(string(path), "/")
+	return folderDateAt(parts, len(parts)-1, zone, now)
+}
+
+// folderDateAt is the date the folder parts[i] carries, read with the
+// folders above it (Addendum G12). The nested layout a date organize writes
+// comes first: a folder named by a two-digit month (01–12) right below one
+// named by a year alone, `2010/07`, is that month, and a two-digit day below
+// those, `2010/07/17`, that day; the month or day may be followed by a
+// space, '-', '_', or '.' and more (`2010/07 Bahia`). Otherwise it is the
+// date of its own name (FolderDate).
+func folderDateAt(parts []string, i int, zone *time.Location, now time.Time) (Date, bool) {
+	if zone == nil {
+		zone = time.UTC
+	}
+	if i >= 2 {
+		if d, ok := nestedDate(parts[i-2], parts[i-1], parts[i], zone, now); ok {
+			return d, true
+		}
+	}
+	if i >= 1 {
+		if d, ok := nestedDate(parts[i-1], parts[i], "", zone, now); ok {
+			return d, true
+		}
+	}
+	return FolderDate([]byte(parts[i]), zone, now)
+}
+
+// nestedDate reads year/month[/day] folder names: year exactly four digits
+// that FolderDate accepts, month and day (when day is not empty) two digits
+// alone or before a separator, together a valid date.
+func nestedDate(year, month, day string, zone *time.Location, now time.Time) (Date, bool) {
+	if len(year) != 4 {
+		return Date{}, false
+	}
+	if y, ok := FolderDate([]byte(year), zone, now); !ok || y.Precision != PrecisionYear {
+		return Date{}, false
+	}
+	mm, ok := twoDigits(month)
+	if !ok {
+		return Date{}, false
+	}
+	dd, p := "01", PrecisionMonth
+	if day != "" {
+		if dd, ok = twoDigits(day); !ok {
+			return Date{}, false
+		}
+		p = PrecisionDay
+	}
+	w, ok := wallFromDigits(year, mm, dd, "00", "00", "00")
+	if !ok {
+		return Date{}, false
+	}
+	return fromWall(w, p, zone, nil), true
+}
+
+// twoDigits returns the two digits a folder name starts with when they are
+// the whole name or followed by a space, '-', '_', or '.'.
+func twoDigits(s string) (string, bool) {
+	if len(s) < 2 || s[0] < '0' || s[0] > '9' || s[1] < '0' || s[1] > '9' {
+		return "", false
+	}
+	if len(s) > 2 {
+		switch s[2] {
+		case ' ', '-', '_', '.':
+		default:
+			return "", false
+		}
+	}
+	return s[:2], true
+}

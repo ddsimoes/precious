@@ -113,11 +113,11 @@ func captureDate(m *Meta, zone *time.Location) (Date, bool) {
 }
 
 // nearestFolderDate is the date of the nearest dated ancestor folder below
-// the source's top (D6).
+// the source's top (D6, Addendum G12).
 func nearestFolderDate(p []byte, zone *time.Location, now time.Time) (Date, bool) {
 	parts := strings.Split(string(p), "/")
 	for i := len(parts) - 2; i >= 0; i-- {
-		if d, ok := FolderDate([]byte(parts[i]), zone, now); ok {
+		if d, ok := folderDateAt(parts, i, zone, now); ok {
 			return d, true
 		}
 	}

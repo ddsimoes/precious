@@ -1010,7 +1010,7 @@ The effective date is the first of these that gives a plausible date:
 | `gps` | the GPS date and time | high |
 | `container` | the video's creation time | medium |
 | `file_name` | a date in the name: `IMG_20110416_101500`, `VID_…`, `PXL_…`, `20110416_101500`, `2011-04-16 10.15.00`, `Screenshot_…`, and WhatsApp's `IMG-20110416-WA0003` | low |
-| `folder_name` | the nearest folder named `2011`, `2011-04`, or `2011-04-16`, alone or followed by a space, `-`, `_`, or `.` (such as `2010-07 Bahia`); a year elsewhere in a name, as in `celular_backup_2009`, does not count | low |
+| `folder_name` | the nearest folder named `2011`, `2011-04`, or `2011-04-16`, alone or followed by a space, `-`, `_`, or `.` (such as `2010-07 Bahia`), or, as **Organize by date** lays folders out, a folder named by a two-digit month right inside one named by a year alone (`2011/04`, the month), and a two-digit day inside that (`2011/04/16`, the day), each alone or followed by a space, `-`, `_`, or `.` (`2010/07 Bahia`); a year elsewhere in a name, as in `celular_backup_2009`, does not count | low |
 | `mtime` | the file's modification time | lowest |
 
 A date is implausible, and skipped, when it is before 1990, after tomorrow, or exactly midnight of January 1st of 1970, 1980, 2000, or 2001, the dates cameras fall back to. The modification time is used even then when nothing else is left. A date without an offset (most cameras' captures, and names and folders) is read in [`dates.time_zone`](#configuration-reference).

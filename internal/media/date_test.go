@@ -140,6 +140,46 @@ func TestFolderDate(t *testing.T) {
 	}
 }
 
+// r5 review, Addendum G12: the layout a date organize writes,
+// `{year}/{month}` and `{year}/{month}/{day}`, carries the month or day.
+func TestFolderPathDate(t *testing.T) {
+	for _, c := range []struct {
+		path, local string
+		prec        Precision
+	}{
+		{"Fotos/2010/07", "2010-07", PrecisionMonth},
+		{"2010/07", "2010-07", PrecisionMonth},
+		{"Fotos/2010/07/17", "2010-07-17", PrecisionDay},
+		{"Fotos/2010/07 Bahia", "2010-07", PrecisionMonth},
+		{"Fotos/2010/07/17_praia", "2010-07-17", PrecisionDay},
+		{"Fotos/2010", "2010", PrecisionYear},
+		{"Fotos/2010/13", "", ""},          // no 13th month, and "13" is no D6 date
+		{"Fotos/2010/02/30", "", ""},       // no February 30th: "30" alone is no date
+		{"Fotos/2010/7", "", ""},           // one digit
+		{"Fotos/2010/070", "", ""},         // three digits
+		{"Fotos/Album 2010/07", "", ""},    // the year must be alone
+		{"Fotos/2010-07 Bahia/08", "", ""}, // nor a month
+		{"Fotos/2027/07", "", ""},          // after now's year
+		{"Fotos/2010/07/2011-03", "2011-03", PrecisionMonth},
+	} {
+		d, ok := FolderPathDate([]byte(c.path), recif, now)
+		if ok != (c.local != "") || d.Local != c.local || d.Precision != c.prec {
+			t.Errorf("FolderPathDate(%q) = %+v %v, want %q %s", c.path, d, ok, c.local, c.prec)
+		}
+	}
+	// A file moved from "Viagens/2010-07 Bahia" into "Fotos/2010/07" keeps
+	// its month: the modification time, in December, is outside it, so the
+	// date stays the month, unrefined, from the folder name.
+	mtime := tp(2010, 12, 26, 15, 0, 0)
+	for _, p := range []string{"Viagens/2010-07 Bahia/scan.jpg", "Fotos/2010/07/scan.jpg"} {
+		checkEff(t, p, Derive(in(p, mtime, nil)), wantEff{source: SourceFolderName, conf: ConfidenceLow, local: "2010-07",
+			prec: PrecisionMonth, flags: FlagNoDateMetadata})
+	}
+	checkEff(t, "a day folder", Derive(in("Fotos/2010/07/17/scan.jpg", tp(2010, 7, 17, 15, 0, 0), nil)), wantEff{
+		source: SourceFolderName, conf: ConfidenceMedium, local: "2010-07-17T15:00:00", prec: PrecisionSecond,
+		refined: true, flags: FlagNoDateMetadata})
+}
+
 func TestParseLocal(t *testing.T) {
 	for _, c := range []struct {
 		s       string
