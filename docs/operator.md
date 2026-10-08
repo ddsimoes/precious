@@ -971,6 +971,86 @@ The `relate` job recomputes every relation and every folder's figures from the i
 
 On a development machine, a run over 2 million entries takes seconds and well under 1.5 GB of memory; a Compare of two folders of 100,000 files each answers within 2 seconds.
 
+## Media dates
+
+Precious gives every photo and video an effective date: when it was taken, as far as the files can tell, with where that date came from and how far to trust it. Media dates only read; they never write to a source. Changing a file's date on disk is a separate, previewed action.
+
+A photo or video is any present file of kind image or video (the classification's file kinds), outside the quarantine. Members of archives are not dated.
+
+### When the media job runs
+
+Each source has a `media` job, background work like hashing. It is requested:
+
+- after every scan of that source;
+- at server start, for every source;
+- after every organizing action that changed something on the source (moves and written dates);
+- by every date correction.
+
+A request is never lost. A request while the job runs makes it run its passes once more, or, when it comes as the job ends, a follow-up job runs after it; a job that fails or is cancelled leaves the request pending for its follow-up, the next request, or the next start. Two jobs of one source never read at once: a second one waits, 3 seconds at a time, while the first runs (job detail `media_running`). The job also waits while Precious is organizing the source (`organizing`), as a scan does. A source that is not mounted still gets its job: it reads nothing and recomputes the dates and cameras from what the index holds.
+
+### What it reads
+
+The job reads the headers of each photo and video it has not read yet, never the image or video data, at most 1 MiB per file:
+
+- **EXIF** of JPEG, TIFF and the TIFF-based raw formats (`cr2`, `nef`, `arw`, `dng`, `pef`, `srw`, `orf`, `rw2`), HEIC, HEIF, AVIF, and Canon CR3: the capture date and its time zone offset, the GPS date and time, and the camera's make, model, and serial number;
+- the **creation time** of MP4, M4V, MOV, 3GP, and 3G2 videos (and CR3).
+
+Other formats (PNG, GIF, WebP, MKV, AVI, MTS, and the rest) are not read: they are dated by their name, folder, or modification time. A damaged or unexpected file gives no metadata and never stops the job.
+
+Files are reached and opened as hashing opens them (see [Reading safety](#reading-safety)): one folder at a time, never through a link, and only while their size, times, and identity still match the index. What a file holds is kept with the identity it was read from, so a file is read once: a rescan that finds it unchanged, a move by Precious, and a date written by Precious keep what was read, and only a rescan that finds the file changed makes it read again. A file that changes while it is read is left unread until the next scan; one that cannot be opened is **unreadable**. Results are written at most 64 at a time, each only while the file's index row is still the one the read started from.
+
+### Where a date comes from
+
+The effective date is the first of these that gives a plausible date:
+
+| Source | Date | Confidence |
+|---|---|---|
+| `owner` | your correction; always wins, whatever its age | high (a set date), medium (a shift) |
+| `exif` | the camera's capture date; with its offset, an exact instant, else a time read in `dates.time_zone` | high with an offset, else medium |
+| `gps` | the GPS date and time | high |
+| `container` | the video's creation time | medium |
+| `file_name` | a date in the name: `IMG_20110416_101500`, `VID_…`, `PXL_…`, `20110416_101500`, `2011-04-16 10.15.00`, `Screenshot_…`, and WhatsApp's `IMG-20110416-WA0003` | low |
+| `folder_name` | the nearest folder named `2011`, `2011-04`, or `2011-04-16`, alone or followed by a space, `-`, `_`, or `.` (such as `2010-07 Bahia`); a year elsewhere in a name, as in `celular_backup_2009`, does not count | low |
+| `mtime` | the file's modification time | lowest |
+
+A date is implausible, and skipped, when it is before 1990, after tomorrow, or exactly midnight of January 1st of 1970, 1980, 2000, or 2001, the dates cameras fall back to. The modification time is used even then when nothing else is left. A date without an offset (most cameras' captures, and names and folders) is read in [`dates.time_zone`](#configuration-reference).
+
+### Precision and refinement
+
+A name or folder gives a date only as precise as it is written: a year, a month, a day, or a second. When the file's modification time falls inside that period, the date takes the modification time, to the second, and keeps the name or folder as its source, marked **refined**, with medium confidence. Otherwise the date stays a whole year, month, or day: Precious never invents a finer one, so organizing by `{year}/{month}` or renaming with a time refuses a photo dated only by its year.
+
+### Flags
+
+| Flag | Meaning |
+|---|---|
+| `mtime_disagrees` | the date comes from the camera, GPS, the video, or you, and lies more than 24 hours from the modification time (25 on FAT), as for photos copied years later |
+| `implausible` | the camera, GPS, or video date was implausible and was skipped |
+| `camera_offset` | the photo's camera has a clock offset (below) |
+| `no_date_metadata` | the file was read, or is a format Precious does not read, and holds no capture, GPS, or video date |
+
+A file not read yet shows its metadata as `pending`, and one that could not be opened as `unreadable`; neither is ever flagged `no_date_metadata`.
+
+### Cameras with a wrong clock
+
+At the end of every run, the job compares each camera (make, model, and serial number) with the other cameras in the same event: a folder whose own photos come from at least two cameras. A camera whose photos there all lie more than 6 hours outside the other cameras', by an offset constant within 10 minutes, is a candidate. It is listed with a suggested shift, and its photos in those folders flagged `camera_offset`, only when something sides with the other cameras: their GPS times agreeing with their captures, at one event or more; or, at two events or more, the event folder's own date holding the other cameras' photos and none of this camera's. A camera's own GPS, consistently off by over an hour (14 hours without a time zone offset), counts too. Without such a reference, both cameras are listed as disagreeing, with no suggestion: either clock could be the wrong one.
+
+**Blind spot.** An offset of 6 hours or less (a daylight saving change, a camera left on the home time zone abroad) is not detected; correct such photos by hand with a shift.
+
+### Progress
+
+Media jobs have kind `media`. Their progress, through `GET /api/jobs/{id}` and `GET /api/events`:
+
+| Key | Meaning |
+|---|---|
+| `phase` | 1 listing new files, 2 reading, 3 deriving dates, 4 cameras |
+| `files`, `of_files` | files read so far, of those to read |
+| `bytes` | bytes read |
+| `changed` | files that changed while read, left for the next scan |
+| `unreadable` | files that could not be opened or read |
+| `media`, `of_media` | photos and videos dated so far, of the source's total |
+
+The first run reads every photo and video once; later runs read only what changed. Cancelling a job (`cancel-job`) keeps what was already read; the next request or server start runs it again.
+
 ## Opportunities
 
 Opportunities answers "what should I look at first?" with eight cards, built from the index, the rules' classification, and the duplicates. None of them decides anything for you.

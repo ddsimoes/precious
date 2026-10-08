@@ -54,6 +54,7 @@ type Service struct {
 	zone   *time.Location
 	clk    clock.Clock
 	log    *slog.Logger
+	job    jobWiring // the media job's wiring (job.go)
 }
 
 // New returns the dates service.
