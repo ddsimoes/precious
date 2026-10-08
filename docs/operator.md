@@ -1305,6 +1305,44 @@ When Precious stops between recording a step and recording its result (a crash, 
 
 While a source has an item that needs your check, no change can be planned or run on it. Put things right on the disk, then choose **I fixed it** in History: Precious marks the item resolved and scans the source again. A source that is offline keeps its unchecked step until it is back, and its scans wait until then.
 
+### The pre-delete check
+
+Nothing in quarantine is deleted for good until a check of it is ready. A check covers a set you choose: quarantined items of one source. It runs as a job of kind `purge_check`, with the priority of work you are waiting for, and it only reads: it changes nothing on any disk, writes no digest into the index, and is not a change in History. It waits while a change by Precious on its source is waiting its turn or running, and a scan of the source can run alongside it.
+
+**What it reads.** It records every entry of the set, of every kind, with its identity as it is on the disk (size, modification and change times, device, inode, link count, allocated size), and reads every file in full:
+
+- a file is read once, from start to end, through the same checked opening as hashing;
+- an archive Precious read completely (zip, tar, tar.gz, tar.bz2, gzip, bzip2) is read once, and each file inside it is recorded with its own finding; the archive itself counts as nothing to copy, since its content is its files;
+- an archive Precious does not open (7z, rar, an encrypted zip, a partly read or damaged one, or one not listed yet) is read as one file, and the report says its insides were not opened;
+- empty files, folders, links, and special files have nothing to copy.
+
+An item holding a folder the scan could not read, a folder read only in part, or a mount point cannot be checked: Precious cannot see everything it would delete. Its entries are listed as could not be read, and that item can never be deleted for good; restore it, or fix the folder's permissions, scan, and check again. A single file that cannot be read is listed the same way and needs its own confirmation. A file that no longer matches the index (changed since the last scan) fails the check with `invalid_entry_state`; scan the source, then check again.
+
+**What counts as a copy.** For each file it looks for the same content outside the set and outside every quarantine, in this order: files whose digest is known to match, then files inside archives read completely whose digest matches, then files of the same size not read in full yet. A copy counts only once the check has read it in full itself, it still matched the index when opened, and its source is online; the first that matches is recorded, with its source, path, and identity. A hard link to the same file elsewhere counts too: the data stays reachable through it. Digests stored by hashing are only used to find candidates, never trusted as proof.
+
+**Findings.** Each file gets one, with its files and bytes counted in the report:
+
+| Finding | Meaning | Before deleting |
+|---|---|---|
+| `safe` | a copy was read and verified; it is named | nothing |
+| `copy_offline` | the only known copies are on sources that are not online; nothing on them was read | its own confirmation |
+| `unique` | no copy was found | its own confirmation, or the likely junk group's |
+| `opaque_archive` | an archive not opened; its copy is named when one was verified | its own confirmation when no copy was verified |
+| `unreadable` | could not be read, or its item holds a folder that could not be read | its own confirmation; an unreadable item is never deleted |
+| `no_content` | folders, links, special files, empty files, and archives whose files are listed one by one | nothing |
+
+Connect the disk and check again to turn `copy_offline` into `safe`.
+
+**Classes.** Files with no copy are ranked by the rules, from their classification in the index (a file inside an archive by its name):
+
+- **possibly valuable**: personal material (personal media, documents, source projects, application user data), anything with user material, credentials, or a database among its traits, images, videos, audio, documents, source code, and mail (`eml`, `mbox`, `msg`, `pst`, `dbx`);
+- **likely junk**: otherwise, disposable material (system junk, caches, temporary data, generated artifacts), installers, application installations, and operating system installations;
+- **uncertain**: everything else, including archives not opened with no verified copy.
+
+**Freshness.** A check is `running`, then `ready`, `failed`, or `stale`. It ends `ready` only if, at its very end, it is still running and every item of its set is still at the quarantine path it read. A check becomes `stale` as soon as something it read or relied on changes in the index: an item restored, a file moved out, a copy moved, quarantined, deleted, or decided again, or a decision, category, or group set on any of them or a folder above. A stale check is never acted on; check the set again. Changes on a disk that the index has not seen yet are caught when the deletion runs: its first step compares every recorded entry and every copy with the disk, and deletes nothing if anything differs. Cancelling the job ends the check `failed`; a check whose job stops with the service runs again from the start.
+
+**Progress.** The job reports `files` and `bytes` read so far, of `of_files` and `of_bytes`, the files of the set it reads and their size (an archive counts once, at its size). The copies it reads are not counted.
+
 ### Allowing changes in the deployment
 
 The shipped deployments keep every disk read-only at the operating-system level: the systemd unit lists the disks in `ReadOnlyPaths=`, and the Compose file binds them read-only. Precious sees that as a read-only mount, so **Changes by Precious** on those sources reads that the disk is mounted read-only. To allow changes on one source only:
