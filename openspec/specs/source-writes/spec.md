@@ -55,9 +55,17 @@ A step that fails the check SHALL NOT reach the filesystem. Its item SHALL end a
 - **THEN** it fails with `409 writes_disabled`, and no action is created or run
 
 ### Requirement: Only the executor changes a source, and never by overwriting
-The executor SHALL be the only code that renames an entry, creates a folder, or removes a folder in a source (§5 I2). It removes a folder only when undo takes away an empty folder its own action created. It SHALL act only for an action the owner planned and ran.
+The executor SHALL be the only code that changes a source (§5 I2):
+- **Organizing.** It renames an entry and creates a folder.
+- **Undo.** It removes a folder only when undo takes away an empty folder its own action created.
+- **Cleanup.** Inside a source's quarantine folder only, it creates origin records and deletes the files and folders of a checked purge set.
+
+It SHALL act only for an action the owner planned and ran.
 - **Renaming.** Every rename SHALL use the platform's no-replace rename (`renameat2` with `RENAME_NOREPLACE` on Linux) between two folders opened through the rooted, identity-checked access, never by path.
 - **Taken destinations.** A destination that exists when the rename runs SHALL stop that item as `conflict`, with nothing replaced, and the action SHALL go on with its next item (§5 I3).
+- **Origin records.** An origin record SHALL be created exclusively, so an existing name is never replaced, and written in full and synced. It is written after the item it describes has moved, so it never describes a move that did not happen.
+- **Purges.** A purge SHALL delete only what its check recorded, and only below the quarantine folder. Before deleting anything of an item, it SHALL verify the item's whole tree by identity, and compare each entry again just before deleting it.
+- **Recovery.** A purge or unlink left with its intent recorded SHALL be resumed only after the write permission, the check, and the item's decisions are checked again. Otherwise it SHALL stop, with what was already deleted recorded.
 - **No safe rename.** When the filesystem refuses the no-replace flag, the item SHALL end `no_safe_rename` with nothing moved. The executor SHALL then turn the source's write permission off, with an audit event. Only a ZFS source's "invalid argument" on a rename is read as that refusal; on any other filesystem it refuses the name, and the item SHALL end `failed` with the system's message while writes stay on.
 
 #### Scenario: R3.1 A destination that appears during execution stops that item
@@ -71,6 +79,14 @@ The executor SHALL be the only code that renames an entry, creates a folder, or 
 #### Scenario: Filesystem without the no-replace flag
 - **WHEN** the filesystem of a ZFS source answers the no-replace rename with "invalid argument"
 - **THEN** the item ends `no_safe_rename`, nothing is moved, the remaining items are not attempted, and the source's write permission is off with an audit event
+
+#### Scenario: Deletion stays inside the quarantine
+- **WHEN** a purge item names a path outside `.precious-quarantine`, or a file there that the check did not record
+- **THEN** the executor deletes nothing, and the item ends `changed`
+
+#### Scenario: An origin record never replaces a file
+- **WHEN** a file already holds an origin record's name when the executor writes it
+- **THEN** the record step ends `conflict` and the existing file is unchanged. The quarantined entry stays in quarantine, and its origin is still in the history.
 
 ### Requirement: Intent is journaled and a crash is reconciled
 Before each filesystem step, the executor SHALL commit the step's intent: the operation, the entry, both folders and names, and the entry's identity. After the step, it SHALL fsync every folder the step changed, then confirm the step by looking at both paths. Only then SHALL it record the outcome and update the index, in one transaction. When the index update fails, the item SHALL be marked `manual_recovery`, never left with its intent recorded. Identity SHALL compare under the source's capabilities: device and inode only where identity is stable, and times within the filesystem's resolution.

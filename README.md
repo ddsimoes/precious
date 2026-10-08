@@ -39,6 +39,7 @@ Precious is built around a handful of questions:
 - **Look without risk.** Preview photos, video, audio, PDF, text, source code, and Markdown right in the detail panel. File types come from Precious's own table, never from the content. HTML and SVG from your disk never run, and Markdown is sanitized with no remote content.
 - **Decide, safely.** Mark folders and files keep, discard, or later; a decision on a folder applies to everything inside it. Bulk decisions never override something you kept, and they report exactly what they skipped. Free-form tags are inherited the same way. Duplicates never decide anything for you: each copy is yours to decide.
 - **Organize, with undo.** Rename and move files and folders, create folders, move search results in bulk after a preview of every item and conflict, rescue the kept items out of a folder, and move the files only in one copy of a folder into the other copy from Compare. Every change goes into a History where it can be undone. Decisions, tags, and checked content follow each item, and a rescan sees nothing new.
+- **Clean up, with a way back.** A cleanup plan takes what you discarded, lists every item before anything moves, and holds back a folder that contains something you kept. Approved items go to a quarantine folder at the top of their source, where nothing is deleted and each item can be restored to where it was. Before anything is deleted for good, a check reads every file again and looks for a verified copy elsewhere; files with no copy wait for your confirmation, the likely junk all at once and everything else one by one. The purge compares each file with the disk once more before deleting it, and reports the space freed. Every change exports as CSV.
 - **Read-only until you allow changes.** Scanning, hashing, archive reading, classification, and previews never write to a source; tests prove it on a read-only mount. Changes are allowed per source, off by default. One executor makes them: it records each step before it runs it, uses the filesystem's no-replace rename so a file is never replaced, and recovers after a crash, stopping for your check when a step's outcome is unclear ([how Precious changes a disk](docs/operator.md#how-precious-changes-a-disk)).
 - **Disks that come and go.** Each source is recognized by its volume identity (filesystem UUID, ZFS dataset, or Btrfs filesystem ID), not its path. A USB disk mounted somewhere else is the same source, and an unplugged disk stays browsable and searchable. A source can be rescanned on a daily or weekly schedule; a disk that is not connected at that time is skipped and says so.
 - **Self-contained and private.** One static Go binary with the web interface built in. It needs no runtime dependencies, makes no outbound connections, and loads nothing from the internet. Access is protected by a password, server-side sessions, CSRF checks, and a strict Content-Security-Policy.
@@ -65,7 +66,7 @@ The screenshots show the built-in regression corpus, a generated copy of a typic
 
 ## Status and roadmap
 
-Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so are R2b, R2c, and R2d, the short steps after R2, accepted on 2026-10-07. R3 was accepted on 2026-10-08. There are no tagged releases yet, and things may change incompatibly until 1.0.
+Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so are R2b, R2c, and R2d, the short steps after R2, accepted on 2026-10-07. R3 and R4 were accepted on 2026-10-08. There are no tagged releases yet, and things may change incompatibly until 1.0.
 
 | Milestone | Scope | Status |
 |---|---|---|
@@ -75,7 +76,7 @@ Precious is in **early development**. Milestones R1 and R2 are complete, each ac
 | **R2c** Gems removed | Gems could not tell what is valuable and is gone ([ADR 0009](docs/adr/0009-remove-gems.md)); its list of your files inside programs is now an opportunity card | ✅ Done |
 | **R2d** Clearer figures | The installers card lists installers and disk images, not whole downloads folders; the duplicated share reads "Has copies", which is not space you could free; only Compare counts files on one side ([ADR 0010](docs/adr/0010-clearer-figures.md)) | ✅ Done |
 | **R3** Organizing | Moves, renames, and new folders with undo, through one executor that journals first and never overwrites; changes allowed per source; bulk moves after a preview; rescuing kept items; merging the files only in one copy of a folder into the other | ✅ Done |
-| **R4** Cleanup | Cleanup plans, a reversible quarantine, a pre-delete check that every file has a verified copy, and purge | Planned |
+| **R4** Cleanup | Cleanup plans from your discards that never take a folder holding something you kept; a quarantine on each source with restore; a check before deleting that reads every file and looks for a verified copy; confirmations for files with no copy; purge with the space freed; CSV export | ✅ Done |
 | **R5** Media dates | Photo and video dates from metadata, corrections, and organizing by date | Planned |
 | **R6** Classifier assistant | An optional model that suggests categories where the rules are unsure; it never decides | Planned |
 | **R7** Versions and extended viewer | Families of file versions, thumbnails, conversions through optional tools, Brazilian Portuguese | Planned |
@@ -145,12 +146,13 @@ make ui          # rebuild the web interface into web/dist
 |---|---|
 | `cmd/precious` | The binary: `serve`, `check-config`, `admin set-password`, `backup`, `version` |
 | `internal/index` | The scanner: one pass that records every entry with folder totals, composition, and classification |
-| `internal/fsaccess` | Rooted filesystem access: no symlink following, no mount crossing, byte-exact names; its only write surface (no-replace rename, folder creation) is used by the executor alone |
+| `internal/fsaccess` | Rooted filesystem access: no symlink following, no mount crossing, byte-exact names; its only write surface (no-replace rename, folder creation, and, inside the quarantine only, record files and unlinks) is used by the executor alone |
 | `internal/rules`, `policies/` | Classification rules and name markers |
 | `internal/sources` | Sources, volume identity, the folder picker, per-source write permission |
 | `internal/search`, `internal/web/api`, `internal/viewer` | Search, the read API, and the safe viewer |
 | `internal/decisions` | Decisions, tags, and selections |
 | `internal/organize`, `internal/executor` | Organizing: plans and history, and the one executor that changes disks |
+| `internal/cleanup` | Cleanup: plans, the quarantine and restore, the check before deleting, confirmations, and purge |
 | `web/ui` | The React and TypeScript interface (Vite, Tailwind, TanStack, ECharts) |
 | `internal/corpus`, `tools/` | The regression corpus generator and the scan benchmark |
 | `openspec/` | Change proposals, designs, and requirement specs |
