@@ -156,7 +156,7 @@
 
 ## 4. Integration
 
-- [ ] 4.1 Playwright tests after the last existing one:
+- [x] 4.1 Playwright tests after the last existing one:
   - turning writes on through the dialog (R3.7);
   - renaming and undoing in the detail panel;
   - a bulk move from Search with its preview (R3.4);
@@ -174,7 +174,7 @@
   - Playwright;
   - `scripts/e2e-docker.sh`;
   - `openspec validate --strict`.
-- [ ] 4.3 A smoke check of the built binary, with a throwaway script on a copy of an r2d database:
+- [x] 4.3 A smoke check of the built binary, with a throwaway script on a copy of an r2d database:
   - the migration applies;
   - writes turn on for a corpus source;
   - a rename, a move, an undo, and a merge run;
