@@ -397,7 +397,14 @@ The gate needs a confirmation for every `unique`, `copy_offline`, `unreadable` (
 - **`GET /api/quarantine?source=&cursor=&limit=`** → `{items: Quarantined[], next_cursor, total: {bytes, files}}`. Newest first, 100 by default and at most 500.
 
   `Quarantined {entry: EntryRow, original: {path, path_b64}|null, plan_id|null, quarantined_at|null, bytes, files, check: {id, state}|null}`. A null `original` means unknown origin (D4).
-- **`GET /api/checks/{id}`** → `Check {id, source_id, state, created_at, finished_at, stale_reason, items, counts, confirmed, junk_confirmed, allowed, unconfirmed}`. `counts` has a bucket per verdict, and per class for `unique`, each `{files, bytes}`.
+- **`GET /api/checks/{id}`** → `Check {id, source_id, state, job_id|null, created_at, finished_at|null, stale_reason|null, items, counts, confirmed, unconfirmed, junk_confirmed, allowed}`:
+  - `items` is the number of set items;
+  - `counts` is `{verdict: {<verdict>: {files, bytes}}, class: {<class>: {files, bytes}}}`, where the class buckets cover `unique` files only;
+  - `confirmed` and `unconfirmed` are `{files, bytes}` over the gated files. The likely-junk group counts as unconfirmed until it is confirmed;
+  - `junk_confirmed` and `allowed` are booleans;
+  - the `purge_check` job reports progress as `{files, bytes}` read so far, and `of_files`/`of_bytes`.
+
+  `EntryDetail.in_quarantine` is `{plan_id|null, quarantined_at|null, original: {path, path_b64}|null}|null`.
 - **`GET /api/checks/{id}/files?verdict=&class=&confirmed=&cursor=&limit=`** → `{items: CheckFile[], next_cursor}`, 200 by default and at most 1,000.
 
   `CheckFile {id, item: EntryRow, entry_id|null, path, path_b64, member, kind, size, verdict, class, copy: {source_id, path, path_b64, hard_link}|null, confirmed}`.
