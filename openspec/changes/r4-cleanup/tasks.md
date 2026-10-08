@@ -2,14 +2,14 @@
 
 ## 1. Foundation (one slice, merged first)
 
-- [ ] 1.1 Migration `0007_cleanup.sql`, exactly as in design Interfaces: it rebuilds `actions` and `action_items` (items dropped first), adds their new columns, `sources.quarantine_entry_id`, `purge_checks`, `purge_check_items`, and `purge_check_files`. Owns `migrations/` and `internal/store/*schema_test.go`. Verify with a store test:
+- [x] 1.1 Migration `0007_cleanup.sql`, exactly as in design Interfaces: it rebuilds `actions` and `action_items` (items dropped first), adds their new columns, `sources.quarantine_entry_id`, `purge_checks`, `purge_check_items`, and `purge_check_files`. Owns `migrations/` and `internal/store/*schema_test.go`. Verify with a store test:
   - a version-6 database with actions and items migrates with every row kept;
   - the new checks reject bad values;
   - cascades hold, and the foreign keys into `entries` are indexed.
 
   Run `go test -race ./internal/store`.
-- [ ] 1.2 The 409 codes of design Interfaces in `internal/domain` and `internal/web/apierr`, with a test of the status map. Verify: `go test -race ./internal/domain ./internal/web/apierr`.
-- [ ] 1.3 `fsaccess.Writer.CreateExclusive` and `Unlink`, and `ErrIsDir` (design D12):
+- [x] 1.2 The 409 codes of design Interfaces in `internal/domain` and `internal/web/apierr`, with a test of the status map. Verify: `go test -race ./internal/domain ./internal/web/apierr`.
+- [x] 1.3 `fsaccess.Writer.CreateExclusive` and `Unlink`, and `ErrIsDir` (design D12):
   - Linux, portable, synthfs, and instrument (`OpCreate`, `OpUnlink`);
   - the package doc;
   - the guard test.
@@ -19,7 +19,7 @@
   - a written file is complete, synced, and has the parent's mode bits;
   - unlinking a folder gives `ErrIsDir`;
   - a file on a read-only remount gives `ErrReadOnly`.
-- [ ] 1.4 Quarantine in `internal/index` (design D1, D2, D13; ADR 0011):
+- [x] 1.4 Quarantine in `internal/index` (design D1, D2, D13; ADR 0011):
   - `QuarantineName`, `NotQuarantined` and `InQuarantine` (precomputed blob literals), `IsQuarantinePath`, `DeleteSubtree`, and `DeleteEntries`;
   - the scan walks the quarantine, but the top folder's fold leaves it out;
   - `Refold` leaves it out at the top too;
@@ -31,7 +31,7 @@
   - a file added by hand under the quarantine is indexed by the next scan.
 
   Run `go test -race ./internal/index`.
-- [ ] 1.5 `content.HashEntry`, `(*content.Service).HashArchive`, and `HashMember` (design D9). Owns those additions in `internal/content`. Verify with tests:
+- [x] 1.5 `content.HashEntry`, `(*content.Service).HashArchive`, and `HashMember` (design D9). Owns those additions in `internal/content`. Verify with tests:
   - a full read of a 20 MiB file gives its SHA-256;
   - a changed file gives `invalid_entry_state`;
   - `HashArchive` yields every file member of a zip and of a tar.gz, reading each archive once (instrument);
@@ -39,7 +39,7 @@
   - nothing is written to the database.
 
   Run `go test -race ./internal/content`.
-- [ ] 1.6 Shared contracts for the slices:
+- [x] 1.6 Shared contracts for the slices:
   - `executor.Index.ApplyPurge` and `ApplyUnlink`, added to the interface and implemented in organize's adapter;
   - `executor.Options.Content`;
   - the new op and state constants;
@@ -91,7 +91,7 @@
   - a check marked stale while running, or whose item was restored before it ended, ends `stale`, not `ready`.
 
   Owns `internal/cleanup/check_test.go`. Verify: `go test -race ./internal/cleanup/...`.
-- [ ] 2.7 Interface slice (design D16, Interfaces), built against the contract with stubs. Owns `web/ui/src` and the interface paragraphs of `docs/operator.md`:
+- [x] 2.7 Interface slice (design D16, Interfaces), built against the contract with stubs. Owns `web/ui/src` and the interface paragraphs of `docs/operator.md`:
   - the Cleanup page and its navigation item: plans; a draft for a source; the preview with blocked items and their kept entries, the summary, approve and run, and export;
   - the quarantine browser, with restore (destination chooser on conflict) and the selection of a purge set;
   - the check report: verdicts, classes, per-file and group confirmations, live progress, stale notice, and purge with the freed space and the ZFS note;
@@ -102,7 +102,7 @@
   - the catalog.
 
   Verify: `cd web/ui && npm run -s lint && npx vitest run && npm run -s build`.
-- [ ] 2.8 Interface tests (Vitest):
+- [x] 2.8 Interface tests (Vitest):
   - drafting from a source shows blocked items with their kept entries (R4.1 display) and runs only on approve;
   - restore with a conflict asks for a destination (R4.3 display);
   - the check report gates purge until the junk group and each valuable file are confirmed (R4.7 display);
