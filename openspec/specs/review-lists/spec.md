@@ -11,7 +11,7 @@ Precious SHALL offer these opportunity cards, for one source or all sources (§1
 - exact duplicate folders and files;
 - archives already unpacked elsewhere;
 - system junk;
-- old installers, disk images, and downloads;
+- old installers and disk images, wherever they are: a downloads folder is not a row of its own, the installers inside it are (ADR 0010);
 - application installations and operating-system copies;
 - caches, temporary data, and generated artifacts;
 - partial downloads, empty folders, and zero-byte files.
@@ -37,6 +37,10 @@ Each card SHALL show its bytes, its row count, and its basis (rules or same cont
 #### Scenario: A rescue card with nothing open
 - **WHEN** every row of the rescue card is decided
 - **THEN** it is ranked by its bytes like the other cards, and reads "Nothing left to review"
+
+#### Scenario: A downloads folder is not an installer
+- **WHEN** the corpus is scanned and the owner opens the installers card
+- **THEN** it lists `Downloads/Setup.exe` and the corpus's disk images as rows, and no row is the folder `Downloads` itself
 
 ### Requirement: A card's bytes equal its review list
 Each card SHALL open a review list whose rows are the card's open rows, and the card's bytes SHALL equal the sum of the bytes of those rows. No byte SHALL be counted twice in one card (§11.4).
@@ -107,13 +111,13 @@ Every review list except duplicates SHALL let the owner select all of its open r
 
 ### Requirement: Similar folders are listed
 Opportunities SHALL offer a list of the folders and archives related as `overlap`.
-- **Row content.** Each row SHALL show both sides, the bytes they have in common, and the files and bytes found only on each side, with a link that opens Compare on the two.
+- **Row content.** Each row SHALL show both sides and the bytes they have in common, with a link that opens Compare on the two. It SHALL NOT count the files found only on each side: Compare counts them (ADR 0010).
 - **Order and scope.** The list SHALL be ordered by bytes in common, largest first, and SHALL follow the chosen source.
 - **Read-only.** It SHALL carry no decision controls and no card bytes, because a similar folder is not a copy (§6.4).
 
 #### Scenario: Similar folders on the corpus
 - **WHEN** the corpus is hashed to completion and the owner opens the similar folders list
-- **THEN** the `Fotos - Copia`/`Fotos` relation is listed with its bytes in common and the files only on each side, and its Compare link opens Compare on the two
+- **THEN** the `Fotos - Copia`/`Fotos` relation is listed with its bytes in common and no count of files only on either side, and its Compare link opens Compare on the two
 
 ### Requirement: Cards show what was decided
 Each opportunity card and review list header SHALL show, besides its open rows, the count and bytes of its rows that are no longer open. A card with no open row left SHALL say so instead of showing zero.

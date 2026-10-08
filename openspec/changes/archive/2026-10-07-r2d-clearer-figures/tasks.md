@@ -36,4 +36,4 @@
   - the relation JSON still carries `only_here`.
 
   Then delete the script.
-- [ ] 4.4 Deploy on the reference server and have the owner look at the installers card, the Map's "Has copies", and a folder's relations. Verify with his sign-off, recorded in the design addendum.
+- [x] 4.4 Deploy on the reference server and have the owner look at the installers card, the Map's "Has copies", and a folder's relations. Verify with his sign-off, recorded in the design addendum.
