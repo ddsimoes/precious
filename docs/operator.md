@@ -358,6 +358,17 @@ The update after R2b removes Gems and keeps its rescue list as the opportunity c
 
 To roll back, stop Precious, reinstall the R2b binary, [restore](#restoring) the backup, and start it. The R2b binary refuses the migrated database (`database has version 5, binary supports up to 4`) and leaves it unmodified. Decisions, tags, and overrides set after the upgrade are lost with it.
 
+### Upgrading from R4
+
+R5 adds media dates: the date each photo and video was taken, your corrections of it, setting files' modification times to it, and organizing by date. Its migration `0008_media` rebuilds the tables of actions and their items, as R4's `0007_cleanup` did, so that they can hold the two new kinds of change. Every action and item keeps its ID, state, and history, so History, undo, the export, and any recovery waiting after an interruption read exactly as before. The migration then adds five empty tables: each media file's metadata and effective date, your date corrections, the cameras found on each source, and each source's media job state. Entries, decisions, tags, overrides, digests, archive listings, and quarantines stay as they were, and no rescan is needed.
+
+1. **Back up first** with the R4 binary still running: `precious backup`. The migration is one-way.
+2. **Check the configuration** with the new binary. An R4 configuration stays valid. Set `[dates] time_zone` to the zone your photos were taken in, such as `"America/Sao_Paulo"` (see [Configuration reference](#configuration-reference)): without it, dates without their own offset are read in the server's zone, which is UTC in the shipped container image, and `check-config` and the server's start log warn that it is unset.
+3. **Replace and restart.** The migration applies at startup, in one transaction that rewrites every action and item once (seconds for tens of thousands of items). Then every source gets a `media` job: on an online source it reads the headers of every photo and video once, in the background, like the first hashing run; an offline source's dates are derived from the index alone, by name, folder, and modification time, until its disk returns.
+4. **Before setting file dates**, check that the files are owned by the service account, or that the deployment grants it `CAP_FOWNER` (see [Allowing changes in the deployment](#allowing-changes-in-the-deployment)). Changing the owner advances every file's change time, so rescan the source after a `chown` and before planning: the rescan hashes and reads those files again.
+
+To roll back, stop Precious, reinstall the R4 binary, [restore](#restoring) the backup, and start it. The R4 binary refuses the migrated database (`database has version 8, binary supports up to 7`) and leaves it unmodified. Date corrections, and any change made after the upgrade (including file dates set and files organized by date, which stay as they are on the disks), are lost from the index with it; the next rescan sees the files where they are now.
+
 ### Moving from curator to precious
 
 Precious replaces the earlier `curator` release; the two share no data. Moving over is a fresh installation:

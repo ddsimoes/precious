@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"reflect"
 	"regexp"
+	"slices"
 	"testing"
 
 	sqlite "modernc.org/sqlite"
@@ -264,8 +265,9 @@ func TestForeignKeysIntoContentsAreIndexed(t *testing.T) {
 }
 
 // assertForeignKeysIndexed checks that every foreign key into parent (at
-// least min of them) is searched through an index.
-func assertForeignKeysIndexed(t *testing.T, s *Store, parent string, min int) {
+// least min of them) is searched through an index. With from, only the
+// foreign keys of those tables are checked.
+func assertForeignKeysIndexed(t *testing.T, s *Store, parent string, min int, from ...string) {
 	t.Helper()
 	rows, err := s.Reader().Query(`SELECT m.name, f."from" FROM sqlite_schema m, pragma_foreign_key_list(m.name) f
 		WHERE m.type = 'table' AND f."table" = ? ORDER BY m.name, f."from"`, parent)
@@ -279,7 +281,9 @@ func assertForeignKeysIndexed(t *testing.T, s *Store, parent string, min int) {
 		if err := rows.Scan(&k.table, &k.column); err != nil {
 			t.Fatal(err)
 		}
-		fks = append(fks, k)
+		if len(from) == 0 || slices.Contains(from, k.table) {
+			fks = append(fks, k)
+		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		t.Fatal(err)
