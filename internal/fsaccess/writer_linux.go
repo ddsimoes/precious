@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -298,6 +299,37 @@ func (d *osDir) Unlink(name []byte) error {
 		return isDirError(name, uerr)
 	}
 	return WriteError(op, name, uerr)
+}
+
+// SetModTime is utimensat(fd, name, {UTIME_OMIT, t}, AT_SYMLINK_NOFOLLOW) on
+// the folder's own descriptor (r5 design D12): the access time is omitted,
+// so it stays, and the kernel sets the change time.
+func (d *osDir) SetModTime(name []byte, t time.Time) error {
+	const op = opSetModTime
+	if err := ValidateName(op, name); err != nil {
+		return err
+	}
+	mtime, err := unix.TimeToTimespec(t)
+	if err != nil {
+		return &Error{Op: op, Name: bytes.Clone(name), Outcome: domain.OutcomeUnavailable, Err: err}
+	}
+	rc, err := d.writeConn(op)
+	if err != nil {
+		return err
+	}
+	times := []unix.Timespec{{Nsec: unix.UTIME_OMIT}, mtime}
+	var uerr error
+	if err := rc.Control(func(fd uintptr) {
+		uerr = retryEINTR(func() error {
+			return unix.UtimesNanoAt(int(fd), string(name), times, unix.AT_SYMLINK_NOFOLLOW)
+		})
+	}); err != nil {
+		return &Error{Op: op, Name: bytes.Clone(name), Outcome: domain.OutcomeUnavailable, Err: err}
+	}
+	if uerr != nil {
+		return WriteError(op, name, uerr)
+	}
+	return nil
 }
 
 // controlBoth runs fn with the descriptors of a and b, both held valid; a and

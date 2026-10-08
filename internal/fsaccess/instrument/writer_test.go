@@ -132,6 +132,7 @@ func TestWriterWithoutInnerWriter(t *testing.T) {
 		w.Sync(),
 		w.CreateExclusive([]byte("novo"), []byte("x")),
 		w.Unlink([]byte("a.jpg")),
+		w.SetModTime([]byte("a.jpg"), time.Date(2010, 7, 17, 10, 0, 0, 0, time.UTC)),
 	} {
 		if !errors.Is(err, fsaccess.ErrNoReplaceUnsupported) {
 			t.Errorf("err = %v, want ErrNoReplaceUnsupported", err)
@@ -139,11 +140,74 @@ func TestWriterWithoutInnerWriter(t *testing.T) {
 	}
 	n := 0
 	for _, op := range []instrument.Op{instrument.OpRename, instrument.OpMkdir, instrument.OpRmdir, instrument.OpSync,
-		instrument.OpCreate, instrument.OpUnlink} {
+		instrument.OpCreate, instrument.OpUnlink, instrument.OpSetModTime} {
 		n += rec.Count(op)
 	}
-	if n != 6 {
-		t.Errorf("%d writes logged, want 6", n)
+	if n != 7 {
+		t.Errorf("%d writes logged, want 7", n)
+	}
+}
+
+// r5 task 1.2: SetModTime is counted and logged with the time asked for, its
+// hook runs before it, an injected error stops it before the filesystem, and
+// a refusal of the wrapped directory is logged with its error.
+func TestSetModTimeRecorded(t *testing.T) {
+	fsys := synthfs.New()
+	root := fsys.Root("/src")
+	fotos := root.Dir("Fotos")
+	fotos.File("a.jpg", 1, synthfs.DefaultModTime)
+	fotos.File("b.jpg", 1, synthfs.DefaultModTime).Foreign()
+	rec := instrument.Wrap(fsys)
+	d, err := rec.OpenRoot("/src")
+	must(t, err)
+	info, err := d.Lstat([]byte("Fotos"))
+	must(t, err)
+	sub, err := d.OpenDir([]byte("Fotos"), info)
+	must(t, err)
+	w, ok := fsaccess.AsWriter(sub)
+	if !ok {
+		t.Fatalf("%T has no Writer", sub)
+	}
+	var hooked []string
+	rec.SetBeforeCall(func(c instrument.Call) {
+		if c.Op == instrument.OpSetModTime {
+			hooked = append(hooked, c.FullPath()+" "+c.ModTime.Format(time.RFC3339))
+		}
+	})
+	rec.Reset()
+
+	when := time.Date(2010, 7, 17, 10, 0, 0, 0, time.UTC)
+	must(t, w.SetModTime([]byte("a.jpg"), when))
+	if got := fotos.Child("a.jpg").Info().ModTime; !got.Equal(when) {
+		t.Fatalf("a.jpg modified at %v after SetModTime, want %v", got, when)
+	}
+	if want := []string{"/src/Fotos/a.jpg 2010-07-17T10:00:00Z"}; !slices.Equal(hooked, want) {
+		t.Errorf("hooks saw %q, want %q", hooked, want)
+	}
+	calls := rec.Calls()
+	if len(calls) != 1 || calls[0].Op != instrument.OpSetModTime || calls[0].FullPath() != "/src/Fotos/a.jpg" ||
+		!calls[0].ModTime.Equal(when) || calls[0].Err != nil {
+		t.Fatalf("logged %+v, want one SetModTime of /src/Fotos/a.jpg to %v", calls, when)
+	}
+
+	injected := &fsaccess.Error{Op: "SetModTime", Name: []byte("a.jpg"), Err: errors.Join(fsaccess.ErrReadOnly, syscall.EROFS)}
+	rec.InjectError(instrument.OpSetModTime, "/src/Fotos/a.jpg", injected)
+	if err := w.SetModTime([]byte("a.jpg"), when.Add(time.Hour)); err != injected {
+		t.Errorf("err = %v, want the injected error", err)
+	}
+	if got := fotos.Child("a.jpg").Info().ModTime; !got.Equal(when) {
+		t.Errorf("an injected SetModTime reached the filesystem: a.jpg modified at %v", got)
+	}
+	rec.ClearErrors()
+	err = w.SetModTime([]byte("b.jpg"), when)
+	if !errors.Is(err, fsaccess.ErrPermission) || !errors.Is(err, syscall.EPERM) {
+		t.Errorf("SetModTime of a foreign file = %v, want ErrPermission (EPERM)", err)
+	}
+	if c := rec.Calls()[len(rec.Calls())-1]; c.Op != instrument.OpSetModTime || c.Err != err {
+		t.Errorf("last call = %+v, want the refused SetModTime", c)
+	}
+	if rec.Count(instrument.OpSetModTime) != 3 {
+		t.Errorf("counts = %v, want three SetModTime calls", rec.Counts())
 	}
 }
 

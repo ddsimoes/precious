@@ -5,6 +5,7 @@ import (
 	"io"
 	"syscall"
 	"testing"
+	"time"
 
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
@@ -303,6 +304,7 @@ func TestWritesOnStaleHandles(t *testing.T) {
 	wantWriteErr(t, writer(t, old).Mkdir([]byte("x")), "Mkdir", syscall.ENOENT, domain.OutcomeAbsent)
 	wantWriteErr(t, writer(t, old).CreateExclusive([]byte("x"), nil), "CreateExclusive", syscall.ENOENT, domain.OutcomeAbsent)
 	wantWriteErr(t, writer(t, old).Unlink([]byte("x")), "Unlink", syscall.ENOENT, domain.OutcomeAbsent)
+	wantWriteErr(t, writer(t, old).SetModTime([]byte("x"), time.Time{}), "SetModTime", syscall.ENOENT, domain.OutcomeAbsent)
 	wantWriteErr(t, writer(t, d).RenameNoReplace([]byte("a.jpg"), old, []byte("a.jpg")), "RenameNoReplace",
 		syscall.ENOENT, domain.OutcomeAbsent)
 	if root.Child("a.jpg") == nil {
@@ -314,6 +316,7 @@ func TestWritesOnStaleHandles(t *testing.T) {
 	fsys.Vanish("/src")
 	wantWriteErr(t, writer(t, d).Mkdir([]byte("x")), "Mkdir", nil, domain.OutcomeUnavailable)
 	wantWriteErr(t, writer(t, d).Unlink([]byte("a.jpg")), "Unlink", nil, domain.OutcomeUnavailable)
+	wantWriteErr(t, writer(t, d).SetModTime([]byte("a.jpg"), time.Time{}), "SetModTime", nil, domain.OutcomeUnavailable)
 	wantWriteErr(t, writer(t, d).Sync(), "Sync", nil, domain.OutcomeUnavailable)
 }
 
@@ -454,4 +457,144 @@ func TestUnlink(t *testing.T) {
 	fsys.SetCapabilities(d.Self().Dev, ro)
 	wantWriteErr(t, w.Unlink([]byte("copia.jpg")), op, fsaccess.ErrReadOnly, "")
 	lstat(t, d, "copia.jpg")
+}
+
+// r5 task 1.2, design D12: SetModTime sets the entry's own modification
+// time and advances its change time; the size, inode, content, and folder
+// stay. A symlink gets its own time, never its target's; a hard-linked file
+// shows the time under every name.
+func TestSetModTime(t *testing.T) {
+	const op = "SetModTime"
+	fsys := synthfs.New()
+	root := fsys.Root("/src")
+	root.File("a.jpg", 5, synthfs.DefaultModTime).Content([]byte("PRAIA"))
+	root.File("alvo.jpg", 1, synthfs.DefaultModTime)
+	root.Symlink("link", "alvo.jpg")
+	orig := root.File("orig.jpg", 4, synthfs.DefaultModTime)
+	root.HardLink("copia.jpg", orig)
+	d := open(t, fsys, "/src")
+	w := writer(t, d)
+	folder := root.Info()
+
+	when := time.Date(2010, 7, 17, 10, 0, 0, 123_456_789, time.UTC)
+	before := lstat(t, d, "a.jpg")
+	must(t, w.SetModTime([]byte("a.jpg"), when))
+	after := lstat(t, d, "a.jpg")
+	if !after.ModTime.Equal(when) {
+		t.Errorf("a.jpg modified at %v, want %v", after.ModTime, when)
+	}
+	if !after.Ctime.After(before.Ctime) {
+		t.Errorf("change time %v did not advance past %v", after.Ctime, before.Ctime)
+	}
+	if after.Ino != before.Ino || after.Size != before.Size || after.Mode != before.Mode {
+		t.Errorf("a.jpg after SetModTime = %+v, want the identity of %+v", after, before)
+	}
+	if b := readAll(t, openFile(t, d, "a.jpg")); string(b) != "PRAIA" {
+		t.Errorf("a.jpg holds %q after SetModTime, want PRAIA", b)
+	}
+	if now := root.Info(); !now.ModTime.Equal(folder.ModTime) || !now.Ctime.Equal(folder.Ctime) {
+		t.Errorf("folder after SetModTime = %+v, want its times unchanged from %+v", now, folder)
+	}
+	// A time before the epoch is kept too.
+	early := time.Date(1965, 1, 2, 3, 4, 5, 0, time.UTC)
+	must(t, w.SetModTime([]byte("a.jpg"), early))
+	if got := lstat(t, d, "a.jpg").ModTime; !got.Equal(early) {
+		t.Errorf("a.jpg modified at %v, want %v", got, early)
+	}
+
+	target := lstat(t, d, "alvo.jpg")
+	must(t, w.SetModTime([]byte("link"), when))
+	if got := lstat(t, d, "link"); got.Kind != domain.EntrySymlink || !got.ModTime.Equal(when) {
+		t.Errorf("link after SetModTime = %+v, want a symlink modified at %v", got, when)
+	}
+	if got := lstat(t, d, "alvo.jpg"); !got.ModTime.Equal(target.ModTime) || !got.Ctime.Equal(target.Ctime) {
+		t.Errorf("the link's target after SetModTime = %+v, want %+v unchanged", got, target)
+	}
+
+	must(t, w.SetModTime([]byte("copia.jpg"), when))
+	for _, name := range []string{"orig.jpg", "copia.jpg"} {
+		if got := lstat(t, d, name); !got.ModTime.Equal(when) || got.Nlink != 2 {
+			t.Errorf("%s after SetModTime of its other name = %+v, want 2 links modified at %v", name, got, when)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", "a/b", "a\x00b"} {
+		wantWriteErr(t, w.SetModTime([]byte(bad), when), op, fsaccess.ErrInvalidName, "")
+	}
+}
+
+// r5 task 1.2, design D12: an absent name is absent, a generated entry
+// cannot be changed, a read-only device refuses after the lookup (as
+// utimensat does), and a file marked foreign, under any of its names, fails
+// with ErrPermission (EPERM) and keeps its times.
+func TestSetModTimeRefusals(t *testing.T) {
+	const op = "SetModTime"
+	fsys := synthfs.New()
+	root := fsys.Root("/src")
+	root.File("a.jpg", 1, synthfs.DefaultModTime)
+	alheio := root.File("alheio.jpg", 1, synthfs.DefaultModTime).Foreign()
+	root.HardLink("outro nome.jpg", alheio)
+	root.Generated("plano", 1, 10)
+	d := open(t, fsys, "/src")
+	w := writer(t, d)
+	when := time.Date(2010, 7, 17, 10, 0, 0, 0, time.UTC)
+
+	wantWriteErr(t, w.SetModTime([]byte("nada"), when), op, syscall.ENOENT, domain.OutcomeAbsent)
+	wantWriteErr(t, writer(t, openDir(t, d, "plano")).SetModTime([]byte("file-0000000.dat"), when), op, nil,
+		domain.OutcomeUnavailable)
+	before := lstat(t, d, "alheio.jpg")
+	for _, name := range []string{"alheio.jpg", "outro nome.jpg"} {
+		err := w.SetModTime([]byte(name), when)
+		wantWriteErr(t, err, op, fsaccess.ErrPermission, "")
+		if !errors.Is(err, syscall.EPERM) {
+			t.Errorf("SetModTime(%s) = %v, want it to carry EPERM", name, err)
+		}
+	}
+	if got := lstat(t, d, "alheio.jpg"); !got.ModTime.Equal(before.ModTime) || !got.Ctime.Equal(before.Ctime) {
+		t.Errorf("foreign file after the refusals = %+v, want %+v", got, before)
+	}
+
+	ro := ext4Caps
+	ro.ReadOnly = true
+	fsys.SetCapabilities(d.Self().Dev, ro)
+	a := lstat(t, d, "a.jpg")
+	wantWriteErr(t, w.SetModTime([]byte("a.jpg"), when), op, fsaccess.ErrReadOnly, "")
+	wantWriteErr(t, w.SetModTime([]byte("nada"), when), op, syscall.ENOENT, domain.OutcomeAbsent)
+	if got := lstat(t, d, "a.jpg"); !got.ModTime.Equal(a.ModTime) || !got.Ctime.Equal(a.Ctime) {
+		t.Errorf("a.jpg after the read-only refusal = %+v, want %+v", got, a)
+	}
+	fsys.SetCapabilities(d.Self().Dev, ext4Caps)
+	fsys.SetFSInfo(d.Self().Dev, fsaccess.FSInfo{ReadOnly: true})
+	wantWriteErr(t, w.SetModTime([]byte("a.jpg"), when), op, fsaccess.ErrReadOnly, "")
+}
+
+// r5 task 1.2, design D12: a FAT device keeps a set time truncated to 2 s,
+// as the wall time in the zone it is mounted with, so it reads back in that
+// zone, and an hour later when that zone moves an hour west; an exFAT device
+// truncates to 10 ms in UTC.
+func TestSetModTimeOnFAT(t *testing.T) {
+	fsys := synthfs.New()
+	fsys.Root("/card").File("a.jpg", 1, synthfs.DefaultModTime)
+	d := open(t, fsys, "/card")
+	dev := d.Self().Dev
+	fsys.SetCapabilities(dev, fatCaps)
+	brt := time.FixedZone("BRT", -3*3600)
+	fsys.SetTimeZone(dev, brt)
+
+	// 13:00:01.7 UTC is 10:00:01.7 in the card's zone.
+	set := time.Date(2010, 7, 17, 13, 0, 1, 700_000_000, time.UTC)
+	must(t, writer(t, d).SetModTime([]byte("a.jpg"), set))
+	got := lstat(t, d, "a.jpg").ModTime
+	if want := time.Date(2010, 7, 17, 10, 0, 0, 0, brt); !got.Equal(want) || got.Location() != brt {
+		t.Errorf("FAT modification time = %v, want %v read in the card's zone", got, want)
+	}
+	fsys.SetTimeZone(dev, time.FixedZone("west", -4*3600))
+	if got, want := lstat(t, d, "a.jpg").ModTime, time.Date(2010, 7, 17, 14, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("FAT modification time read an hour west = %v, want %v: the card stores the wall time", got, want)
+	}
+
+	fsys.SetCapabilities(dev, exfatCaps)
+	must(t, writer(t, d).SetModTime([]byte("a.jpg"), set))
+	if got, want := lstat(t, d, "a.jpg").ModTime, set.Truncate(10*time.Millisecond); !got.Equal(want) {
+		t.Errorf("exFAT modification time = %v, want %v", got, want)
+	}
 }

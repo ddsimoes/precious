@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"syscall"
+	"time"
 
 	"precious/internal/domain"
 	"precious/internal/fsaccess"
@@ -19,9 +20,9 @@ var (
 
 // The Writer methods follow the Linux backend (renameat2 with
 // RENAME_NOREPLACE, mkdirat then fchmod, unlinkat with AT_REMOVEDIR, fsync,
-// openat with O_CREAT|O_EXCL, unlinkat without flags) and fail with the same
-// errors, built by fsaccess.WriteError from the errno Linux would give,
-// checked in the kernel's order:
+// openat with O_CREAT|O_EXCL, unlinkat without flags, utimensat) and fail
+// with the same errors, built by fsaccess.WriteError from the errno Linux
+// would give, checked in the kernel's order:
 //
 //   - a folder whose root vanished, or a closed handle: unavailable;
 //   - a folder no longer in its tree (removed or replaced): absent;
@@ -36,6 +37,10 @@ var (
 //     with ErrNoReplaceUnsupported after the checks above, as an old driver
 //     does. A device without capabilities renames.
 //
+// SetModTime looks the name up first, as utimensat does: a missing name is
+// absent, then a read-only device is ErrReadOnly, then a file marked
+// Foreign is ErrPermission (EPERM).
+//
 // A renamed entry keeps its node, so its device, inode, size, content, and
 // times stay; its change time and both folders' modification and change
 // times advance. Mkdir creates an empty folder with its parent's permission
@@ -43,16 +48,49 @@ var (
 // nothing else. CreateExclusive adds a regular file with explicit content
 // and its parent's permission bits & 0666, never over a taken name. Unlink
 // removes any explicit entry but a folder (fsaccess.ErrIsDir), and lowers
-// the link count of a hard-linked file's other names. Generated entries and
-// folders cannot be changed: the call fails with outcome unavailable.
+// the link count of a hard-linked file's other names. SetModTime sets the
+// entry's own modification time (a symlink's, never its target's; a
+// hard-linked file's, under every name) as its device stores it (see
+// storedModTime) and advances its change time; nothing else changes.
+// Generated entries and folders cannot be changed: the call fails with
+// outcome unavailable.
 
 // readOnly reports whether d's device is read-only. Callers hold fs.mu.
-func (d *dir) readOnly() bool {
-	if dev := d.fs.devices[d.dev]; dev != nil && dev.caps != nil && dev.caps.ReadOnly {
+func (d *dir) readOnly() bool { return d.fs.readOnly(d.dev) }
+
+// readOnly reports whether dev is read-only: by its capabilities, its
+// FSInfo, or its mount row. Callers hold f.mu.
+func (f *FS) readOnly(dev uint64) bool {
+	if d := f.devices[dev]; d != nil && d.caps != nil && d.caps.ReadOnly {
 		return true
 	}
-	info := d.fs.fsinfo[d.dev]
+	info := f.fsinfo[dev]
 	return info.ReadOnly || (info.Mount != nil && info.Mount.ReadOnly)
+}
+
+// storedModTime is the modification time dev stores when t is set, which
+// Lstat reports back as it is (see FS.present): for a device given
+// capabilities, t truncated to its TimeResolution, and with LocalTime, the
+// wall time of t in the zone dev is mounted with, written as a UTC reading.
+// A device without capabilities stores t exactly. Callers hold f.mu.
+func (f *FS) storedModTime(dev uint64, t time.Time) time.Time {
+	t = t.Round(0)
+	d := f.devices[dev]
+	if d == nil || d.caps == nil {
+		return t
+	}
+	if d.caps.LocalTime {
+		loc := d.zone
+		if loc == nil {
+			loc = time.UTC
+		}
+		w := t.In(loc)
+		t = time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), w.Nanosecond(), time.UTC)
+	}
+	if r := d.caps.TimeResolution; r > 0 {
+		t = t.Truncate(r)
+	}
+	return t
 }
 
 // attached reports whether n is still reachable from its tree's root.
@@ -301,5 +339,37 @@ func (d *dir) Unlink(name []byte) error {
 		file.touch()
 	}
 	d.node.changed()
+	return nil
+}
+
+func (d *dir) SetModTime(name []byte, t time.Time) error {
+	const op = "SetModTime"
+	if err := fsaccess.ValidateName(op, name); err != nil {
+		return err
+	}
+	f := d.fs
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := d.writable(op, name); err != nil {
+		return err
+	}
+	c, _, _, found := d.child(name)
+	switch {
+	case !found:
+		return fsaccess.WriteError(op, name, syscall.ENOENT)
+	case c == nil:
+		return &fsaccess.Error{Op: op, Name: bytes.Clone(name), Outcome: domain.OutcomeUnavailable, Err: errGenerated}
+	case f.readOnly(c.devOf()):
+		return fsaccess.WriteError(op, name, syscall.EROFS)
+	}
+	file := c
+	if c.inode != nil {
+		file = c.inode
+	}
+	if file.foreign {
+		return fsaccess.WriteError(op, name, syscall.EPERM)
+	}
+	file.mtime = f.storedModTime(file.devOf(), t)
+	file.touch()
 	return nil
 }
