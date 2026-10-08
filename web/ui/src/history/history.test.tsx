@@ -371,4 +371,76 @@ describe('History', () => {
     expect(await screen.findByText('Done: 2')).toBeInTheDocument()
     expect(historyGets(requests)).toBe(before + 2)
   })
+
+  it('titles the date actions, shows each file’s old and new time, explains not_owner, and offers Undo for both', async () => {
+    const fotos = folderRow('30', 'Fotos')
+    const setDates = action(
+      { id: '60', kind: 'set_mtime', state: 'done', bulk: true, undo: { possible: true, reason: null } },
+      { done: 2, failed: 1 },
+    )
+    const byDate = action(
+      {
+        id: '61',
+        kind: 'date_organize',
+        state: 'done',
+        bulk: true,
+        destination: fotos,
+        template: '{year}/{month}',
+        rename: true,
+        undo: { possible: true, reason: null },
+      },
+      { done: 3 },
+    )
+    const path = (n: number) => `Viagens/2008-03 Ouro Preto/DSCN000${n}.JPG`
+    const undo = action({ id: '62', kind: 'undo', undo_of: '60', bulk: true }, { planned: 2 })
+    const requests = stubApi(
+      routes(() => [setDates, byDate], {
+        'GET /api/history/60/items': () =>
+          jsonResponse(200, {
+            items: [
+              actionItem('1', path(1), path(1), {
+                op: 'set_mtime',
+                to: null,
+                state: 'done',
+                mtime: { from: '2011-01-15T10:00:00Z', to: '2008-03-22T17:00:00.12Z' },
+              }),
+              actionItem('2', path(2), path(2), {
+                op: 'set_mtime',
+                to: null,
+                state: 'failed',
+                reason: 'not_owner',
+                detail: 'operation not permitted',
+                mtime: { from: '2011-01-15T10:00:00Z', to: '2008-03-22T17:10:00.34Z' },
+              }),
+            ],
+            next_cursor: null,
+          }),
+        'POST /api/commands/plan-undo': () => jsonResponse(201, { action: undo, items: [], next_cursor: null }),
+      }),
+    )
+    renderApp('/history')
+
+    const list = within(await screen.findByRole('list', { name: 'Changes' }))
+    expect(list.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual([
+      'Set file dates',
+      'Organize by date into “Fotos”',
+    ])
+    const organized = card('Organize by date into “Fotos”')
+    expect(organized.getByText('Folders: {year}/{month} · Files renamed to their date and time')).toBeInTheDocument()
+    expect(organized.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+
+    const dates = card('Set file dates')
+    expect(dates.getByText('Not done: 1')).toBeInTheDocument()
+    await userEvent.click(dates.getByRole('button', { name: 'Show items' }))
+    const items = within(await dates.findByRole('list', { name: 'Items of this change' }))
+    expect(items.getAllByRole('listitem').map((li) => (li.textContent ?? '').replace(/\s/g, ' '))).toEqual([
+      `${path(1)}: Jan 15, 2011, 10:00:00 AM → Mar 22, 2008, 5:00:00 PMDone`,
+      `${path(2)}: Jan 15, 2011, 10:00:00 AM → Mar 22, 2008, 5:10:00 PMFailed · The file belongs to another user on the server, so Precious may not set its date. The operator guide explains how to allow it.operation not permitted`,
+    ])
+
+    // Undo of a set-file-dates action is previewed: it sets the times back.
+    await userEvent.click(dates.getByRole('button', { name: 'Undo' }))
+    expect(await screen.findByRole('alertdialog', { name: 'Undo' })).toBeInTheDocument()
+    expect(await bodies(requests, 'plan-undo')).toEqual([{ action_id: '60' }])
+  })
 })
