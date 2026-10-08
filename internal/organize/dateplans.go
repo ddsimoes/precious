@@ -245,21 +245,30 @@ func abs(n int64) int64 {
 	return n
 }
 
-// writableTime reports whether a set_mtime may write ns on a filesystem of
-// type fsType (r5 H1): a time the filesystem stores as given, which Linux
-// would otherwise clamp without an error, and a known one, which the index
-// reads back as a date. The executor's set_mtime intent checks the same.
-func writableTime(fsType string, ns int64) bool {
-	return domain.KnownModTime(ns) && fsaccess.StoresModTime(fsType, ns)
+// timeRefusal is the reason a set_mtime may not write ns on a filesystem of
+// type fsType, or "" when it may: date_before_1970 for a time the index
+// reads back as unknown (domain.KnownModTime: before 1970-01-02), whatever
+// the disk holds (r5 K3), and date_out_of_range for one the filesystem does
+// not store as given, which Linux would clamp without an error (r5 H1). The
+// executor's set_mtime intent checks the same.
+func timeRefusal(fsType string, ns int64) string {
+	switch {
+	case !domain.KnownModTime(ns):
+		return reasonDateBefore1970
+	case !fsaccess.StoresModTime(fsType, ns):
+		return reasonDateOutOfRange
+	}
+	return ""
 }
 
 // planSetMtime plans plan-set-mtime (r5 D14): its targets expanded and
 // re-derived, then one set_mtime item per media file to its effective
 // instant, truncated to the source's time resolution. A file already at
 // that time is counted in summary.unchanged, with no item. Refused:
-// not_dated_yet, date_too_coarse, hard_link, date_out_of_range (a time the
-// source's filesystem would clamp, or one that reads as unknown; r5 H1), and
-// not_media. It is a bulk action, so it is always previewed.
+// not_dated_yet, date_too_coarse, hard_link, date_before_1970 (a time the
+// index reads as unknown; r5 K3), date_out_of_range (a time the source's
+// filesystem would clamp; r5 H1), and not_media. It is a bulk action, so it
+// is always previewed.
 func (s *Service) planSetMtime(ctx context.Context, tx *jobs.Tx, req planSetMtimeRequest) (int, any, error) {
 	q, now := tx.SQL(), tx.Now()
 	ex, err := dates.ExpandTargets(ctx, q, req.Targets, maxItems)
@@ -306,8 +315,8 @@ func (s *Service) planSetMtime(ctx context.Context, tx *jobs.Tx, req planSetMtim
 			err = p.refused(it, reasonHardLink)
 		default:
 			t := truncateTime(d.Instant.UnixNano(), p.caps.TimeResolution)
-			if !writableTime(p.fsType, t) {
-				err = p.refused(it, reasonDateOutOfRange)
+			if r := timeRefusal(p.fsType, t); r != "" {
+				err = p.refused(it, r)
 				break
 			}
 			if f.mtime.Valid && domain.KnownModTime(f.mtime.Int64) && sameTime(f.mtime.Int64, t, p.caps) {

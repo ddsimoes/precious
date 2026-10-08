@@ -1351,6 +1351,7 @@ export const en = {
       invalid_name: 'The disk cannot hold that name',
       not_media: 'Not a photo or video',
       date_out_of_range: 'Its disk cannot record that date',
+      date_before_1970: 'Precious cannot record a file date before 1970',
     },
     itemState: {
       planned: 'Waiting',

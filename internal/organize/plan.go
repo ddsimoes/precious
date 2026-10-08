@@ -62,8 +62,10 @@ const (
 	reasonIdenticalCopy   = "identical_copy"
 	reasonInvalidName     = "invalid_name"
 	reasonIdentityChanged = "identity_changed"
-	// r5 H1: a time the source's filesystem would clamp, or reads as unknown.
+	// r5 H1: a time the source's filesystem would clamp.
 	reasonDateOutOfRange = "date_out_of_range"
+	// r5 K3: a time before 1970-01-02, which the index reads as unknown.
+	reasonDateBefore1970 = "date_before_1970"
 )
 
 const keep = string(domain.DecisionKeep)
