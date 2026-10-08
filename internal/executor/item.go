@@ -390,10 +390,18 @@ func (r *run) intent(it item, pre *preflight) (item, verdict, error) {
 			rec, e, err = r.intentMkdir(ctx, q, it, pre)
 		case opRmdir:
 			rec, e, err = r.intentRmdir(ctx, q, it)
-			if err == nil && e == nil && (r.kind == kindRestore || r.kind == kindPurge) && !insideQuarantine(rec.fromPath) {
-				// The sweep of a restore or a purge removes only folders of
-				// the quarantine (r4 D6).
-				e = &end{state: stateChanged}
+			switch {
+			case err != nil || e != nil:
+			case r.kind == kindRestore || r.kind == kindPurge:
+				if !insideQuarantine(rec.fromPath) {
+					// The sweep of a restore or a purge removes only folders
+					// of the quarantine (r4 D6).
+					e = &end{state: stateChanged}
+				}
+			case index.IsQuarantinePath(rec.fromPath):
+				// Any other rmdir leaves the quarantine alone (r4 D13): what
+				// is in it is restored, or purged after a check.
+				e = &end{state: stateRefused, reason: reasonInQuarantine}
 			}
 		case opRecord:
 			rec, e, err = r.intentRecord(ctx, q, it)
