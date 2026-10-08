@@ -117,7 +117,7 @@
 
 ## 3. Organizing (after group 2)
 
-- [ ] 3.1 Organize slice. Write `internal/organize`:
+- [x] 3.1 Organize slice. Write `internal/organize`:
   - the `plan-move`, `plan-rename`, `plan-create-folder`, `plan-rescue`, `plan-merge`, and `plan-undo` commands (design D7, D8, D9, D11–D14, D17);
   - the `run-action`, `cancel-action`, and `resolve-recovery` commands;
   - the history read API;
@@ -126,21 +126,21 @@
   - the wiring in `cmd/precious/serve.go`: executor registration, `Startup`, and the scan's `DeferWhile`.
 
   Owns `internal/organize`, `internal/relations/wrappers.go`, `cmd/precious/serve.go` (wiring), and the `docs/operator.md` Organizing section with its API and error rows. Verify: `go test -race ./internal/organize ./internal/relations ./cmd/precious`.
-- [ ] 3.2 Test of R3.4: a selection is planned into a folder, and a new matching file is indexed before the run. The plan lists every selected entry, conflict, and refused item, and the run moves exactly the planned runnable items and leaves the new file in place. Owns `internal/organize/r3_4_test.go`. Verify: `go test -race ./internal/organize`.
-- [ ] 3.3 Test of R3.3:
+- [x] 3.2 Test of R3.4: a selection is planned into a folder, and a new matching file is indexed before the run. The plan lists every selected entry, conflict, and refused item, and the run moves exactly the planned runnable items and leaves the new file in place. Owns `internal/organize/r3_4_test.go`. Verify: `go test -race ./internal/organize`.
+- [x] 3.3 Test of R3.3:
   - an undone move of `Fotos/2004` returns it with the same IDs, and its items read `reversed_by`;
   - undoing a rename whose old name was taken since plans a conflict, and with `destination_id` it moves the file there under its old name and leaves the newcomer untouched;
   - an undo that stopped early leaves its unreversed items undoable;
   - an expired undo plan leaves the action undoable.
 
   Owns `internal/organize/r3_3_test.go`. Verify: `go test -race ./internal/organize`.
-- [ ] 3.4 Test of R3.6:
+- [x] 3.4 Test of R3.6:
   - on the corpus, after hashing, `plan-merge` from `Fotos - Copia` into `Fotos` runs, followed by hashing and relations. `Fotos/2006/Praia/DSC_editada.JPG` exists, Compare shows an empty `only_right` group, and no file in `Fotos - Copia` lacks a copy in `Fotos`;
   - a merge into a side with a wrapper folder lands under the wrapper.
 
   Owns `internal/organize/r3_6_test.go`. Verify: `go test -race ./internal/organize`.
-- [ ] 3.5 Test of R3.5 end to end, through commands and the real executor on synthfs: a folder with an own keep, a tag, an override, and hashed files is moved, then rescanned. IDs, decisions, tags, the override, and digests are kept, nothing is new or missing, and totals are unchanged. Owns `internal/organize/r3_5_test.go`. Verify: `go test -race ./internal/organize`.
-- [ ] 3.6 Tests of the plan rules:
+- [x] 3.5 Test of R3.5 end to end, through commands and the real executor on synthfs: a folder with an own keep, a tag, an override, and hashed files is moved, then rescanned. IDs, decisions, tags, the override, and digests are kept, nothing is new or missing, and totals are unchanged. Owns `internal/organize/r3_5_test.go`. Verify: `go test -race ./internal/organize`.
+- [x] 3.6 Tests of the plan rules:
   - every refusal reason, `contains_mount` and `name_taken_by_missing` included;
   - collisions on a case-insensitive source;
   - `would_lose_keep` in bulk, and `kept_lost` for a single move;
