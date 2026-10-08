@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-// Internal terms that must never reach the interface (spec §11.11, design D14).
+// Internal terms that must never reach the interface (spec §11.11, design
+// D14, and R3 design D16 for organizing).
 const banned = [
   'atomic',
   'expanded',
@@ -11,6 +12,8 @@ const banned = [
   'intent revision',
   'frontier',
   'coverage scope',
+  'journal',
+  'executor',
 ]
 
 const bannedPattern = new RegExp(
@@ -60,9 +63,11 @@ describe('vocabulary', () => {
       f: 'intent  Revision 4',
       g: 'scan frontier',
       h: 'Coverage scope',
+      i: 'the Journal of moves',
+      j: 'an executor step',
       ok: 'Folders and files',
     }
-    expect(violations(sample)).toHaveLength(7)
+    expect(violations(sample)).toHaveLength(9)
   })
 
   it('names the duplicated share "Has copies", never "Duplicated"', () => {

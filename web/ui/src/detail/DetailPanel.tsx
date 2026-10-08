@@ -28,6 +28,7 @@ import { en } from '@/i18n/en'
 import { compositionParts, dominantFamily, shareLabel, withShare } from '@/lib/composition'
 import { useFormat } from '@/lib/format'
 import { familyColors } from '@/map/colors'
+import { OrganizeSection } from '@/organize/OrganizeSection'
 import { ViewerDialog } from '@/viewer/ViewerDialog'
 
 type KnownSignal = keyof typeof en.entry.signal
@@ -39,8 +40,9 @@ const sideBySideQuery = '(min-width: 100rem)'
 
 // DetailPanel shows the entry named by ?entry=<id> on the Map and Search
 // screens: where it is, its sizes and dates, its breakdowns, its
-// classification, its decision and tags with their controls, and its
-// technical details. Without ?entry= it renders nothing.
+// classification, its decision and tags with their controls, the controls
+// that organize it on disk, and its technical details. Without ?entry= it
+// renders nothing.
 export function DetailPanel() {
   const { t } = useTranslation()
   const [params] = useSearchParams()
@@ -405,6 +407,18 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       {!member && (
         <Section title={t('detail.tags')}>
           <TagEditor entryId={entry.id} tags={intent.tags} rootLabel={rootLabel} />
+        </Section>
+      )}
+
+      {!member && entry.state !== 'missing' && (
+        <Section title={t('organize.section')}>
+          <OrganizeSection
+            key={entry.id}
+            entry={entry}
+            ancestors={ancestors}
+            kept={intent.eff_decision === 'keep'}
+            rootLabel={rootLabel}
+          />
         </Section>
       )}
 

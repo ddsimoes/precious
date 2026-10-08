@@ -525,3 +525,16 @@ Job event kind "organize": progress {"items":n,"done":n}
 
 - **Upgrade.** Migration 0006 adds a column with a default and two new tables. No backfill is needed, and every source starts with writes off.
 - **Rollback.** The r2d binary refuses a newer schema (`ErrSchemaTooNew`), so roll back by restoring the backup taken before deploying.
+
+## Addendum: decisions made during implementation
+
+- **U1. When a plan runs at once.** The interface previews a plan when it is `bulk`, or has a `conflict`, a `refused` item, `kept_lost > 0`, or nothing `planned`; otherwise it calls `run-action` right after the plan (`needsPreview` in `web/ui/src/api/organize.ts`). The rule is the same for every kind, so an undo of a multi-item action without a conflict runs at once. Search's Move to…, Rescue kept items…, and Compare's merge always preview.
+- **U2. The result follows the action.** After `run-action`, the result line reads `GET /api/history/{id}`, which organize job events refetch: it says "Renaming…" (and so on) while queued or running, then "Renamed." with Undo once `undo.possible`. The result of an undo offers no Undo of its own; History does.
+- **U3. The destination chooser.** It opens at the item's current folder, from the detail's `ancestors`, else at the source's top folder; with several sources that allow changes (Search), its first level lists those sources. Move here is off while the trail holds an entry being moved. Deeper cases, such as a selection's folders, are left to the plan's `into_itself`.
+- **U4. New folder in the chooser** sends `plan-create-folder` and `run-action` at once, with no preview: `plan-create-folder` refuses a taken name with `409 name_taken`. The folder appears once its job ends, since folder listings are keyed under `['entries']`, which `refreshAfterMove` refetches.
+- **U5. Which sources Search can move.** Move to… offers the sources that allow changes and are online, limited to the search's `source` and, for rows ticked one by one, to their sources. A selection is sent as `selection_id`, ticked rows as `entry_ids`.
+- **U6. History counts.** The list shows Done, Not included (`refused`), Left as they were (`conflict`), Not done (`failed`, `changed`, `not_permitted`, `offline`, `no_safe_rename`, and `not_empty` together), Not attempted, and Needs your check. An action with `manual_recovery > 0` lists those items at once, read with `?state=manual_recovery`, each with I fixed it.
+- **U7. Live history.** The history is one of the responses fetched again after missed events. Every organize event refetches it, and a terminal one runs `refreshAfterMove`.
+- **U8. Vocabulary.** The vocabulary test also bans "journal" and "executor".
+- **U9. Compare's merge** is offered on `only_left` or `only_right` when the group shown holds files, both sides are folders (not archives, not members) of one source, and that source allows changes and is online.
+- **U10. Error wording by control.** `400 invalid_request` from Rename and New folder reads as a name that cannot be used, including a case-only change on a case-insensitive disk (D17). For Rescue kept items…, `409 invalid_entry_state` reads "Nothing to rescue", and `400 invalid_request` asks for a folder outside this one.

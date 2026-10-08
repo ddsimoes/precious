@@ -5,14 +5,15 @@ import { applyJobEventToDuplicates, duplicatesQueryRoots } from '@/api/content'
 import { applyJobEventToEntries } from '@/api/entries'
 import { applyJobEventToHome } from '@/api/home'
 import type { JobEvent } from '@/api/jobs'
+import { applyJobEventToHistory, historyQueryRoot } from '@/api/organize'
 import { applyJobEventToSources, sourcesQueryKey } from '@/api/sources'
 import { sessionQueryKey } from '@/app/session'
 
 // liveQueryRoots are the cached responses that job events keep current:
-// sources, and everything built from the index and its duplicates (Home,
-// entries, Search, Opportunities, and Compare). They are fetched again
-// whenever events may have been missed.
-const liveQueryRoots: QueryKey[] = [sourcesQueryKey, ...duplicatesQueryRoots]
+// sources, everything built from the index and its duplicates (Home,
+// entries, Search, Opportunities, and Compare), and the history of
+// organizing. They are fetched again whenever events may have been missed.
+const liveQueryRoots: QueryKey[] = [sourcesQueryKey, ...duplicatesQueryRoots, historyQueryRoot]
 
 const minRetryDelay = 1_000
 const maxRetryDelay = 30_000
@@ -81,6 +82,7 @@ export class JobEventStream {
       applyJobEventToHome(this.queryClient, event)
       applyJobEventToEntries(this.queryClient, event)
       applyJobEventToDuplicates(this.queryClient, event)
+      applyJobEventToHistory(this.queryClient, event)
     })
     source.addEventListener('reset', (message: MessageEvent<string>) => {
       this.lastEventId = message.lastEventId

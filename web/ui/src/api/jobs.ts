@@ -57,6 +57,11 @@ export const relateKind = 'relate'
 
 export type HashKind = typeof hashKind | typeof hashNowKind
 
+// organizeKind is the job that runs one planned action of organizing (R3
+// design D10): moves, renames, new folders, and their undo. It reports
+// `items` and `done`.
+export const organizeKind = 'organize'
+
 export function isHashKind(kind: string): kind is HashKind {
   return kind === hashKind || kind === hashNowKind
 }

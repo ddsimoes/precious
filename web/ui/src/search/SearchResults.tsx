@@ -14,7 +14,9 @@ import {
   type Selection,
 } from '@/api/decisions'
 import { childSorts, type ChildSort, type EntryRow, type SortOrder } from '@/api/entries'
+import { planMove } from '@/api/organize'
 import { fetchSearch, fetchSearchCount, searchCountQueryKey, searchQueryKey, selectionQuery } from '@/api/search'
+import { useSources } from '@/api/sources'
 import { refreshAfterTagChange, setTags, useTags, type TagTargets } from '@/api/tags'
 import { ApiError } from '@/app/api'
 import { ErrorBanner } from '@/app/ErrorBanner'
@@ -24,6 +26,9 @@ import { EntryTable } from '@/components/EntryTable'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { useFormat } from '@/lib/format'
+import { FolderChooser } from '@/organize/FolderChooser'
+import { OrganizeOutcome } from '@/organize/OrganizeOutcome'
+import { useOrganize } from '@/organize/useOrganize'
 
 // countCap is the largest exact match count the server reports.
 const countCap = 10_000
@@ -31,8 +36,9 @@ const countCap = 10_000
 // SearchResults lists the matches of one search, virtualized and paged by
 // cursor, and applies decisions and tags to the rows picked one by one or to
 // every result through a selection, which the owner confirms after seeing
-// its count, bytes, and kept entries. It is keyed by the search, so a new
-// search starts with nothing selected.
+// its count, bytes, and kept entries. It also moves them into a chosen
+// folder, after a preview of every item. It is keyed by the search, so a
+// new search starts with nothing selected.
 export function SearchResults({ filters }: { filters: URLSearchParams }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -46,6 +52,8 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
   const tags = useTags()
   const tagSelectId = useId()
   const [tagChoice, setTagChoice] = useState('')
+  const [choosing, setChoosing] = useState(false)
+  const sources = useSources()
 
   const sortParam = filters.get('sort')
   const sort: ChildSort = childSorts.find((s) => s === sortParam) ?? 'bytes'
@@ -121,6 +129,19 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
       setSelection(null)
     }
   }
+  const organize = useOrganize({ onRan: clearSelection, onError: onBulkError })
+  // A move stays on one source: the sources Precious may change now, among
+  // those of the search and of the rows picked.
+  const pickedSources = new Set(rows.filter((row) => picked.has(row.id)).map((row) => row.source_id))
+  const movable = (sources.data?.sources ?? [])
+    .filter(
+      (s) =>
+        s.writes.enabled &&
+        s.state === 'online' &&
+        (!filters.has('source') || filters.get('source') === s.id) &&
+        (selection !== null || pickedSources.has(s.id)),
+    )
+    .map((s) => s.id)
   const decide = useMutation({
     mutationFn: ({ to, choice }: { to: DecisionTargets; choice: DecisionChoice }) =>
       setDecision(to, choice, csrfToken),
@@ -142,7 +163,7 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
     },
     onError: onBulkError,
   })
-  const busy = decide.isPending || tag.isPending
+  const busy = decide.isPending || tag.isPending || organize.pending
 
   let countText = ''
   if (count === '10000+') {
@@ -233,6 +254,17 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
               {t('search.removeTag')}
             </Button>
           </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || targets === null || movable.length === 0}
+              onClick={() => setChoosing(true)}
+            >
+              {t('search.moveTo')}
+            </Button>
+            {movable.length === 0 && <p className="text-muted-foreground">{t('search.moveNeedsWrites')}</p>}
+          </div>
         </section>
       )}
       {/* Outside the bulk section: an expired selection is dropped with it. */}
@@ -240,6 +272,22 @@ export function SearchResults({ filters }: { filters: URLSearchParams }) {
       {tag.isError && <ErrorBanner error={tag.error} onDismiss={() => tag.reset()} />}
 
       {report !== null && <BulkReport report={report} onClose={() => setReport(null)} />}
+      <OrganizeOutcome organize={organize} />
+      {choosing && targets !== null && (
+        <FolderChooser
+          title={t('organize.chooser.moveManyTitle', {
+            count: selection?.count ?? picked.size,
+            formatted: fmt.count(selection?.count ?? picked.size),
+          })}
+          sourceIds={movable}
+          blocked={[...picked]}
+          onChoose={(destination) => {
+            setChoosing(false)
+            organize.start((csrfToken) => planMove(targets, destination.id, csrfToken), { always: true })
+          }}
+          onClose={() => setChoosing(false)}
+        />
+      )}
 
       {results.isPending && (
         <p role="status" className="text-sm text-muted-foreground">
