@@ -165,6 +165,16 @@ func (a indexAdapter) ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.So
 	return a.rf.Refold(ctx, tx, src, []domain.EntryID{domain.EntryID(parent.Int64)})
 }
 
+// ApplyModTime makes the index follow a done set_mtime (r5 D15): the
+// entry's times and the content rows that described it, then a refold of the
+// entry, so its folders' newest, oldest, and by-year figures follow.
+func (a indexAdapter) ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTime) error {
+	if err := index.ApplyModTime(ctx, tx, m); err != nil {
+		return err
+	}
+	return a.rf.Refold(ctx, tx, m.Source, []domain.EntryID{m.Entry})
+}
+
 // insideQuarantine reports whether path lies strictly below a source's
 // quarantine folder.
 func insideQuarantine(path []byte) bool {

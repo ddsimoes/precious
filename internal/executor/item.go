@@ -70,15 +70,18 @@ const (
 // duplicates list, whose items need a verified copy (r4 D5).
 const groundDuplicate = "duplicate"
 
-// Item ops: R3's, and R4's cleanup steps (r4 D3, D4, D10, D11).
+// Item ops: R3's, R4's cleanup steps (r4 D3, D4, D10, D11), and R5's
+// set_mtime (r5 D13), which has no step yet: it ends failed ("unknown step")
+// at intent, with nothing on disk, until task 2.8 adds it.
 const (
-	opRename = "rename"
-	opMkdir  = "mkdir"
-	opRmdir  = "rmdir"
-	opRecord = "record"
-	opUnlink = "unlink"
-	opPurge  = "purge"
-	opVerify = "verify"
+	opRename   = "rename"
+	opMkdir    = "mkdir"
+	opRmdir    = "rmdir"
+	opRecord   = "record"
+	opUnlink   = "unlink"
+	opPurge    = "purge"
+	opVerify   = "verify"
+	opSetMtime = "set_mtime"
 )
 
 // Audit event written when the executor turns a source's writes off (D2):
@@ -109,11 +112,14 @@ type item struct {
 	// R4's draft-time identity of a cleanup rename (r4 D3): ctime_ns, and a
 	// folder's total bytes and files.
 	ctime, draftBytes, draftFiles sql.NullInt64
+	// A set_mtime's time to write, and the time its step found on disk,
+	// journaled before the write (r5 D13).
+	newMtime, prevMtime sql.NullInt64
 }
 
 const itemColumns = `i.id, i.action_id, i.seq, i.op, i.entry_id, i.from_parent, i.from_name, i.from_path,
 	i.to_parent, i.to_dir_seq, i.to_name, i.to_path, i.kind, i.dev, i.ino, i.size, i.mtime_ns, i.reverses, i.state,
-	i.ctime_ns, i.draft_bytes, i.draft_files`
+	i.ctime_ns, i.draft_bytes, i.draft_files, i.new_mtime_ns, i.prev_mtime_ns`
 
 func scanItem(s interface{ Scan(...any) error }) (item, error) {
 	var (
@@ -123,7 +129,7 @@ func scanItem(s interface{ Scan(...any) error }) (item, error) {
 	)
 	err := s.Scan(&it.id, &it.action, &it.seq, &it.op, &entry, &fromParent, &it.fromName, &it.fromPath,
 		&toParent, &toDirSeq, &it.toName, &it.toPath, &kind, &it.dev, &it.ino, &it.size, &it.mtime, &reverses,
-		&it.state, &it.ctime, &it.draftBytes, &it.draftFiles)
+		&it.state, &it.ctime, &it.draftBytes, &it.draftFiles, &it.newMtime, &it.prevMtime)
 	it.entry, it.fromParent, it.toParent = entry.Int64, fromParent.Int64, toParent.Int64
 	it.toDirSeq, it.reverses, it.kind = toDirSeq.Int64, reverses.Int64, kind.String
 	return it, err
