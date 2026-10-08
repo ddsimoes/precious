@@ -88,7 +88,7 @@ func TestV7DatabaseMigratesToMedia(t *testing.T) {
 	after := tableRows(t, s.Writer())
 	null := "<nil>:<nil>|"
 	grown := map[string]string{
-		"actions":      null + "int64:0|",   // template, rename
+		"actions":      null + "int64:0|",  // template, rename
 		"action_items": null + null + null, // new_mtime_ns, prev_mtime_ns, copy_of
 	}
 	for table, rows := range before {
