@@ -486,7 +486,7 @@ Some folders are refused:
 
 The browser never sends a typed path. Each folder the picker shows carries an opaque handle signed with a key that Precious makes when it starts, and adding a source names that handle. After a restart the old handles are refused, so reopen the picker.
 
-Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed while its scan is queued, running, or paused (`job_active`); cancel the scan first. A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
+Removing a source deletes its index: its entries, folder totals, decisions, tag assignments, digests, archive listings, history of changes by Precious, and its rows in relations and review lists. The tags themselves stay, and no file on the disk is touched. A source cannot be removed, and nothing changes, while its scan is queued, running, or paused, or while a change by Precious on it (a move, a rename, a new folder) is waiting its turn or running (`job_active`); cancel it first. Nor can it while a step of a change is still being recorded or waits for you to check it in History (`recovery_needed`): removing the source would delete the only record of a step that may be half done. Resolve the step first. A hashing job of the source does not block removal: it is cancelled and goes away with the source, and the duplicates of the other sources are recomputed without it.
 
 ### Allowed roots
 
@@ -530,6 +530,24 @@ Each source can be rescanned on a schedule: off (the default), daily at a time o
 `weekday` is 0 (Sunday) to 6 (Saturday), `at` is `HH:MM` from `00:00` to `23:59`, and `zone` is an IANA time zone name, resolved from a copy of the time zone database built into the binary, so it works on every system. A malformed schedule (a bad time, weekday, or zone, a field missing or unknown, or no `schedule` at all) is refused with `invalid_request`, and an unknown source with `unknown_source`; a refused request changes nothing. Setting a schedule computes its next scan from the current time, and turning it off clears it. Each accepted request writes one `source_schedule_set` audit event with the previous and the new schedule.
 
 Each source in `GET /api/sources` carries `schedule` (the object above, or `null` when off), `next_scan_at` (the next due time, or `null`), and `schedule_skipped` (`{"at","reason"}` for the last due time when it was skipped, or `null` when it ran). The reason is the source's state then, `offline` or `unavailable`, or `invalid_schedule` for a stored schedule that no longer validates, which stops its scans until it is set again.
+
+### Changes by Precious
+
+Each source has its own write permission: whether Precious may move, rename, and create folders on it when you ask. Every source starts with it off, so Precious only reads it. Turn it on with **Allow changes…** on the Sources screen, which asks first, and off with **Turn off**, which takes effect at once; the next step of a change in progress checks it and stops.
+
+| Command | Request | Response |
+|---|---|---|
+| `set-source-writes` | `{"source_id":"fotos","enabled":true}`; `"enabled":false` turns it off | 200 `{"source": …}` |
+
+Each source in `GET /api/sources` carries `writes`: `{"enabled":false,"unavailable":null}`. `enabled` is the permission. `unavailable` is `null` when it can be turned on, or the reason it cannot, the first that applies:
+
+| Reason | Meaning |
+|---|---|
+| `forbidden_by_config` | [`sources.allow_writes`](#configuration-reference) is `false`, which forbids changes on every source. |
+| `read_only` | The filesystem is mounted read-only, as the shipped systemd unit and Compose file mount the disks (see [Read-only disk mounts](#read-only-disk-mounts-recommended)); allow writes there first. |
+| `no_replace_rename` | The filesystem cannot rename without the risk of replacing an existing file (`capabilities.no_replace_rename` is `false`; see [Filesystem capabilities](#filesystem-capabilities)). |
+
+The reasons read the capabilities as last recorded, which Precious refreshes every minute and whenever the list is loaded. Turning writes on while `unavailable` is not `null` is refused with `409 writes_unavailable` and changes nothing; turning them off always succeeds, also where they are unavailable. A missing or malformed `enabled`, or any other field, is `invalid_request`, and an unknown source `unknown_source`. Each change writes one `source_writes_set` audit event with the source, the new value, and the previous one; a request that sets the value the source already has changes nothing and writes no event.
 
 ### Volumes that cannot be recognized when moved
 
@@ -987,7 +1005,7 @@ The interface reads the index through a small JSON API under `/api`. The same en
 |---|---|
 | `GET /api/home`, `GET /api/home?source=ID` | The figures of Home for every source, or for one: totals, bytes and files by family, by file kind, and by year, the decision totals, whether the figures are partial, and the scans in progress. |
 | `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). |
-| `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable). |
+| `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable); with `kind=directory`, only its folders, archives left out. |
 | `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. |
 | `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
@@ -999,13 +1017,13 @@ Every entry row also carries `composition`, its bytes and files by family as a l
 
 The detail of `GET /api/entries/{id}` also helps the Map shorten paths and explain archives. Each folder in `ancestors` has `only_child`, true when it holds nothing but the next one (the entry itself for its parent). `only_folder` is the ID of a folder's only item when that item is a folder, and `null` otherwise. `archive_note` says why an archive file has no `archive`: `unsupported` for a format Precious recognizes but does not open (7z, rar, xz, cab, jar, and the like), `nested` for an archive inside an archive, `not_listed` for a format it opens that was not listed yet, and `null` for anything else. Items in every state count, as in the children list.
 
-Children are sorted with `sort=bytes`, `files`, `newest` (the newest change inside a folder), or `name`, and with `order=desc` or `asc`. By default the sort is by bytes, largest first. A sort by name defaults to ascending and compares the raw bytes of the names, so `Zeta` comes before `alfa`. A page holds 200 rows unless `limit` asks for another number, and never more than 1,000. A page with more after it carries `next_cursor`, and the same request with `cursor=` set to it gives the next page. A cursor belongs to the folder's order: changing `sort` or `order` needs a new first page. A cursor holds the position of the last row, not a row count. So a row added or removed while you page does not shift the other rows: a new row is listed only when it sorts after the current page. A row whose size or date a scan changes may move to a page already read.
+Children are sorted with `sort=bytes`, `files`, `newest` (the newest change inside a folder), or `name`, and with `order=desc` or `asc`. By default the sort is by bytes, largest first. A sort by name defaults to ascending and compares the raw bytes of the names, so `Zeta` comes before `alfa`. `kind=directory` lists only the folders, in every state, sorted and paged the same way; an archive is a file, so it is left out, even one Precious can open as a folder, and inside such an archive only the member folders are listed. It is the only `kind` accepted. A page holds 200 rows unless `limit` asks for another number, and never more than 1,000. A page with more after it carries `next_cursor`, and the same request with `cursor=` set to it gives the next page. A cursor belongs to the folder's order and `kind`: changing `sort`, `order`, or `kind` needs a new first page. A cursor holds the position of the last row, not a row count. So a row added or removed while you page does not shift the other rows: a new row is listed only when it sorts after the current page. A row whose size or date a scan changes may move to a page already read.
 
 Errors use the usual envelope, `{"error":{"code","message"}}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | An unknown or repeated parameter, a bad value (such as `sort=color` or `limit=0`), or a cursor the server did not give for this order. |
+| 400 | `invalid_request` | An unknown or repeated parameter, a bad value (such as `sort=color`, `limit=0`, or a `kind` other than `directory`), or a cursor the server did not give for this order and `kind`. |
 | 404 | `not_found` | An entry, source, or folder (`within`) that does not exist, or an ID that is not a valid one. |
 | 409 | `invalid_entry_state` | The content or text of a folder, of a missing file, or of a file that changed on disk since the last scan. |
 | 409 | `source_offline` | The content or text of a file whose source is not online. |

@@ -231,14 +231,16 @@ func failState(f *failure) domain.ArchiveState {
 	return domain.ArchiveChanged
 }
 
-// entryLive is the I9 check of a listing write: the entry is present with
-// the row's identity.
+// entryLive is the I9 check of a listing write: the entry is present at the
+// path the listing read, with the row's identity. A folder moved since keeps
+// its files' identity, so the path is what tells that the read went through
+// a name that is gone (r3 design D18).
 func (l *listing) entryLive(ctx context.Context, tx *sql.Tx) (bool, error) {
 	f := l.f
 	var ok bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM entries WHERE id = ? AND state = 'present'
-		AND size = ? AND mtime_ns IS ? AND ctime_ns IS ? AND ino IS ? AND dev IS ?)`,
-		f.id, f.size, f.mtime, f.ctime, f.ino, f.dev).Scan(&ok)
+		AND path = ? AND size = ? AND mtime_ns IS ? AND ctime_ns IS ? AND ino IS ? AND dev IS ?)`,
+		f.id, f.path, f.size, f.mtime, f.ctime, f.ino, f.dev).Scan(&ok)
 	return ok, err
 }
 
@@ -708,8 +710,9 @@ func (r *run) hashMembers(f *fileRow) error {
 			live, refreshed = false, false
 			sq := tx.SQL()
 			if err := sq.QueryRowContext(r.ctx, `SELECT EXISTS (SELECT 1 FROM archives a JOIN entries e ON e.id = a.entry_id
-				WHERE a.entry_id = ? AND a.state = 'complete' AND e.state = 'present' AND e.size = ? AND e.mtime_ns IS ?
-					AND e.ctime_ns IS ? AND e.ino IS ? AND e.dev IS ?)`, f.id, f.size, f.mtime, f.ctime, f.ino, f.dev).
+				WHERE a.entry_id = ? AND a.state = 'complete' AND e.state = 'present' AND e.path = ? AND e.size = ?
+					AND e.mtime_ns IS ? AND e.ctime_ns IS ? AND e.ino IS ? AND e.dev IS ?)`,
+				f.id, f.path, f.size, f.mtime, f.ctime, f.ino, f.dev).
 				Scan(&live); err != nil || !live {
 				return err
 			}
@@ -791,10 +794,17 @@ type readerFunc func(p []byte) (int, error)
 func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
 
 // membersUnreadable makes the pending members of an archive whose file
-// cannot be read unreadable.
+// cannot be read unreadable, when the entry is still present at the path
+// the read used, with the identity it observed (I9; r3 design D18).
 func (r *run) membersUnreadable(f *fileRow, fail *failure) error {
 	return r.s.runner.Write(r.ctx, func(tx *jobs.Tx) error {
 		sq := tx.SQL()
+		var live bool
+		if err := sq.QueryRowContext(r.ctx, `SELECT EXISTS (SELECT 1 FROM entries WHERE id = ? AND state = 'present'
+			AND path = ? AND size = ? AND mtime_ns IS ? AND ctime_ns IS ? AND ino IS ? AND dev IS ?)`,
+			f.id, f.path, f.size, f.mtime, f.ctime, f.ino, f.dev).Scan(&live); err != nil || !live {
+			return err
+		}
 		var n, size int64
 		if err := sq.QueryRowContext(r.ctx, `SELECT count(*), coalesce(sum(size), 0) FROM archive_members
 			WHERE archive_id = ? AND kind = 'file' AND state = 'pending'`, f.id).Scan(&n, &size); err != nil {

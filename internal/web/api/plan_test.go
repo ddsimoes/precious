@@ -74,21 +74,24 @@ func TestChildrenPlansUseTheirIndex(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for what, c := range cursors {
-				if what == "null key" && sort != search.SortNewest {
-					continue
-				}
-				if c != nil && sort == search.SortName {
-					c = &childCursor{B: c.B, ID: c.ID}
-				}
-				for i, seg := range o.segments(c) {
-					args := append(append([]any{int64(1)}, seg.args...), 201)
-					p := plan(t, e.st.Reader(), o.sql(seg), args)
-					t.Logf("%s %s, %s, segment %d:\n%s", sort, order, what, i, p)
-					if scanOrSort.MatchString(p) || !strings.Contains(p, "USING INDEX "+index[sort]+" ") ||
-						!strings.Contains(p, statsByKey) {
-						t.Errorf("%s %s, %s, segment %d does not read one range of %s in order:\n%s",
-							sort, order, what, i, index[sort], p)
+			for _, kind := range []domain.EntryKind{"", domain.EntryDirectory} {
+				o.kind = kind
+				for what, c := range cursors {
+					if what == "null key" && sort != search.SortNewest {
+						continue
+					}
+					if c != nil && sort == search.SortName {
+						c = &childCursor{B: c.B, ID: c.ID}
+					}
+					for i, seg := range o.segments(c) {
+						args := append(append([]any{int64(1)}, seg.args...), 201)
+						p := plan(t, e.st.Reader(), o.sql(seg), args)
+						t.Logf("%s %s kind %q, %s, segment %d:\n%s", sort, order, kind, what, i, p)
+						if scanOrSort.MatchString(p) || !strings.Contains(p, "USING INDEX "+index[sort]+" ") ||
+							!strings.Contains(p, statsByKey) {
+							t.Errorf("%s %s kind %q, %s, segment %d does not read one range of %s in order:\n%s",
+								sort, order, kind, what, i, index[sort], p)
+						}
 					}
 				}
 			}

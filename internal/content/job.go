@@ -794,10 +794,13 @@ func (r *run) commit() error { return r.commitCtx(r.ctx, true) }
 
 // commitCtx writes the queued results, at most CommitFiles per
 // transaction (design D4, Transaction boundaries): each result is kept only
-// when its entry is present with the size, times, and identity its read
-// observed and its file_content row exists (I9). Coverage deltas apply in
-// the same transaction, the sizes whose samples changed are decided again,
-// and a relate pass is requested every refresh_interval.
+// when its entry is present at the path its read used, with the size,
+// times, and identity its read observed, and its file_content row exists
+// (I9; r3 design D18: a file whose folder was moved since keeps its
+// identity, and its read through the old path must not record it changed).
+// Coverage deltas apply in the same transaction, the sizes whose samples
+// changed are decided again, and a relate pass is requested every
+// refresh_interval.
 func (r *run) commitCtx(ctx context.Context, yield bool) error {
 	for len(r.units) > 0 {
 		batch := r.units[:min(len(r.units), CommitFiles)]
@@ -847,16 +850,18 @@ func (r *run) commitCtx(ctx context.Context, yield bool) error {
 	return nil
 }
 
-// apply writes one result after the I9 re-check. It reports whether it
-// wrote.
+// apply writes one result after the I9 re-check, which includes the path
+// the read used (r3 design D18). It reports whether it wrote.
 func (r *run) apply(ctx context.Context, tx *sql.Tx, u *unit, d deltas, now int64, sizes map[int64]bool) (bool, error) {
 	f := &u.f
 	var old domain.ContentState
 	err := tx.QueryRowContext(ctx, `SELECT fc.state FROM file_content fc JOIN entries e ON e.id = fc.entry_id
-		WHERE fc.entry_id = ? AND e.state = 'present' AND e.size = ? AND e.mtime_ns IS ? AND e.ctime_ns IS ?
-			AND e.ino IS ? AND e.dev IS ?`, f.id, f.size, f.mtime, f.ctime, f.ino, f.dev).Scan(&old)
+		WHERE fc.entry_id = ? AND e.state = 'present' AND e.path = ? AND e.size = ? AND e.mtime_ns IS ?
+			AND e.ctime_ns IS ? AND e.ino IS ? AND e.dev IS ?`, f.id, f.path, f.size, f.mtime, f.ctime, f.ino, f.dev).Scan(&old)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil // the entry changed or went: the result is dropped
+		// The entry changed, moved, or went: the result is dropped, and the
+		// file stays as it was, to be read again.
+		return false, nil
 	}
 	if err != nil {
 		return false, err
