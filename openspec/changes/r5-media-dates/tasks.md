@@ -35,7 +35,7 @@
   - a rescan right after finds nothing changed.
 
   Run `go test -race ./internal/index`.
-- [ ] 1.5 `internal/media`, pure, standard library only (design D1, D2, D5–D8, D16, D17's names), exactly the Interfaces signatures. Owns `internal/media`. Verify with tests:
+- [x] 1.5 `internal/media`, pure, standard library only (design D1, D2, D5–D8, D16, D17's names), exactly the Interfaces signatures. Owns `internal/media`. Verify with tests:
   - table tests per format from hand-built bytes: JPEG APP1; TIFF big- and little-endian; ORF and RW2 headers; HEIC and AVIF `iloc`; CR3 `CMT` boxes; MP4 with `moov` first and last; MOV;
   - bounds: at most 1 MiB read, counted with a recording `ReaderAt`; loops, offsets outside the file, and huge counts give no value;
   - native fuzz targets per parser with checked-in seeds, run as seeds by `go test`; a long randomized property run behind the `slow` tag;
@@ -64,7 +64,7 @@
   - the hashing tests still pass.
 
   Run `go test -race ./internal/content ./internal/executor ./internal/organize ./internal/dates ./cmd/precious`.
-- [ ] 1.7 The corpus (design D19): the EXIF and MP4 writers, a PNG, the fixtures of D19's table, `DateTruth` for every image and video, `Cameras` with the Sony's two event folders, the 2009 WhatsApp images declared by hand, the independent rule for the other older media, `web/ui/e2e/env.ts`, and every test whose hard-coded corpus numbers change. Owns `internal/corpus`, `tools/gencorpus`, and `web/ui/e2e/env.ts`. Verify:
+- [x] 1.7 The corpus (design D19): the EXIF and MP4 writers, a PNG, the fixtures of D19's table, `DateTruth` for every image and video, `Cameras` with the Sony's two event folders, the 2009 WhatsApp images declared by hand, the independent rule for the other older media, `web/ui/e2e/env.ts`, and every test whose hard-coded corpus numbers change. Owns `internal/corpus`, `tools/gencorpus`, and `web/ui/e2e/env.ts`. Verify:
   - the writers round-trip through `media.Read` (test only; the truth never imports `internal/media`);
   - `TestSizeAndDates` (10–40 MiB, 2003–2012), `TestDeterministic`, `TestBuildersAgree`, and `TestCorpusMatchesGroundTruth` (JSON round-trip of the new fields);
   - `Fotos`, `Fotos - Copia`, `Midia`, and the pendrive copies are byte-identical to before.
