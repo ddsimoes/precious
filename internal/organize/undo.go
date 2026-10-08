@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"precious/internal/domain"
+	"precious/internal/index"
 	"precious/internal/jobs"
 )
 
@@ -41,6 +42,14 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 		return 0, nil, domain.Errorf(domain.CodeActionNotUndoable, "action %d is %s; only a change that ran can be undone",
 			action, state)
 	}
+	var kind string
+	if err := q.QueryRowContext(ctx, `SELECT kind FROM actions WHERE id = ?`, action).Scan(&kind); err != nil {
+		return 0, nil, err
+	}
+	if !undoable(kind) {
+		return 0, nil, domain.Errorf(domain.CodeActionNotUndoable,
+			"a %s is not undone: a cleanup is reversed by restoring its items, and a purge cannot be reversed", kind)
+	}
 	var alt *dest
 	if req.DestinationID != "" {
 		d, err := folderArg(ctx, q, "destination_id", req.DestinationID)
@@ -63,7 +72,7 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 	if err := s.checkSource(ctx, q, src); err != nil {
 		return 0, nil, err
 	}
-	if err := prune(ctx, q, now); err != nil {
+	if err := Prune(ctx, q, now); err != nil {
 		return 0, nil, err
 	}
 	p, err := newPlan(ctx, q, src, false)
@@ -104,8 +113,15 @@ func (s *Service) planUndo(ctx context.Context, tx *jobs.Tx, req planUndoRequest
 }
 
 // reverse plans the rename of n back to the previous place of done item it,
-// or into alt under its previous name when that place is taken or gone.
+// or into alt under its previous name when that place is taken or gone. A
+// quarantined entry is refused, and a previous folder in the quarantine is
+// gone (r4 D13).
 func (p *plan) reverse(n *node, it done, alt *dest) error {
+	if index.IsQuarantinePath(n.path) {
+		return p.refused(&item{op: opRename, entry: n.id, fromParent: n.parent, fromName: n.name, fromPath: n.path,
+			toName: it.fromName, toPath: it.fromPath, bytes: n.bytes, files: n.files, reverses: it.id},
+			reasonInQuarantine)
+	}
 	var prev *node
 	if it.fromParent != 0 {
 		var err error
@@ -113,7 +129,7 @@ func (p *plan) reverse(n *node, it done, alt *dest) error {
 			return err
 		}
 	}
-	if prev == nil || prev.source != p.src || !prev.presentFolder() {
+	if prev == nil || prev.source != p.src || !prev.presentFolder() || index.IsQuarantinePath(prev.path) {
 		if alt != nil {
 			_, err := p.move(n, *alt, it.fromName, it.id)
 			return err
@@ -162,4 +178,15 @@ func reversible(ctx context.Context, tx *sql.Tx, action int64) ([]done, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// undoable reports whether an action of kind can be undone: a cleanup is
+// reversed by restoring its items, and a restore or a purge has no undo
+// (r4 D13).
+func undoable(kind string) bool {
+	switch kind {
+	case "cleanup", "restore", "purge":
+		return false
+	}
+	return true
 }

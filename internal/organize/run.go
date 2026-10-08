@@ -63,6 +63,9 @@ func (s *Service) runAction(ctx context.Context, tx *jobs.Tx, rawID string) (int
 	if !runnable {
 		return 0, nil, domain.Errorf(domain.CodeActionNotRunnable, "action %d has nothing to run", id)
 	}
+	if err := gateAction(ctx, q, id); err != nil {
+		return 0, nil, err
+	}
 	if err := s.checkSource(ctx, q, src); err != nil {
 		return 0, nil, err
 	}

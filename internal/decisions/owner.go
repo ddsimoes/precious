@@ -142,8 +142,14 @@ func (s *Service) setOwner(ctx context.Context, jtx *jobs.Tx, one domain.EntryID
 	case !errors.Is(err, sql.ErrNoRows):
 		return OwnerResult{}, fmt.Errorf("decisions: check target kinds: %w", err)
 	}
+	if err := frozen(ctx, tx, t); err != nil {
+		return OwnerResult{}, err
+	}
 	old, err := overrideCounts(ctx, tx, t, f)
 	if err != nil {
+		return OwnerResult{}, err
+	}
+	if err := markStale(ctx, tx, t, ""); err != nil {
 		return OwnerResult{}, err
 	}
 

@@ -97,6 +97,9 @@ func (s *Service) planRename(ctx context.Context, tx *jobs.Tx, req planRenameReq
 	if n.parent == 0 {
 		return 0, nil, domain.Errorf(domain.CodeInvalidRequest, "a source's top folder cannot be renamed here")
 	}
+	if err := frozen("entry_id", req.EntryID, n); err != nil {
+		return 0, nil, err
+	}
 	name := []byte(req.Name)
 	if bytes.Equal(name, n.name) {
 		return 0, nil, domain.Errorf(domain.CodeInvalidRequest, "the new name is the current one")
@@ -120,16 +123,29 @@ func (s *Service) planRename(ctx context.Context, tx *jobs.Tx, req planRenameReq
 		return 0, nil, err
 	}
 	d := folderDest(parent)
+	if err := reserved(d, name); err != nil {
+		return 0, nil, err
+	}
 	if err := p.nameTaken(d, name, n.id); err != nil {
 		return 0, nil, err
 	}
-	if err := prune(ctx, q, now); err != nil {
+	if err := Prune(ctx, q, now); err != nil {
 		return 0, nil, err
 	}
 	if _, err := p.move(n, d, name, 0); err != nil {
 		return 0, nil, err
 	}
 	return s.finish(ctx, tx, p, "rename", 0, 0)
+}
+
+// reserved refuses the quarantine's name at a source's top folder (r4 D1,
+// D13): only a cleanup plan makes that folder.
+func reserved(d dest, name []byte) error {
+	if len(d.path) == 0 && string(name) == index.QuarantineName {
+		return domain.Errorf(domain.CodeInvalidRequest,
+			"%q at the top of a source is reserved for Precious's quarantine; choose another name", index.QuarantineName)
+	}
+	return nil
 }
 
 // planCreateFolder plans plan-create-folder: one mkdir in a present folder.
@@ -150,10 +166,13 @@ func (s *Service) planCreateFolder(ctx context.Context, tx *jobs.Tx, req planCre
 	if err := p.holdable(name); err != nil {
 		return 0, nil, err
 	}
+	if err := reserved(d, name); err != nil {
+		return 0, nil, err
+	}
 	if err := p.nameTaken(d, name, 0); err != nil {
 		return 0, nil, err
 	}
-	if err := prune(ctx, q, now); err != nil {
+	if err := Prune(ctx, q, now); err != nil {
 		return 0, nil, err
 	}
 	if _, err := p.mkdir(d, name); err != nil {

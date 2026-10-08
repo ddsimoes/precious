@@ -217,6 +217,9 @@ func (s *Service) SetDecision(ctx context.Context, tx *sql.Tx, req SetDecision) 
 	if err != nil {
 		return SetDecisionResult{}, err
 	}
+	if err := frozen(ctx, tx, t); err != nil {
+		return SetDecisionResult{}, err
+	}
 
 	// guard selects the targets the request applies to. Every statement
 	// below that reads it runs before any effective decision of a target
@@ -234,6 +237,9 @@ func (s *Service) SetDecision(ctx context.Context, tx *sql.Tx, req SetDecision) 
 	res.Applied = t.n - res.SkippedCount
 	old, err := ownCounts(ctx, tx, t, guard)
 	if err != nil {
+		return SetDecisionResult{}, err
+	}
+	if err := markStale(ctx, tx, t, guard); err != nil {
 		return SetDecisionResult{}, err
 	}
 

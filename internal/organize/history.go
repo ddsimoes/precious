@@ -14,18 +14,25 @@ import (
 	"precious/internal/web/apierr"
 )
 
-// Routes serves the history read API on mux (r3 design Interfaces);
-// authentication is the caller's middleware.
+// Routes serves the history read API on mux (r3 design Interfaces, r4
+// Interfaces); authentication is the caller's middleware.
 //
 //   - GET /api/history?source=&cursor=&limit= lists the actions that were
 //     run, newest first: {"items":[Action],"next_cursor"};
 //   - GET /api/history/{id} is one Action, in any state;
-//   - GET /api/history/{id}/items?state=&cursor=&limit= lists its items in
-//     seq order, state repeating: {"items":[Item],"next_cursor"}.
+//   - GET /api/history/{id}/items?state=&op=&cursor=&limit= lists its items
+//     in seq order, state and op repeating: {"items":[Item],"next_cursor"};
+//   - GET /api/history/{id}/items/{item}/kept?cursor= lists the entries at
+//     or below an item that the owner keeps, which block a cleanup item,
+//     100 to a page: {"count","items":[EntryRow],"next_cursor"};
+//   - GET /api/history/{id}/export.csv is every item of the action as CSV
+//     (r4 D16).
 func (s *Service) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/history", s.history)
 	mux.HandleFunc("GET /api/history/{id}", s.action)
 	mux.HandleFunc("GET /api/history/{id}/items", s.items)
+	mux.HandleFunc("GET /api/history/{id}/items/{item}/kept", s.kept)
+	mux.HandleFunc("GET /api/history/{id}/export.csv", s.export)
 }
 
 // serve answers r with what read returns, read in one read transaction, or
@@ -163,12 +170,13 @@ func (s *Service) action(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// items lists an action's items in seq order. The cursor is the seq of
-// the last item given.
+// items lists an action's items in seq order, of the states and ops given
+// (each repeating; none is every one). The cursor is the seq of the last
+// item given.
 func (s *Service) items(w http.ResponseWriter, r *http.Request) {
 	s.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		q := r.URL.Query()
-		if err := checkParams(q, []string{"state", "cursor", "limit"}, []string{"state"}); err != nil {
+		if err := checkParams(q, []string{"state", "op", "cursor", "limit"}, []string{"state", "op"}); err != nil {
 			return nil, err
 		}
 		id, err := pathID(r)
@@ -179,6 +187,12 @@ func (s *Service) items(w http.ResponseWriter, r *http.Request) {
 		for _, st := range states {
 			if !slices.Contains(itemStates, st) {
 				return nil, domain.Errorf(domain.CodeInvalidRequest, "unknown item state %q", st)
+			}
+		}
+		ops := q["op"]
+		for _, op := range ops {
+			if !slices.Contains(itemOps, op) {
+				return nil, domain.Errorf(domain.CodeInvalidRequest, "unknown item op %q", op)
 			}
 		}
 		limit, err := limitOf(q.Get("limit"), itemsDefaultLimit, itemsMaxLimit)
@@ -192,6 +206,6 @@ func (s *Service) items(w http.ResponseWriter, r *http.Request) {
 		if _, _, _, err := actionState(ctx, tx, id); err != nil {
 			return nil, err
 		}
-		return readItems(ctx, tx, id, states, after, limit)
+		return readItems(ctx, tx, id, states, ops, after, limit)
 	})
 }
