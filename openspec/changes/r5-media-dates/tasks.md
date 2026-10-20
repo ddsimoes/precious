@@ -228,7 +228,7 @@ Each slice owns its implementation task and the test tasks labelled with its let
   - a rescan finds nothing new or changed.
 
   Then delete the script.
-- [ ] 3.4 Deploy on the reference server, after a database backup:
+- [x] 3.4 Deploy on the reference server, after a database backup:
   - set `[dates] time_zone` to the owner's zone;
   - make the corpus source's files owned by the service user (corpus only), as R3 did for its folders, and check it;
   - rescan the corpus source after the `chown` and before any plan, and let hashing and the `media` job finish: the change times moved, so every file is hashed and read again.
