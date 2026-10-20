@@ -1,5 +1,6 @@
 import type { Check, CheckFile, Quarantined } from '@/api/cleanup'
 import type { Copy, Coverage, Relation } from '@/api/content'
+import type { Camera, DateJSON, DatesSummary, EntryDates, MediaDate } from '@/api/dates'
 import type { EntryDetail, EntryRow } from '@/api/entries'
 import type { Home } from '@/api/home'
 import type { JobEvent } from '@/api/jobs'
@@ -359,6 +360,8 @@ export function action(overrides: Partial<Action> = {}, counts: Partial<Action['
     deleted_files: 0,
     deleted_bytes: 0,
     freed_bytes: 0,
+    template: null,
+    rename: false,
     ...overrides,
   }
 }
@@ -460,6 +463,88 @@ export function checkFile(id: string, path: string, overrides: Partial<CheckFile
     copy: null,
     confirmed: false,
     item_readable: true,
+    ...overrides,
+  }
+}
+
+// dateJSON is a DateJSON; by default an EXIF capture to the second, without
+// an offset, of 2010-07-17 10:00 in UTC.
+export function dateJSON(overrides: Partial<DateJSON> = {}): DateJSON {
+  return {
+    instant: '2010-07-17T10:00:00Z',
+    local: '2010-07-17T10:00:00',
+    offset_min: null,
+    precision: 'second',
+    source: 'exif',
+    confidence: 'medium',
+    refined: false,
+    corrected: null,
+    ...overrides,
+  }
+}
+
+// mediaDate is a MediaDate of the photo at path of fotos, read, with no
+// flag, camera, or correction unless given.
+export function mediaDate(id: string, path: string, overrides: Partial<MediaDate> = {}): MediaDate {
+  const name = path.split('/').at(-1) ?? path
+  return {
+    entry: { id, source_id: 'fotos', name, path, path_b64: btoa(path), size: 2 * 1024 ** 2, mtime: '2011-01-15T10:00:00Z' },
+    date: dateJSON(),
+    metadata: 'read',
+    flags: [],
+    camera: null,
+    correction: null,
+    ...overrides,
+  }
+}
+
+// entryDates is a GET /api/entries/{id}/dates answer's dates: by default
+// a read photo dated as dateJSON's, with no flag, camera, correction, or
+// candidate.
+export function entryDates(overrides: Partial<EntryDates> = {}): EntryDates {
+  return {
+    date: dateJSON(),
+    metadata: 'read',
+    flags: [],
+    camera: null,
+    correction: null,
+    candidates: [],
+    ...overrides,
+  }
+}
+
+// datesSummary is a GET /api/dates/summary answer of fotos with the zone
+// America/Sao_Paulo set.
+export function datesSummary(overrides: Partial<DatesSummary> = {}): DatesSummary {
+  return {
+    media: 562,
+    metadata: { pending: 0, read: 120, none: 440, unreadable: 2 },
+    by_source: { owner: 0, exif: 100, gps: 0, container: 1, file_name: 5, folder_name: 200, mtime: 256, none: 0 },
+    by_confidence: { high: 20, medium: 85, low: 201, lowest: 256, none: 0 },
+    flags: { mtime_disagrees: 3, implausible: 1, camera_offset: 12, no_date_metadata: 440 },
+    cameras: { offset: 1, disagrees: 0 },
+    time_zone: 'America/Sao_Paulo',
+    time_zone_set: true,
+    summary_at: '2026-10-08T09:00:00Z',
+    detected_at: '2026-10-08T09:00:00Z',
+    ...overrides,
+  }
+}
+
+// camera is a camera of fotos, its clock agreeing with the others.
+export function camera(key: string, overrides: Partial<Camera> = {}): Camera {
+  const [make = '', model = '', serial = ''] = key.split('|')
+  return {
+    key,
+    make,
+    model,
+    serial,
+    source_id: 'fotos',
+    photos: 8,
+    state: 'ok',
+    suggested_shift_s: null,
+    events: [],
+    computed_at: '2026-10-08T09:00:00Z',
     ...overrides,
   }
 }

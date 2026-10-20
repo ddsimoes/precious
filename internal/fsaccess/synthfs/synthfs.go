@@ -37,8 +37,9 @@
 // and errors (see writer.go): a rename keeps the entry's node and identity
 // and never replaces a taken name, Mkdir gives the new folder its parent's
 // permission bits, Rmdir removes only empty folders, Sync does nothing,
-// CreateExclusive adds a file with explicit content over no taken name, and
-// Unlink removes anything but a folder.
+// CreateExclusive adds a file with explicit content over no taken name,
+// Unlink removes anything but a folder, and SetModTime stores a time as the
+// device would and refuses a file marked Foreign.
 package synthfs
 
 import (
@@ -515,6 +516,8 @@ type Node struct {
 	gen      *region
 
 	unreadable bool
+	// foreign marks a file owned by another user: SetModTime refuses it.
+	foreign    bool
 	mountPoint bool
 	hideKind   bool
 	lstatFail  domain.AccessOutcome
@@ -810,6 +813,21 @@ func (n *Node) Perm(perm fs.FileMode) *Node {
 // unreadable, as mode 0000 does: Lstat of it succeeds and reports no
 // permission bits. It advances the change time.
 func (n *Node) Unreadable() *Node { return n.change(func() { n.unreadable = true }) }
+
+// Foreign marks the entry as owned by another user (for a hard link, the
+// file its names share), so SetModTime of it fails with fsaccess.ErrPermission
+// (EPERM), as utimensat does for a process that neither owns the file nor
+// holds CAP_FOWNER. Other writes depend on the folder, not the owner, and
+// are unaffected. It does not advance the change time.
+func (n *Node) Foreign() *Node {
+	return n.modify(func() {
+		x := n
+		if n.inode != nil {
+			x = n.inode
+		}
+		x.foreign = true
+	})
+}
 
 // MountPoint lists this directory or regular file in the mount table, as a
 // same-device bind mount is.

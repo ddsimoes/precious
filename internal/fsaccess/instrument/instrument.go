@@ -3,8 +3,8 @@
 // and bytes rather than by timing (§13.1, design D3). It also offers hooks to
 // interleave test actions with calls and to inject failures. Its directories
 // implement fsaccess.Writer, so writes are counted and logged too (OpRename,
-// OpMkdir, OpRmdir, OpSync, OpCreate, OpUnlink); a wrapped directory without
-// a Writer fails them with fsaccess.ErrNoReplaceUnsupported.
+// OpMkdir, OpRmdir, OpSync, OpCreate, OpUnlink, OpSetModTime); a wrapped
+// directory without a Writer fails them with fsaccess.ErrNoReplaceUnsupported.
 package instrument
 
 import (
@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"precious/internal/fsaccess"
 )
@@ -36,15 +37,16 @@ const (
 	// a source tree.
 	OpMounts       Op = "Mounts"
 	OpCapabilities Op = "Capabilities"
-	// OpRename, OpMkdir, OpRmdir, OpSync, OpCreate, and OpUnlink are the
-	// fsaccess.Writer methods RenameNoReplace, Mkdir, Rmdir, Sync,
-	// CreateExclusive, and Unlink.
-	OpRename Op = "RenameNoReplace"
-	OpMkdir  Op = "Mkdir"
-	OpRmdir  Op = "Rmdir"
-	OpSync   Op = "Sync"
-	OpCreate Op = "CreateExclusive"
-	OpUnlink Op = "Unlink"
+	// OpRename, OpMkdir, OpRmdir, OpSync, OpCreate, OpUnlink, and
+	// OpSetModTime are the fsaccess.Writer methods RenameNoReplace, Mkdir,
+	// Rmdir, Sync, CreateExclusive, Unlink, and SetModTime.
+	OpRename     Op = "RenameNoReplace"
+	OpMkdir      Op = "Mkdir"
+	OpRmdir      Op = "Rmdir"
+	OpSync       Op = "Sync"
+	OpCreate     Op = "CreateExclusive"
+	OpUnlink     Op = "Unlink"
+	OpSetModTime Op = "SetModTime"
 )
 
 // Call is one logged call.
@@ -56,9 +58,9 @@ type Call struct {
 	// Path holds the raw components below Root that the call addresses: the
 	// directory itself for ReadBatch, FSInfo, Sync, and a directory's Close;
 	// the directory plus the name for Lstat, OpenDir, Readlink, OpenFile,
-	// Mkdir, Rmdir, CreateExclusive, and Unlink, and the old name of a
-	// RenameNoReplace; the file's path for ReadAt, FileStat, and a file's
-	// Close; nil for OpenRoot, Mounts, and Capabilities.
+	// Mkdir, Rmdir, CreateExclusive, Unlink, and SetModTime, and the old
+	// name of a RenameNoReplace; the file's path for ReadAt, FileStat, and a
+	// file's Close; nil for OpenRoot, Mounts, and Capabilities.
 	Path [][]byte
 	// To is the FullPath of a RenameNoReplace's new name (its destination
 	// directory plus the new name), empty when the destination directory
@@ -69,6 +71,8 @@ type Call struct {
 	N int
 	// Off is the offset requested by ReadAt.
 	Off int64
+	// ModTime is the time a SetModTime asked for.
+	ModTime time.Time
 	// Entries is the number of entries ReadBatch returned.
 	Entries int
 	// Bytes is the number of content bytes ReadAt returned.
@@ -482,6 +486,12 @@ func (d *dir) CreateExclusive(name, data []byte) error {
 func (d *dir) Unlink(name []byte) error {
 	c := Call{Op: OpUnlink, Root: d.root, Path: d.child(name)}
 	return d.write(c, name, func(w fsaccess.Writer) error { return w.Unlink(name) })
+}
+
+// SetModTime is logged with ModTime = t.
+func (d *dir) SetModTime(name []byte, t time.Time) error {
+	c := Call{Op: OpSetModTime, Root: d.root, Path: d.child(name), ModTime: t}
+	return d.write(c, name, func(w fsaccess.Writer) error { return w.SetModTime(name, t) })
 }
 
 type file struct {

@@ -6,6 +6,7 @@ import {
   formatDate,
   formatDateSpan,
   formatDateTime,
+  formatLocal,
   formatTimePrecision,
 } from '@/lib/format'
 
@@ -74,5 +75,17 @@ describe('formatTimePrecision', () => {
     [2_000_000_000, '2 seconds'],
   ])('formats %d ns as %s', (ns, want) => {
     expect(formatTimePrecision(ns, 'en')).toBe(want)
+  })
+})
+
+describe('formatLocal', () => {
+  it.each([
+    ['2006', 'year', null, '2006'],
+    ['2008-03', 'month', null, 'March 2008'],
+    ['2011-04-16', 'day', null, 'Apr 16, 2011'],
+    ['2008-03-22T14:00:00', 'second', -180, 'Mar 22, 2008, 2:00:00 PM UTC−03:00'],
+    ['2010-07-17T10:00:00', 'second', 330, 'Jul 17, 2010, 10:00:00 AM UTC+05:30'],
+  ] as const)('formats %s to the %s as it was on the clock', (local, precision, offset, want) => {
+    expect(formatLocal(local, precision, offset, 'en').replace(/\s/g, ' ')).toBe(want)
   })
 })

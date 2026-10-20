@@ -63,12 +63,12 @@ type result struct {
 	inode bool
 }
 
-// openRow opens a row's file through the job's chain.
+// openRow opens a row's file through the job's Opener.
 func (r *run) openRow(f *fileRow) (fsaccess.File, fsaccess.EntryInfo, *failure, error) {
 	if err := r.ctx.Err(); err != nil {
 		return nil, fsaccess.EntryInfo{}, nil, err
 	}
-	fh, info, err := r.chain.open(f.row(), r.caps)
+	fh, info, err := r.opener.open(f.row(), r.caps)
 	if err != nil {
 		fail, err := r.classify(err)
 		return nil, fsaccess.EntryInfo{}, fail, err

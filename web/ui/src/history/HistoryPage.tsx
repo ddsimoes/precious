@@ -33,7 +33,8 @@ import { useActionTitle, useOrganize } from '@/organize/useOrganize'
 // D16): what it did, when, its state and item counts, with Undo (never for
 // a cleanup, restore, or purge, R4 design D13), Cancel while it waits or
 // runs, its items on demand, the export of its items as CSV (D16), and the
-// items that need the owner's check. Organize job events keep it live.
+// items that need the owner's check. An organize by date names its folders
+// and whether it renamed the files. Organize job events keep it live.
 export function HistoryPage() {
   const { t } = useTranslation()
   const pages = useInfiniteQuery({
@@ -130,6 +131,12 @@ function ActionCard({ action }: { action: Action }) {
           bytes: fmt.bytes(action.bytes),
         })}
       </p>
+      {action.kind === 'date_organize' && action.template !== null && (
+        <p>
+          {t('history.template', { template: action.template })}
+          {action.rename && ` · ${t('history.renamed')}`}
+        </p>
+      )}
       {action.kind === 'purge' && action.state === 'done' && (
         <p>
           {t('history.purged', {

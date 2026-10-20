@@ -23,9 +23,9 @@ import (
 // write to a source. The guard type-checks every non-test package of the
 // module against the compiler's export data and fails on any use of
 // fsaccess.AsWriter or fsaccess.Writer, any call (or method value) of a
-// Writer method (RenameNoReplace, Mkdir, Rmdir, Sync, and r4's
-// CreateExclusive and Unlink) on a value implementing Writer, and any type
-// assertion that gives a Dir one of those methods.
+// Writer method (RenameNoReplace, Mkdir, Rmdir, Sync, r4's CreateExclusive
+// and Unlink, and r5's SetModTime) on a value implementing Writer, and any
+// type assertion that gives a Dir one of those methods.
 
 // writeAllowed reports whether pkg may write: internal/executor and the
 // fsaccess packages, with their subpackages.
@@ -177,7 +177,7 @@ func TestOnlyExecutorWrites(t *testing.T) {
 		return []*ast.File{f}
 	}
 	bad := check("precious/internal/fixture/bad", parse(`package bad
-import "precious/internal/fsaccess"
+import ("time"; "precious/internal/fsaccess")
 func f(d fsaccess.Dir, w fsaccess.Writer) {
 	if v, ok := fsaccess.AsWriter(d); ok { _ = v.Sync() }
 	_ = w.RenameNoReplace(nil, d, nil)
@@ -188,17 +188,20 @@ func f(d fsaccess.Dir, w fsaccess.Writer) {
 	un := w.Unlink
 	_ = un
 	_ = d.(interface{ Unlink([]byte) error })
+	_ = w.SetModTime(nil, time.Time{})
+	_ = d.(interface{ SetModTime([]byte, time.Time) error })
 }`))
-	if len(bad) != 9 {
-		t.Errorf("fixture violations = %q, want 9 (AsWriter, Writer, Sync, RenameNoReplace, Mkdir, the Rmdir assertion, "+
-			"CreateExclusive, Unlink, the Unlink assertion)", bad)
+	if len(bad) != 11 {
+		t.Errorf("fixture violations = %q, want 11 (AsWriter, Writer, Sync, RenameNoReplace, Mkdir, the Rmdir assertion, "+
+			"CreateExclusive, Unlink, the Unlink assertion, SetModTime, the SetModTime assertion)", bad)
 	}
 	if good := check("precious/internal/fixture/good", parse(`package good
-import ("io"; "os"; "precious/internal/fsaccess")
+import ("io"; "os"; "time"; "precious/internal/fsaccess")
 func f(d fsaccess.Dir, w io.Writer, file *os.File) error {
 	_ = os.Mkdir("x", 0o700)
 	if s, ok := w.(interface{ Sync() error }); ok { _ = s.Sync() }
 	if u, ok := w.(interface{ Unlink([]byte) error }); ok { _ = u.Unlink(nil) }
+	if m, ok := w.(interface{ SetModTime([]byte, time.Time) error }); ok { _ = m.SetModTime(nil, time.Time{}) }
 	_ = d.Self()
 	return file.Sync()
 }`)); len(good) != 0 {

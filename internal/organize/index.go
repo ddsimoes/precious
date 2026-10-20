@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"precious/internal/content"
+	"precious/internal/dates"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/executor"
@@ -64,14 +65,18 @@ func (a indexAdapter) ApplyRmdir(ctx context.Context, tx *sql.Tx, src domain.Sou
 	return a.rf.Refold(ctx, tx, src, []domain.EntryID{parent})
 }
 
-// ActionDone marks relations and review rows dirty once per action, and
+// ActionDone marks relations and review rows dirty once per action,
 // enqueues the source's hashing, whose plan recomputes its coverage once
-// files moved into or out of the quarantine (r4 B5).
+// files moved into or out of the quarantine (r4 B5), and requests its media
+// job, so moves and written times re-derive their dates (r5 D4).
 func (indexAdapter) ActionDone(ctx context.Context, tx *jobs.Tx, src domain.SourceID) error {
 	if err := relations.RequestRefresh(tx); err != nil {
 		return err
 	}
-	return content.EnqueueHashing(ctx, tx, src)
+	if err := content.EnqueueHashing(ctx, tx, src); err != nil {
+		return err
+	}
+	return dates.EnqueueMedia(ctx, tx, src)
 }
 
 func (indexAdapter) MissingIntentAt(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error) {
@@ -163,6 +168,14 @@ func (a indexAdapter) ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.So
 		return err
 	}
 	return a.rf.Refold(ctx, tx, src, []domain.EntryID{domain.EntryID(parent.Int64)})
+}
+
+// ApplyModTime makes the index follow a done set_mtime (r5 D15):
+// index.ApplyModTime writes the entry's times and the content rows that
+// described it, and carries the time up its folders' newest, oldest, and
+// by-year figures, without refolding them (r5 H4).
+func (indexAdapter) ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTime) error {
+	return index.ApplyModTime(ctx, tx, m)
 }
 
 // insideQuarantine reports whether path lies strictly below a source's

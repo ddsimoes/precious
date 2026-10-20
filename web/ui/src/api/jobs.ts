@@ -62,6 +62,13 @@ export type HashKind = typeof hashKind | typeof hashNowKind
 // `items` and `done`.
 export const organizeKind = 'organize'
 
+// mediaKind is the job that reads the headers of a source's photos and
+// videos and works out their dates (R5 design D4). It reports `phase` (1
+// listing them, 2 reading headers, 3 working out dates, 4 comparing
+// cameras), `files` read of `of_files`, `bytes`, `changed` (changed while
+// read), `unreadable`, and `media` dates worked out of `of_media`.
+export const mediaKind = 'media'
+
 export function isHashKind(kind: string): kind is HashKind {
   return kind === hashKind || kind === hashNowKind
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"precious/internal/fsaccess"
 )
@@ -15,6 +16,10 @@ import (
 func TestPortableWriterRefusesEverything(t *testing.T) {
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2005, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(src, "a.txt"), old, old); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(src, "vazio"), 0o755); err != nil {
@@ -36,6 +41,7 @@ func TestPortableWriterRefusesEverything(t *testing.T) {
 		"Sync":            w.Sync(),
 		"CreateExclusive": w.CreateExclusive([]byte("c.txt"), []byte("C")),
 		"Unlink":          w.Unlink([]byte("a.txt")),
+		"SetModTime":      w.SetModTime([]byte("a.txt"), time.Date(2010, 7, 17, 10, 0, 0, 0, time.UTC)),
 	} {
 		var e *fsaccess.Error
 		if !errors.As(err, &e) || e.Op != name || e.Outcome != "" || !errors.Is(err, fsaccess.ErrNoReplaceUnsupported) {
@@ -50,6 +56,12 @@ func TestPortableWriterRefusesEverything(t *testing.T) {
 	}
 	if err := w.Unlink([]byte(".")); !errors.Is(err, fsaccess.ErrInvalidName) {
 		t.Errorf("Unlink(.) = %v, want ErrInvalidName", err)
+	}
+	if err := w.SetModTime([]byte("a\x00b"), old); !errors.Is(err, fsaccess.ErrInvalidName) {
+		t.Errorf("SetModTime(a NUL b) = %v, want ErrInvalidName", err)
+	}
+	if fi, err := os.Lstat(filepath.Join(src, "a.txt")); err != nil || !fi.ModTime().Equal(old) {
+		t.Errorf("a.txt after the refused SetModTime: %v, %v; want modified at %v", fi, err, old)
 	}
 	for _, name := range []string{"a.txt", "vazio"} {
 		if _, err := os.Lstat(filepath.Join(src, name)); err != nil {

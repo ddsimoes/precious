@@ -81,15 +81,20 @@ func (p *plan) moveAll(cs []candidate, d dest) error {
 
 // finish writes the plan as an action and answers 201 with it.
 func (s *Service) finish(ctx context.Context, tx *jobs.Tx, p *plan, kind string, destination, undoOf int64) (int, any, error) {
-	id, err := p.insert(tx, kind, destination, undoOf)
-	if err != nil {
-		return 0, nil, err
-	}
-	res, err := ReadPlan(ctx, tx.SQL(), id, tx.Now())
+	res, err := s.write(ctx, tx, p, kind, destination, undoOf)
 	if err != nil {
 		return 0, nil, err
 	}
 	return http.StatusCreated, res, nil
+}
+
+// write writes the plan as an action and reads it back as a plan's answer.
+func (s *Service) write(ctx context.Context, tx *jobs.Tx, p *plan, kind string, destination, undoOf int64) (PlanResponse, error) {
+	id, err := p.insert(tx, kind, destination, undoOf)
+	if err != nil {
+		return PlanResponse{}, err
+	}
+	return ReadPlan(ctx, tx.SQL(), id, tx.Now())
 }
 
 // idCandidates loads the targets named by IDs, each once. An unknown or

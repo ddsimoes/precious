@@ -299,6 +299,9 @@ func (r *run) settle(it item, mode settleMode, notDone end) (verdict, error) {
 			return r.reconcilePurge(it)
 		}
 		return r.record(it, notDone)
+	case opSetMtime:
+		// r5 D13: one name, decided by its identity and time.
+		return r.settleSetMtime(it, mode)
 	}
 	var (
 		donev      bool

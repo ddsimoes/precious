@@ -48,9 +48,9 @@ type NewFolder struct {
 
 // ErrMissingIntent refuses to delete a missing entry that holds the name a
 // step needs while it, or an entry below it, carries the owner's intent: an
-// own decision, a tag, or a classification override (r3 design D6 step 1,
-// I4). Nothing was changed.
-var ErrMissingIntent = errors.New("index: a missing entry with the owner's decision, tags, or classification holds the name")
+// own decision, a tag, a classification override, or a date correction (r3
+// design D6 step 1, r5 design D11, I4). Nothing was changed.
+var ErrMissingIntent = errors.New("index: a missing entry with the owner's decision, tags, classification, or date correction holds the name")
 
 // place is what the functions below read of an entry.
 type place struct {
@@ -114,7 +114,8 @@ const (
 	intentSQL = `SELECT EXISTS (SELECT 1 FROM entries e WHERE e.source_id = ? AND e.path = ? AND ` + intentCond + `)
 		OR EXISTS (SELECT 1 FROM entries e WHERE e.source_id = ? AND e.path >= ? AND e.path < ? AND ` + intentCond + `)`
 	intentCond = `(e.decision IS NOT NULL OR EXISTS (SELECT 1 FROM entry_tags t WHERE t.entry_id = e.id)
-		OR EXISTS (SELECT 1 FROM entry_overrides o WHERE o.entry_id = e.id))`
+		OR EXISTS (SELECT 1 FROM entry_overrides o WHERE o.entry_id = e.id)
+		OR EXISTS (SELECT 1 FROM date_corrections dc WHERE dc.entry_id = e.id))`
 	// intentBelowSQL tells whether an entry below a path carries the
 	// owner's intent: source, lo, hi.
 	intentBelowSQL = `SELECT EXISTS (SELECT 1 FROM entries e WHERE e.source_id = ? AND e.path >= ? AND e.path < ?
@@ -174,10 +175,11 @@ func MissingIntentAt(ctx context.Context, q store.Queryer, src domain.SourceID, 
 }
 
 // IntentBelow reports whether an entry strictly below the folder at path in
-// src carries owner intent (its own decision, a tag, or an override),
-// whatever its state. A missing one is not a child the disk shows, yet
-// removing the folder above it would lose that intent (design V2); a present
-// one is a child anyway. path is a folder's, never the source root's.
+// src carries owner intent (its own decision, a tag, an override, or a date
+// correction), whatever its state. A missing one is not a child the disk
+// shows, yet removing the folder above it would lose that intent (design
+// V2); a present one is a child anyway. path is a folder's, never the
+// source root's.
 func IntentBelow(ctx context.Context, q store.Queryer, src domain.SourceID, path []byte) (bool, error) {
 	if len(path) == 0 {
 		return false, errors.New("index: IntentBelow needs a folder below the source root")
@@ -276,8 +278,8 @@ func folderIn(ctx context.Context, tx *sql.Tx, src domain.SourceID, id domain.En
 //     (a folder) and of every folder below it are rewritten alike;
 //  4. its entry_names row changes with its name;
 //  5. the post-step facts of the entry and of both parents are written, and
-//     a file's file_content and archives rows take its new change time, when
-//     they describe the file as stored before the step.
+//     a file's file_content, archives, and media_meta rows take its new
+//     change time, when they describe the file as stored before the step.
 //
 // It refuses a move to another source, a move of a folder into itself or
 // below itself, a source's root, and an entry that is missing. The caller
@@ -391,12 +393,12 @@ func writeFacts(ctx context.Context, tx *sql.Tx, id domain.EntryID, f PostFacts)
 	return nil
 }
 
-// keepContent gives the file e's file_content and archives rows its change
-// time after a rename, so that hashing and listing do not take the rename
-// for a change. Only rows that describe the file as e stored it before the
-// step (size, times, inode) are updated, and only when the step left its
-// modification time and inode as stored: anything else is a change since
-// the last read, which those jobs must see.
+// keepContent gives the file e's file_content, archives, and media_meta
+// rows its change time after a rename, so that hashing, listing, and header
+// reading do not take the rename for a change. Only rows that describe the
+// file as e stored it before the step (size, times, inode) are updated, and
+// only when the step left its modification time and inode as stored:
+// anything else is a change since the last read, which those jobs must see.
 func keepContent(ctx context.Context, tx *sql.Tx, e *place, f PostFacts) error {
 	if !e.mtime.ok || e.mtime.v != f.MtimeNs || !e.in.ok || uint64(e.in.v) != f.Ino {
 		return nil
@@ -405,7 +407,7 @@ func keepContent(ctx context.Context, tx *sql.Tx, e *place, f PostFacts) error {
 	if f.CtimeNs != 0 {
 		ctime = f.CtimeNs
 	}
-	for _, table := range []string{"file_content", "archives"} {
+	for _, table := range contentTables {
 		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET ctime_ns = ? WHERE entry_id = ? AND size = ?
 			AND mtime_ns IS ? AND ctime_ns IS ? AND ino IS ?`,
 			ctime, int64(e.id), e.size, e.mtime.arg(), e.ctime.arg(), e.in.arg()); err != nil {

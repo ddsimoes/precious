@@ -61,6 +61,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
         '[sources]',
         `allowed_roots = [${JSON.stringify(join(tmp, 'disk'))}]`,
         '',
+        // The corpus's date truth is derived in UTC (r5 design D19).
+        '[dates]',
+        'time_zone = "UTC"',
+        '',
       ].join('\n'),
     )
     setPassword(binary, config)

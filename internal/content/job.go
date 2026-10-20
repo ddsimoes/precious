@@ -157,7 +157,7 @@ type run struct {
 	source domain.SourceID
 	root   fsaccess.Dir
 	caps   fsaccess.Capabilities
-	chain  *chain
+	opener *Opener
 
 	buf, abuf  []byte
 	sum        hash.Hash
@@ -199,9 +199,9 @@ func (h *handler) Run(ctx context.Context, job jobs.Job, rt jobs.Runtime) error 
 		return err
 	}
 	r.root, r.caps = opened.Root, opened.Source.Caps
-	r.chain = &chain{root: opened.Root, calls: rt}
+	r.opener = NewOpener(opened.Root, rt)
 	defer func() {
-		r.chain.close()
+		r.opener.Close()
 		done := rt.FSCall("Close")
 		_ = opened.Root.Close()
 		done()

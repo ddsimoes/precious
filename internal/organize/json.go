@@ -20,7 +20,7 @@ var itemStates = []string{"planned", "refused", "conflict", "intent", "done", "n
 	"failed", "no_safe_rename", "not_empty", "manual_recovery", "not_attempted", "resolved", "blocked"}
 
 // itemOps are the ops of an item, which the history's items filter on.
-var itemOps = []string{opRename, opMkdir, opRmdir, opRecord, opUnlink, opPurge, opVerify}
+var itemOps = []string{opRename, opMkdir, opRmdir, opRecord, opUnlink, opPurge, opVerify, opSetMtime}
 
 // Why an action cannot be undone (Action.undo.reason).
 const (
@@ -66,6 +66,10 @@ type actionJSON struct {
 	DeletedFiles int64   `json:"deleted_files"`
 	DeletedBytes int64   `json:"deleted_bytes"`
 	FreedBytes   int64   `json:"freed_bytes"`
+	// R5: a date organize's template, null for other kinds, and whether it
+	// renames each file to its date and time (r5 D16).
+	Template *string `json:"template"`
+	Rename   bool    `json:"rename"`
 }
 
 type undoJSON struct {
@@ -116,7 +120,31 @@ type itemJSON struct {
 	// KeptCount is, for a blocked cleanup item, how many entries at or
 	// below it the owner keeps (r4 D3); the kept read lists them.
 	KeptCount *int64 `json:"kept_count,omitempty"`
+	// R5: a set_mtime's times (r5 Interfaces), and, for an item refused
+	// identical_copy, the entry holding its name with the same content
+	// (D17).
+	Mtime  *mtimeJSON  `json:"mtime,omitempty"`
+	CopyOf *copyOfJSON `json:"copy_of,omitempty"`
 }
+
+// mtimeJSON is a set_mtime's modification times, UTC with nanoseconds:
+// from is the time its step found on disk once journaled, else the index's
+// (null when unknown); to is the time it sets.
+type mtimeJSON struct {
+	From *time.Time `json:"from"`
+	To   time.Time  `json:"to"`
+}
+
+// copyOfJSON names the entry an identical_copy item duplicates, at its
+// path now.
+type copyOfJSON struct {
+	Entry   string `json:"entry"`
+	Path    string `json:"path"`
+	PathB64 []byte `json:"path_b64"`
+}
+
+// nsTime is a time in nanoseconds since the epoch, in UTC.
+func nsTime(ns int64) time.Time { return time.Unix(0, ns).UTC() }
 
 // page is a page of actions or items.
 type page[T any] struct {
@@ -191,7 +219,7 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 	destOf := map[int64]int64{}
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind, source_id, state, bulk, destination_id, undo_of, kept_lost,
 		job_id, created_at, expires_at, started_at, finished_at, ground, list, check_id, deleted_files, deleted_bytes,
-		freed_bytes FROM actions WHERE id IN (`+in+`)`, args...)
+		freed_bytes, template, rename FROM actions WHERE id IN (`+in+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("organize: read actions: %w", err)
 	}
@@ -200,19 +228,19 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 			a                                        actionJSON
 			id, created                              int64
 			dest, undoOf, job, expires, start, finsh sql.NullInt64
-			ground, list                             sql.NullString
+			ground, list, template                   sql.NullString
 			check                                    sql.NullInt64
 		)
 		if err := rows.Scan(&id, &a.Kind, &a.SourceID, &a.State, &a.Bulk, &dest, &undoOf, &a.KeptLost, &job, &created,
 			&expires, &start, &finsh, &ground, &list, &check, &a.DeletedFiles, &a.DeletedBytes,
-			&a.FreedBytes); err != nil {
+			&a.FreedBytes, &template, &a.Rename); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		a.ID, a.UndoOf, a.JobID = strconv.FormatInt(id, 10), idString(undoOf), idString(job)
 		a.CreatedAt, a.ExpiresAt, a.StartedAt, a.FinishedAt = clock.FromMillis(created).UTC(), timeOf(expires),
 			timeOf(start), timeOf(finsh)
-		a.Ground, a.List, a.CheckID = strPtr(ground), strPtr(list), idString(check)
+		a.Ground, a.List, a.CheckID, a.Template = strPtr(ground), strPtr(list), idString(check), strPtr(template)
 		if a.State == "planned" && expires.Valid && expires.Int64 <= clock.Millis(now) {
 			a.State = "expired"
 		}
@@ -245,10 +273,8 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 			coalesce(sum(i.bytes) FILTER (WHERE i.state IN ('planned', 'intent', 'done')), 0),
 			coalesce(sum(i.files) FILTER (WHERE i.state IN ('planned', 'intent', 'done')), 0),
 			count(*) FILTER (WHERE i.reversed_by IS NOT NULL),
-			count(*) FILTER (WHERE i.state = 'done' AND i.entry_id IS NOT NULL
-				AND (i.op = 'rename' OR i.op = 'mkdir' AND i.created = 1)),
-			count(*) FILTER (WHERE i.state = 'done' AND i.entry_id IS NOT NULL
-				AND (i.op = 'rename' OR i.op = 'mkdir' AND i.created = 1) AND i.reversed_by IS NULL),
+			count(*) FILTER (WHERE i.state = 'done' AND `+reversibleCond+`),
+			count(*) FILTER (WHERE i.state = 'done' AND `+reversibleCond+` AND i.reversed_by IS NULL),
 			count(*) FILTER (WHERE a.kind IN ('cleanup', 'restore') AND i.op = 'rename'
 				OR a.kind = 'purge' AND i.op = 'purge')
 		FROM action_items i JOIN actions a ON a.id = i.action_id
@@ -319,8 +345,10 @@ func readActions(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) ([
 // only those in states and of ops when they are not empty.
 func readItems(ctx context.Context, tx *sql.Tx, action int64, states, ops []string, after int64, limit int) (page[itemJSON], error) {
 	query := `SELECT i.id, i.seq, i.op, i.entry_id, i.from_path, i.to_path, i.state, i.reason, i.decision_after,
-		i.detail, i.reversed_by IS NOT NULL, i.bytes, i.files, a.source_id
-		FROM action_items i JOIN actions a ON a.id = i.action_id WHERE i.action_id = ? AND i.seq > ?`
+		i.detail, i.reversed_by IS NOT NULL, i.bytes, i.files, a.source_id, i.new_mtime_ns, i.prev_mtime_ns,
+		e.mtime_ns, i.copy_of, c.path
+		FROM action_items i JOIN actions a ON a.id = i.action_id LEFT JOIN entries e ON e.id = i.entry_id
+		LEFT JOIN entries c ON c.id = i.copy_of WHERE i.action_id = ? AND i.seq > ?`
 	args := []any{action, after}
 	if len(states) > 0 {
 		query += ` AND i.state IN (` + placeholders(len(states)) + `)`
@@ -350,19 +378,34 @@ func readItems(ctx context.Context, tx *sql.Tx, action int64, states, ops []stri
 	)
 	for rows.Next() {
 		var (
-			it               itemJSON
-			id               int64
-			entry            sql.NullInt64
-			from, to         sql.Null[[]byte]
-			reason, after, d sql.NullString
+			it                               itemJSON
+			id                               int64
+			entry, newMt, prevMt, idxMt, cop sql.NullInt64
+			from, to, copyPath               sql.Null[[]byte]
+			reason, after, d                 sql.NullString
 		)
 		if err := rows.Scan(&id, &it.Seq, &it.Op, &entry, &from, &to, &it.State, &reason, &after, &d, &it.Reversed,
-			&it.Bytes, &it.Files, &src); err != nil {
+			&it.Bytes, &it.Files, &src, &newMt, &prevMt, &idxMt, &cop, &copyPath); err != nil {
 			rows.Close()
 			return page[itemJSON]{}, err
 		}
 		it.ID, it.From, it.To = strconv.FormatInt(id, 10), pathOf(from), pathOf(to)
 		it.Reason, it.DecisionAfter, it.Detail = strPtr(reason), strPtr(after), strPtr(d)
+		if newMt.Valid {
+			m := &mtimeJSON{To: nsTime(newMt.Int64)}
+			switch {
+			case prevMt.Valid:
+				t := nsTime(prevMt.Int64)
+				m.From = &t
+			case idxMt.Valid && domain.KnownModTime(idxMt.Int64):
+				t := nsTime(idxMt.Int64)
+				m.From = &t
+			}
+			it.Mtime = m
+		}
+		if p := pathOf(copyPath); cop.Valid && p != nil {
+			it.CopyOf = &copyOfJSON{Entry: strconv.FormatInt(cop.Int64, 10), Path: p.Path, PathB64: p.PathB64}
+		}
 		if d.Valid && (it.State == "manual_recovery" || it.State == "resolved") {
 			var f foundJSON
 			if err := json.Unmarshal([]byte(d.String), &f); err == nil && f.From != "" && f.To != "" {

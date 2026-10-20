@@ -17,6 +17,7 @@ import (
 	"precious/internal/commands"
 	"precious/internal/config"
 	"precious/internal/content"
+	"precious/internal/dates"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/executor"
@@ -84,11 +85,18 @@ func newWorld(t *testing.T) *world {
 	relations.NewHandler(w.st, w.clk, cfg.Duplicates, func(ctx context.Context, gen int64) error {
 		return review.Refresh(ctx, w.st, gen)
 	}).Register(r)
+	// The media job, as serve wires it: organizing's ActionDone requests it.
+	mediaDates := dates.New(dates.Options{Store: w.st, Runner: r, Sources: srcs, Zone: time.UTC, Clock: w.clk,
+		Logger: log})
+	mediaDates.DeferWhile(executor.OrganizeActive)
+	mediaDates.Register(r)
 	scanner.OnScanDone(func(ctx context.Context, src domain.SourceID) {
 		hashing.AfterScan(ctx, src)
 		_ = r.Write(ctx, relations.RequestRefresh)
+		mediaDates.AfterScan(ctx, src)
 	})
-	w.org = organize.New(organize.Options{Store: w.st, Policy: pol, AllowWrites: true, Clock: w.clk, Logger: log})
+	w.org = organize.New(organize.Options{Store: w.st, Policy: pol, AllowWrites: true, Clock: w.clk, Logger: log,
+		Dates: mediaDates})
 	ex := executor.New(executor.Options{Store: w.st, Sources: srcs, Index: w.org.Index(), AllowWrites: true,
 		Clock: w.clk, Logger: log, Content: hashing})
 	ex.Register(r)

@@ -136,3 +136,13 @@ allow_insecure_http = true
 # How often duplicate folders and the review lists are recomputed while
 # hashing runs (1 minute to 24 hours).
 # refresh_interval = "10m"
+
+[dates]
+# The IANA time zone, such as "Europe/Lisbon" or "UTC", that photo and video
+# dates are read in when the file records no offset (most camera capture
+# times, and dates in file and folder names). Set it to the zone the cameras'
+# clocks were set to. Unset, it is the server's local zone, and check-config
+# and the server's start warn; that zone is UTC in the container image.
+# Mount FAT sources in this same zone, or their modification times shift: see
+# "Configuration reference" in docs/operator.md.
+time_zone = "America/Sao_Paulo"

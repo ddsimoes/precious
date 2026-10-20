@@ -6,6 +6,7 @@ import { NotFoundPage } from '@/app/NotFoundPage'
 import { CheckReportPage } from '@/cleanup/CheckReport'
 import { CleanupPage } from '@/cleanup/CleanupPage'
 import { ComparePage } from '@/compare/ComparePage'
+import { DatesPage } from '@/dates/DatesPage'
 import { HistoryPage } from '@/history/HistoryPage'
 import { HomePage } from '@/home/HomePage'
 import { MapPage } from '@/map/MapPage'
@@ -29,6 +30,9 @@ export const routes: RouteObject[] = [
       { path: 'opportunities', element: <OpportunitiesPage /> },
       { path: 'opportunities/similar', element: <SimilarFoldersPage /> },
       { path: 'opportunities/:list', element: <ReviewListPage /> },
+      // Dates: one source's media dates, cameras, and corrections, the
+      // list's filters in the address (?source=&flag=&date_source=&camera=&within=).
+      { path: 'dates', element: <DatesPage /> },
       // Compare names its two sides in the address: ?left=&right=&bucket=.
       { path: 'compare', element: <ComparePage /> },
       // Cleanup: plans and the quarantine, ?source= limiting them to one

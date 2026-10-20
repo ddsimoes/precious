@@ -17,8 +17,10 @@
 // more primitives exist only for the quarantine (r4 design D12), which the
 // executor checks before calling them: CreateExclusive writes a new file
 // that never replaces an existing name, and Unlink removes a non-folder
-// entry. Nothing else writes a file's content, and nothing changes an
-// existing file's content or metadata.
+// entry. SetModTime sets an entry's modification time, leaving its content
+// and access time, for the owner's "Set file dates" (r5 design D12). Nothing
+// else writes a file's content, and nothing else changes an existing file's
+// content or metadata.
 //
 // Names are raw bytes exactly as returned by the operating system. A name passed
 // to a Dir method must be a single path component: non-empty, not "." or "..",

@@ -80,16 +80,44 @@ type noCalls struct{}
 
 func (noCalls) FSCall(string) func() { return func() {} }
 
-// chain is the folder chain open below a source root: walking a path
+// Opener is the folder chain open below a source root: walking a path
 // reuses the prefix it shares with the previous walk. Every folder is
 // reached by Lstat then OpenDir with that lstat, so nothing is followed
-// through a symlink and no mount is crossed.
-type chain struct {
+// through a symlink and no mount is crossed. OpenAt, the hashing job, and
+// the media job (r5 design D4) open files through it. It is not safe for
+// concurrent use.
+type Opener struct {
 	root  fsaccess.Dir
 	calls FSCaller
 	names [][]byte
 	dirs  []fsaccess.Dir
 }
+
+// NewOpener returns an Opener below root, bracketing each filesystem call
+// with calls (a job's Runtime); nil watches nothing. Close closes the
+// folders it opened; root stays open.
+func NewOpener(root fsaccess.Dir, calls FSCaller) *Opener {
+	if calls == nil {
+		calls = noCalls{}
+	}
+	return &Opener{root: root, calls: calls}
+}
+
+// Open opens r's file as OpenAt does, with OpenAt's errors: a path that is
+// gone, replaced, changed, or unreadable is a domain invalid_entry_state
+// error (an unreadable one carries fsaccess.OutcomeUnreadable, and a gone or
+// replaced one its outcome), and any other failure is returned as is. The
+// caller closes the file.
+func (c *Opener) Open(r Row, caps fsaccess.Capabilities) (fsaccess.File, fsaccess.EntryInfo, error) {
+	f, info, err := c.open(r, caps)
+	if err != nil {
+		return nil, fsaccess.EntryInfo{}, entryStateError(err, r.Path)
+	}
+	return f, info, nil
+}
+
+// Close closes the folders of the chain.
+func (c *Opener) Close() { c.closeFrom(0) }
 
 // walkError is a failure of the walk to a file: the operation that failed
 // and its error (an *fsaccess.Error with an outcome), or errMismatch.
@@ -107,7 +135,7 @@ var errMismatch = errors.New("content: the path no longer matches the index")
 
 // dir returns the open folder holding path's last component, and that
 // component.
-func (c *chain) dir(path []byte) (fsaccess.Dir, []byte, error) {
+func (c *Opener) dir(path []byte) (fsaccess.Dir, []byte, error) {
 	comps := bytes.Split(path, []byte{'/'})
 	name, folders := comps[len(comps)-1], comps[:len(comps)-1]
 	k := 0
@@ -142,7 +170,7 @@ func (c *chain) dir(path []byte) (fsaccess.Dir, []byte, error) {
 }
 
 // closeFrom closes the folders of the chain from depth k down.
-func (c *chain) closeFrom(k int) {
+func (c *Opener) closeFrom(k int) {
 	for i := len(c.dirs) - 1; i >= k; i-- {
 		done := c.calls.FSCall("Close")
 		_ = c.dirs[i].Close()
@@ -153,11 +181,10 @@ func (c *chain) closeFrom(k int) {
 	}
 }
 
-func (c *chain) close() { c.closeFrom(0) }
-
 // open walks r's path and opens its file when an lstat matches r under
-// caps; the open itself checks the opened object is the one lstat saw.
-func (c *chain) open(r Row, caps fsaccess.Capabilities) (fsaccess.File, fsaccess.EntryInfo, error) {
+// caps; the open itself checks the opened object is the one lstat saw. Its
+// errors are the walk's (walkError), which the hashing job classifies.
+func (c *Opener) open(r Row, caps fsaccess.Capabilities) (fsaccess.File, fsaccess.EntryInfo, error) {
 	dir, name, err := c.dir(r.Path)
 	if err != nil {
 		return nil, fsaccess.EntryInfo{}, err
@@ -188,13 +215,9 @@ func (c *chain) open(r Row, caps fsaccess.Capabilities) (fsaccess.File, fsaccess
 // failure (an I/O error) is returned as is. The viewer and hashing share
 // this walk (design D17). The caller closes the file; root stays open.
 func OpenAt(root fsaccess.Dir, r Row, caps fsaccess.Capabilities) (fsaccess.File, fsaccess.EntryInfo, error) {
-	c := &chain{root: root, calls: noCalls{}}
-	defer c.close()
-	f, info, err := c.open(r, caps)
-	if err != nil {
-		return nil, fsaccess.EntryInfo{}, entryStateError(err, r.Path)
-	}
-	return f, info, nil
+	o := NewOpener(root, nil)
+	defer o.Close()
+	return o.Open(r, caps)
 }
 
 // entryStateError maps a failed walk to invalid_entry_state where the path

@@ -18,6 +18,7 @@ import (
 	"precious/internal/commands"
 	"precious/internal/config"
 	"precious/internal/content"
+	"precious/internal/dates"
 	"precious/internal/decisions"
 	"precious/internal/domain"
 	"precious/internal/executor"
@@ -80,6 +81,7 @@ type world struct {
 	r       *jobs.Runner
 	clk     *testClock
 	org     *Service
+	dates   *dates.Service
 	scanner *index.Handler
 	hashing *content.Service
 	mux     *http.ServeMux
@@ -115,11 +117,15 @@ func newWorld(t *testing.T) *world {
 		return review.Refresh(ctx, w.st, gen)
 	})
 	relate.Register(r)
+	w.dates = dates.New(dates.Options{Store: w.st, Runner: r, Sources: srcs, Zone: time.UTC, Clock: w.clk, Logger: log})
+	w.dates.DeferWhile(executor.OrganizeActive)
+	w.dates.Register(r)
 	w.scanner.OnScanDone(func(ctx context.Context, src domain.SourceID) {
 		w.hashing.AfterScan(ctx, src)
 		_ = r.Write(ctx, relations.RequestRefresh)
+		w.dates.AfterScan(ctx, src)
 	})
-	w.org = New(Options{Store: w.st, Policy: pol, AllowWrites: true, Clock: w.clk, Logger: log})
+	w.org = New(Options{Store: w.st, Policy: pol, AllowWrites: true, Clock: w.clk, Logger: log, Dates: w.dates})
 	ex := executor.New(executor.Options{Store: w.st, Sources: srcs, Index: w.org.Index(), AllowWrites: true,
 		Clock: w.clk, Logger: log, Content: w.hashing})
 	ex.Register(r)
@@ -181,8 +187,14 @@ func (w *world) disk(id domain.SourceID, path string, caps fsaccess.Capabilities
 // scans it.
 func (w *world) add(id domain.SourceID, path string, root *synthfs.Node, caps fsaccess.Capabilities) {
 	w.t.Helper()
+	w.addAs(id, path, root, caps, "ext4")
+}
+
+// addAs is add with the volume's filesystem type.
+func (w *world) addAs(id domain.SourceID, path string, root *synthfs.Node, caps fsaccess.Capabilities, fsType string) {
+	w.t.Helper()
 	dev := root.Info().Dev
-	vol := fsaccess.Volume{Kind: fsaccess.VolumeUUID, ID: "uuid-" + string(id), FSType: "ext4",
+	vol := fsaccess.Volume{Kind: fsaccess.VolumeUUID, ID: "uuid-" + string(id), FSType: fsType,
 		DeviceKey: "dev:" + string(id), Strong: true}
 	w.sfs.SetVolume(dev, vol)
 	w.sfs.SetCapabilities(dev, caps)
@@ -191,8 +203,8 @@ func (w *world) add(id domain.SourceID, path string, root *synthfs.Node, caps fs
 		w.t.Fatal(err)
 	}
 	w.exec(`INSERT INTO sources (id, label, volume_kind, volume_id, fs_type, strong, rel_root, device_key, capabilities,
-		state, mount_point, created_at, write_enabled) VALUES (?, ?, 'uuid', ?, 'ext4', 1, X'', ?, ?, 'online', ?, 0, 1)`,
-		string(id), string(id), vol.ID, vol.DeviceKey, string(capsJSON), []byte(path))
+		state, mount_point, created_at, write_enabled) VALUES (?, ?, 'uuid', ?, ?, 1, X'', ?, ?, 'online', ?, 0, 1)`,
+		string(id), string(id), vol.ID, fsType, vol.DeviceKey, string(capsJSON), []byte(path))
 	w.exec(`INSERT INTO entries (source_id, parent_id, name, path, kind, state, first_seen, last_seen, scan_gen)
 		VALUES (?, NULL, X'', X'', 'directory', 'present', 0, 0, 0)`, string(id))
 	w.scan(id)

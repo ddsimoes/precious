@@ -30,3 +30,9 @@ allow_insecure_http = true
 # compose.yaml mounts every source read-only below /sources; the picker offers
 # that folder only.
 allowed_roots = ["/sources"]
+
+[dates]
+# The zone photo and video dates are read in when the file records no offset;
+# set it to the zone the cameras' clocks were set to. The container's own
+# zone is UTC, which precious would use, with a warning, if this were unset.
+time_zone = "America/Sao_Paulo"

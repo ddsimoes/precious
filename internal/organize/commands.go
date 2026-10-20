@@ -3,10 +3,14 @@ package organize
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 
 	"precious/internal/commands"
+	"precious/internal/dates"
 	"precious/internal/domain"
 	"precious/internal/jobs"
+	"precious/internal/media"
 )
 
 // Command names, the {name} segment of POST /api/commands/{name}.
@@ -20,6 +24,9 @@ const (
 	CommandRunAction        = "run-action"
 	CommandCancelAction     = "cancel-action"
 	CommandResolveRecovery  = "resolve-recovery"
+	// R5 (r5 D14, D16).
+	CommandPlanSetMtime     = "plan-set-mtime"
+	CommandPlanDateOrganize = "plan-date-organize"
 )
 
 // RegisterCommands installs the organize commands on h (r3 design
@@ -30,6 +37,11 @@ const (
 //     {"parent_id","name"}, plan-rescue {"folder_id","destination_id"},
 //     plan-merge {"left_id","right_id","from"}, plan-undo
 //     {"action_id","destination_id"?}: 201 {"action","items","next_cursor"};
+//   - plan-set-mtime {"entry_ids"|"folder_ids"(,"camera_key")}: 201, with
+//     "summary":{"unchanged"} (r5 D14);
+//   - plan-date-organize {"entry_ids"|"folder_ids", "destination_id",
+//     "template"?, "rename"?}: 201, with "summary":{"files_with_copies",
+//     "split_siblings"} (r5 D16, D17);
 //   - run-action {"action_id"}: 202 {"action","job_id","state"};
 //   - cancel-action {"action_id"}: 200 {"action"};
 //   - resolve-recovery {"item_id"}: 200 {"action","scan":{"job_id","coalesced"}}.
@@ -40,6 +52,8 @@ func (s *Service) RegisterCommands(h *commands.Handler) {
 	h.Register(CommandPlanRescue, s.decodePlanRescue)
 	h.Register(CommandPlanMerge, s.decodePlanMerge)
 	h.Register(CommandPlanUndo, s.decodePlanUndo)
+	h.Register(CommandPlanSetMtime, s.decodePlanSetMtime)
+	h.Register(CommandPlanDateOrganize, s.decodePlanDateOrganize)
 	h.Register(CommandRunAction, s.decodeRunAction)
 	h.Register(CommandCancelAction, s.decodeCancelAction)
 	h.Register(CommandResolveRecovery, s.decodeResolveRecovery)
@@ -232,4 +246,64 @@ func (s *Service) decodeResolveRecovery(body []byte) (commands.Operation, error)
 	return newOp(body, &req, check, func(ctx context.Context, tx *jobs.Tx) (int, any, error) {
 		return s.resolveRecovery(ctx, tx, req.ItemID)
 	})
+}
+
+// planSetMtimeRequest is plan-set-mtime's body: dates.Targets without
+// entry_id (r5 D14).
+type planSetMtimeRequest struct {
+	dates.Targets
+}
+
+func (s *Service) decodePlanSetMtime(body []byte) (commands.Operation, error) {
+	var req planSetMtimeRequest
+	check := func() error { return req.Validate(false) }
+	return newOp(body, &req, check, func(ctx context.Context, tx *jobs.Tx) (int, any, error) {
+		return s.planSetMtime(ctx, tx, req)
+	})
+}
+
+// planDateOrganizeRequest is plan-date-organize's body: dates.Targets
+// without entry_id and camera_key, the destination folder, the template
+// (media.DefaultTemplate when empty), and rename (r5 D16).
+type planDateOrganizeRequest struct {
+	dates.Targets
+	DestinationID string `json:"destination_id"`
+	Template      string `json:"template,omitempty"`
+	Rename        bool   `json:"rename,omitempty"`
+}
+
+func (s *Service) decodePlanDateOrganize(body []byte) (commands.Operation, error) {
+	var (
+		req  planDateOrganizeRequest
+		tmpl media.Template
+	)
+	check := func() error {
+		if err := req.Validate(false); err != nil {
+			return err
+		}
+		if req.CameraKey != "" {
+			return domain.Errorf(domain.CodeInvalidRequest, "camera_key is not accepted here; use folder_ids or entry_ids")
+		}
+		if err := required("destination_id", req.DestinationID); err != nil {
+			return err
+		}
+		var err error
+		tmpl, err = templateArg(req.Template)
+		return err
+	}
+	return newOp(body, &req, check, func(ctx context.Context, tx *jobs.Tx) (int, any, error) {
+		return s.planDateOrganize(ctx, tx, req, tmpl)
+	})
+}
+
+// templateArg parses a date organize's template; a bad one is
+// invalid_request (r5 Addendum P1).
+func templateArg(s string) (media.Template, error) {
+	t, err := media.ParseTemplate(s)
+	if errors.Is(err, media.ErrInvalidTemplate) {
+		why := strings.TrimPrefix(err.Error(), media.ErrInvalidTemplate.Error()+": ")
+		return media.Template{}, domain.Wrap(domain.CodeInvalidRequest, err,
+			"the template %q is not valid (%s): use 1 to 4 folders of text and {year}, {month}, {day}, and {event}", s, why)
+	}
+	return t, err
 }

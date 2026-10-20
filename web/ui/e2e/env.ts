@@ -36,6 +36,34 @@ export interface TruthEntry {
   size?: number
   sha256?: string
   unreadable?: boolean
+  // date is set for every image and video.
+  date?: TruthDate
+}
+
+// TruthDate is a media file's effective date for the zone UTC, without
+// corrections, after the media job (r5 design D19). effective is the instant
+// (RFC 3339, UTC; the start of the period when coarser than a second), null
+// for source "none"; local is in the form of its precision ("YYYY",
+// "YYYY-MM", "YYYY-MM-DD", or "YYYY-MM-DDTHH:MM:SS"); flags are the flag
+// names in bit order.
+export interface TruthDate {
+  effective: string | null
+  local: string
+  precision: 'second' | 'day' | 'month' | 'year' | ''
+  source: 'owner' | 'exif' | 'gps' | 'container' | 'file_name' | 'folder_name' | 'mtime' | 'none'
+  refined: boolean
+  flags: ('mtime_disagrees' | 'implausible' | 'camera_offset' | 'no_date_metadata')[]
+}
+
+// TruthCamera is a camera the media job's cameras pass lists: the photos it
+// was given, and for the camera with a clock offset its suggested shift and
+// event folders (by display path); shift_s is 0 and folders empty when it is
+// ok.
+export interface TruthCamera {
+  key: string
+  shift_s: number
+  photos: number
+  folders: string[]
 }
 
 // TruthPath names an entry, or an archive member as "archive!member/path".
@@ -83,13 +111,15 @@ export interface TruthRescue {
 
 // GroundTruth is the corpus's ground_truth.json (internal/corpus): its
 // entries, duplicate groups, archive listings, declared relations (a lower
-// bound: relate may find more), and the rescue card's rows, each in its order.
+// bound: relate may find more), the rescue card's rows, each in its order,
+// and the cameras of the media dates (r5).
 export interface GroundTruth {
   entries: TruthEntry[]
   duplicates: TruthDuplicate[]
   members: TruthArchive[]
   relations: TruthRelation[]
   rescue: TruthRescue[]
+  cameras: TruthCamera[]
 }
 
 // groundTruth reads the ground truth of the corpus global-setup.ts wrote.

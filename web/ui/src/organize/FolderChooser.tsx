@@ -34,14 +34,27 @@ interface FolderChooserProps {
   // blocked are the entries being moved: neither they nor any folder below
   // them can be the destination.
   blocked?: string[]
-  onChoose: (folder: Folder) => void
+  // onChoose gets the chosen folder and the trail to it, from the source's
+  // top folder named after the source.
+  onChoose: (folder: Folder, trail: Folder[]) => void
+  // chooseLabel names the button that chooses the current folder; Move
+  // here by default.
+  chooseLabel?: string
   onClose: () => void
 }
 
-// FolderChooser picks the destination of a move by browsing the folders of
-// the index (R3 design D16), never by a typed path. It can make a new
-// folder inside the current one.
-export function FolderChooser({ title, sourceIds, start, blocked = [], onChoose, onClose }: FolderChooserProps) {
+// FolderChooser picks the destination of a move, or a folder a screen
+// works on, by browsing the folders of the index (R3 design D16), never by
+// a typed path. It can make a new folder inside the current one.
+export function FolderChooser({
+  title,
+  sourceIds,
+  start,
+  blocked = [],
+  onChoose,
+  chooseLabel,
+  onClose,
+}: FolderChooserProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const csrfToken = useCsrfToken()
@@ -233,9 +246,9 @@ export function FolderChooser({ title, sourceIds, start, blocked = [], onChoose,
         <Button
           type="button"
           disabled={current === undefined || blockedHere}
-          onClick={() => current !== undefined && onChoose(current)}
+          onClick={() => current !== undefined && onChoose(current, trail)}
         >
-          {t('organize.chooser.here')}
+          {chooseLabel ?? t('organize.chooser.here')}
         </Button>
       </div>
     </Dialog>

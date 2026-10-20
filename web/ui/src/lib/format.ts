@@ -58,6 +58,55 @@ export function formatDateTime(time: string, locale: string): string {
   )
 }
 
+// formatInstant formats an RFC 3339 time to the second, in the browser's
+// time zone: a file's modification time before and after it is set.
+export function formatInstant(time: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(time))
+}
+
+// LocalPrecision is how precisely a media date is known (R5 design D5).
+export type LocalPrecision = 'second' | 'day' | 'month' | 'year'
+
+// localMillis reads a media date written as YYYY, YYYY-MM, YYYY-MM-DD, or
+// YYYY-MM-DDTHH:MM:SS as if it were UTC, so its fields can be formatted
+// and shifted without any time zone; missing fields start their period.
+export function localMillis(local: string): number {
+  const field = (start: number, end: number, fallback: number) =>
+    local.length >= end ? Number(local.slice(start, end)) : fallback
+  const date = new Date(0)
+  date.setUTCFullYear(field(0, 4, 1970), field(5, 7, 1) - 1, field(8, 10, 1))
+  date.setUTCHours(field(11, 13, 0), field(14, 16, 0), field(17, 19, 0), 0)
+  return date.getTime()
+}
+
+const localStyles: Record<LocalPrecision, Intl.DateTimeFormatOptions> = {
+  year: { year: 'numeric' },
+  month: { year: 'numeric', month: 'long' },
+  day: { dateStyle: 'medium' },
+  second: { dateStyle: 'medium', timeStyle: 'medium' },
+}
+
+// formatLocal formats a media date as it was on the clock where it was
+// taken (the server's wall time, never moved to the browser's zone), to
+// its precision, with its UTC offset when the file records one: "2006",
+// "March 2008", "Apr 16, 2011", "Mar 22, 2008, 2:00:00 PM UTC−03:00".
+export function formatLocal(
+  local: string,
+  precision: LocalPrecision,
+  offsetMin: number | null,
+  locale: string,
+): string {
+  const text = new Intl.DateTimeFormat(locale, { ...localStyles[precision], timeZone: 'UTC' }).format(
+    new Date(localMillis(local)),
+  )
+  if (offsetMin === null) {
+    return text
+  }
+  const abs = Math.abs(offsetMin)
+  const offset = `${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`
+  return `${text} UTC${offsetMin < 0 ? '−' : '+'}${offset}`
+}
+
 // formatDateSpan formats the dates from oldest to newest: one date when both
 // fall on the same day or only one is known, and null when neither is.
 export function formatDateSpan(oldest: string | null, newest: string | null, locale: string): string | null {
@@ -92,6 +141,8 @@ export interface Formatters {
   conjunction: (items: string[]) => string
   date: (time: string) => string
   dateTime: (time: string) => string
+  instant: (time: string) => string
+  local: (local: string, precision: LocalPrecision, offsetMin: number | null) => string
   dateSpan: (oldest: string | null, newest: string | null) => string | null
   timePrecision: (ns: number) => string
 }
@@ -109,6 +160,8 @@ export function useFormat(): Formatters {
       conjunction: (items) => formatConjunction(items, locale),
       date: (time) => formatDate(time, locale),
       dateTime: (time) => formatDateTime(time, locale),
+      instant: (time) => formatInstant(time, locale),
+      local: (local, precision, offsetMin) => formatLocal(local, precision, offsetMin, locale),
       dateSpan: (oldest, newest) => formatDateSpan(oldest, newest, locale),
       timePrecision: (ns) => formatTimePrecision(ns, locale),
     }),

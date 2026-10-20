@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { devices, expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test'
 
 import { en } from '../src/i18n/en'
-import { formatBytes, formatCount, formatPercent } from '../src/lib/format'
+import { formatBytes, formatCount, formatLocal, formatPercent } from '../src/lib/format'
 import { awaitDuplicates, type Coverage } from './duplicates'
 import {
   adminPassword,
@@ -13,6 +14,7 @@ import {
   corpusPath,
   groundTruth,
   origin,
+  type TruthDate,
   type TruthEntry,
   type TruthMember,
   type TruthPath,
@@ -1776,6 +1778,543 @@ test('Home shows what is in quarantine beside the decisions', async () => {
   )
 })
 
+// The R5 tests read the corpus's media dates in the zone UTC, which
+// global-setup.ts configures and the date truth is derived in: the Dates
+// screen against the truth, the Sony's clock shifted in one confirmation,
+// file dates set on Ouro Preto and undone, and an organize by date into
+// Fotos. The earlier tests moved, quarantined, and deleted files, so the
+// truth is read at each file's place now (mediaNow).
+const ouroPreto = 'Viagens/2008-03 Ouro Preto'
+const datedFolders = ['Viagens', 'celular_2011']
+const offsetCamera = corpus.cameras.find((c) => c.shift_s !== 0)
+
+test('R5.1, R5.3: the Dates screen shows each photo and video’s date, where it comes from, and its flags, as the truth has them', async () => {
+  const media = await mediaNow()
+  const source = (await corpusSource()).id
+  // A media job follows every scan and change: wait until its figures are
+  // the truth's.
+  const expected = summaryOf(media)
+  await expect
+    .poll(
+      async () => {
+        const now = await datesSummary()
+        const { media: files, by_source, by_confidence, flags, cameras } = now
+        return { media: files, pending: now.metadata.pending, by_source, by_confidence, flags, cameras }
+      },
+      { message: 'the media job ends', timeout: 60_000 },
+    )
+    .toEqual(expected)
+  const summary = await datesSummary()
+  expect(summary).toMatchObject({ time_zone: 'UTC', time_zone_set: true })
+
+  // R5.1: every photo and video has the truth's date and source, and its
+  // flags, the modification times that disagree included.
+  const rows = (await allPages<MediaDate>('/api/dates', { source })).items
+  expect(rows.map((r) => r.entry.path).toSorted()).toEqual([...media.keys()].toSorted())
+  for (const row of rows) {
+    expect(dateOf(row), row.entry.path).toEqual(truthDate(media.get(row.entry.path)))
+  }
+  // R5.3: the WhatsApp images without EXIF are dated by their names.
+  const whatsApp = [...media].filter(([path]) => /\/IMG-\d{8}-WA\d{4}\.jpg$/.test(path))
+  expect(whatsApp.length).toBeGreaterThan(0)
+  for (const [path, date] of whatsApp) {
+    expect([date.source, date.flags], path).toEqual(['file_name', ['no_date_metadata']])
+  }
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.dates }).click()
+  await expect(page.getByRole('heading', { name: en.pages.dates, level: 1 })).toBeVisible()
+  const overview = page.getByRole('region', { name: en.dates.summary.title })
+  await expect(overview).toContainText(plural(en.dates.summary, 'media', media.size))
+  await expect(overview).toContainText(fill(en.dates.summary.zone, { zone: 'UTC' }))
+  const totals = (title: string, labels: Record<string, string>, counts: Record<string, number>) =>
+    expect(overview.getByRole('list', { name: title, exact: true }).getByRole('listitem')).toHaveText(
+      Object.entries(labels).map(([key, label]) =>
+        fill(en.dates.summary.value, { label, formatted: count(counts[key] ?? Number.NaN) }),
+      ),
+    )
+  await totals(en.dates.summary.metadata, en.dates.metadata, summary.metadata)
+  await totals(en.dates.summary.bySource, en.dates.source, expected.by_source)
+  await totals(en.dates.summary.byConfidence, en.dates.confidence, expected.by_confidence)
+  await totals(en.dates.summary.flags, en.dates.flag, expected.flags)
+  await totals(
+    en.dates.summary.cameras,
+    { offset: en.dates.summary.camerasOffset, disagrees: en.dates.summary.camerasDisagrees },
+    expected.cameras,
+  )
+
+  // The rows of the trips and of the phone read as their truth.
+  for (const folder of datedFolders) {
+    await page.goto(`/dates?${new URLSearchParams({ source })}`)
+    const list = page.getByRole('region', { name: en.dates.list.title })
+    await list.getByRole('button', { name: en.dates.list.chooseFolder }).click()
+    const chooser = page.getByRole('dialog', { name: en.dates.list.folderTitle })
+    await chooser.getByRole('list', { name: en.organize.chooser.folders }).getByRole('button', { name: folder, exact: true }).click()
+    await chooser.getByRole('button', { name: en.dates.list.folderHere }).click()
+    await expect(list).toContainText(folderTrail(folder))
+    const shown = [...media].filter(([path]) => path.startsWith(`${folder}/`))
+    await expect(datesRows()).toHaveCount(shown.length)
+    for (const [path, date] of shown) {
+      const row = datesRows().filter({ has: page.getByRole('link', { name: path, exact: true }) })
+      await expect(row, path).toContainText(dateLine(date))
+      await expect(
+        row.getByRole('list', { name: en.dates.panel.flags, exact: true }).getByRole('listitem'),
+        path,
+      ).toHaveText(date.flags.map((flag) => en.dates.flag[flag]))
+    }
+  }
+})
+
+test('R5.2: the Sony’s clock offset is suggested, its photos are shifted in one confirmation, and the next media job suggests nothing', async () => {
+  if (offsetCamera === undefined) {
+    throw new Error('the ground truth has no camera with a clock offset')
+  }
+  const { key, shift_s: shift } = offsetCamera
+  const source = (await corpusSource()).id
+  const media = await mediaNow()
+  const photos = [...media].filter(([, date]) => date.flags.includes('camera_offset')).toSorted(byPath)
+  expect(photos.length).toBe(offsetCamera.photos)
+  // The cameras read lists the truth's cameras, the Sony with its shift and
+  // the folders it was compared in.
+  const cameras = await camerasRead(source)
+  expect(
+    cameras
+      .map((c) => ({
+        key: c.key,
+        state: c.state,
+        shift: c.suggested_shift_s,
+        photos: c.photos,
+        folders: c.events.map((e) => e.folder.path).toSorted(),
+      }))
+      .toSorted((a, b) => (a.key < b.key ? -1 : 1)),
+  ).toEqual(
+    corpus.cameras
+      .map((c) => ({
+        key: c.key,
+        state: c.shift_s === 0 ? 'ok' : 'offset',
+        shift: c.shift_s === 0 ? null : c.shift_s,
+        photos: c.photos,
+        folders: c.folders.toSorted(),
+      }))
+      .toSorted((a, b) => (a.key < b.key ? -1 : 1)),
+  )
+  const events = cameras.find((c) => c.key === key)?.events ?? []
+  expect(photos.map(([path]) => parent(path)).every((folder) => events.some((e) => e.folder.path === folder))).toBe(true)
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.dates }).click()
+  const section = page.getByRole('region', { name: en.dates.cameras.title })
+  await expect(section.getByRole('list', { name: en.dates.cameras.list }).locator(':scope > li')).toHaveCount(
+    corpus.cameras.length,
+  )
+  for (const camera of corpus.cameras.filter((c) => c.shift_s === 0)) {
+    const article = section.getByRole('article', { name: cameraName(camera.key), exact: true })
+    await expect(article).toContainText(en.dates.cameras.state.ok)
+    await expect(article.getByRole('button')).toHaveCount(0)
+  }
+  const sony = section.getByRole('article', { name: cameraName(key), exact: true })
+  const photoCount = (n: number) => plural(en.dates, 'photos', n)
+  const inEvent = (folder: string) => photos.filter(([path]) => parent(path) === folder)
+  await expect(sony).toContainText(fill(en.dates.cameras.state.offset, { shift: shiftText(shift) }))
+  await expect(sony.getByRole('list', { name: en.dates.cameras.events }).getByRole('listitem')).toHaveText(
+    events.map((e) =>
+      fill(en.dates.cameras.event, {
+        path: e.folder.path,
+        photos: photoCount(inEvent(e.folder.path).length),
+        delta: shiftText(-shift),
+        // In each event the Canon's GPS agrees with its captures (r5
+        // design D8).
+        reference: en.dates.cameras.reference.gps,
+      }),
+    ),
+  )
+
+  // The suggestion previews each photo with its date now and after.
+  await sony
+    .getByRole('button', { name: fill(en.dates.cameras.shift, { shift: shiftText(shift), photos: photoCount(photos.length) }) })
+    .click()
+  const dialog = page.getByRole('alertdialog', {
+    name: fill(en.dates.cameras.shiftTitle, { camera: cameraName(key), shift: shiftText(shift) }),
+  })
+  await expect(dialog.getByRole('list', { name: en.dates.cameras.shiftList }).getByRole('listitem')).toHaveText(
+    events.flatMap((e) =>
+      inEvent(e.folder.path).map(([path, date]) =>
+        fill(en.dates.cameras.shiftLine, {
+          path,
+          from: formatLocal(date.local, 'second', null, 'en'),
+          to: formatLocal(shifted(date.local, shift), 'second', null, 'en'),
+        }),
+      ),
+    ),
+  )
+  // Nothing is corrected before the owner confirms.
+  const ofCamera = { source, camera: key }
+  expect((await allPages<MediaDate>('/api/dates', ofCamera)).items.filter((r) => r.correction !== null)).toEqual([])
+  const before = await datesSummary()
+  const folderIds = await Promise.all(events.map((e) => entryId(e.folder.path)))
+  const sent = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/commands/set-date-correction')
+  await dialog.getByRole('button', { name: fill(en.dates.cameras.confirm, { photos: photoCount(photos.length) }), exact: true }).click()
+  // One correction: the events' folders and the camera.
+  expect((await sent).postDataJSON()).toEqual({
+    folder_ids: folderIds,
+    camera_key: key,
+    correction: { kind: 'shift', shift_s: shift },
+  })
+  await expect(dialog).toBeHidden()
+  await expect(section.getByRole('status')).toHaveText(plural(en.dates.correct, 'applied', photos.length))
+
+  // Its photos are at the truth's dates moved by the shift, as the owner's
+  // correction, without the camera's flag; their modification times, the
+  // wrong clock's, now disagree.
+  const corrected = (await allPages<MediaDate>('/api/dates', ofCamera)).items
+  expect(corrected.map((r) => r.entry.path).toSorted()).toEqual(photos.map(([path]) => path))
+  for (const row of corrected) {
+    const date = media.get(row.entry.path)
+    const instant = nanos(date?.effective ?? '') + BigInt(shift) * 1_000_000_000n
+    const mtime = statSync(join(corpusPath(), row.entry.path), { bigint: true }).mtimeNs
+    const apart = instant > mtime ? instant - mtime : mtime - instant
+    expect(dateOf(row), row.entry.path).toEqual({
+      instant: String(instant),
+      local: shifted(date?.local ?? '', shift),
+      offset_min: null,
+      precision: 'second',
+      source: 'owner',
+      confidence: 'medium',
+      refined: false,
+      corrected: 'shift',
+      flags: apart > 86_400_000_000_000n ? ['mtime_disagrees'] : [],
+    })
+  }
+  const list = page.getByRole('region', { name: en.dates.list.title })
+  await list.getByRole('combobox', { name: en.dates.list.camera }).selectOption(key)
+  await expect(datesRows()).toHaveCount(photos.length)
+  for (const [path, date] of photos) {
+    const row = datesRows().filter({ has: page.getByRole('link', { name: path, exact: true }) })
+    await expect(row, path).toContainText(
+      `${formatLocal(shifted(date.local, shift), 'second', null, 'en')} · ${en.dates.source.owner}, ${en.dates.corrected.shift} · ${en.dates.confidence.medium}`,
+    )
+    await expect(row, path).toContainText(fill(en.dates.correction.shift, { shift: shiftText(shift) }))
+  }
+
+  // The correction requested a media job; once it compared the cameras
+  // again, the Sony agrees with the Canon and nothing is suggested.
+  await expect
+    .poll(
+      async () => {
+        const now = await datesSummary()
+        return now.detected_at === before.detected_at ? null : { cameras: now.cameras, flagged: now.flags.camera_offset }
+      },
+      { message: 'the next media job compares the cameras', timeout: 60_000 },
+    )
+    .toEqual({ cameras: { offset: 0, disagrees: 0 }, flagged: 0 })
+  expect((await camerasRead(source)).find((c) => c.key === key)).toMatchObject({
+    state: 'ok',
+    suggested_shift_s: null,
+    events: [],
+  })
+  await expect(sony).toContainText(en.dates.cameras.state.ok)
+  await expect(sony.getByRole('button')).toHaveCount(0)
+})
+
+test('R5.4: setting file dates on Ouro Preto previews each time, changes only the modification times, and Undo puts them back', async () => {
+  const source = await corpusSource()
+  const capabilities: { sources: { id: string; capabilities: { time_resolution_ns: number } }[] } = await (
+    await page.request.get('/api/sources')
+  ).json()
+  const resolution = BigInt(capabilities.sources.find((s) => s.id === source.id)?.capabilities.time_resolution_ns ?? 0)
+  expect(resolution).toBeGreaterThan(0n)
+  const files = [...(await mediaNow())].filter(([path]) => parent(path) === ouroPreto).toSorted(byPath)
+  const timed = files.filter(([, date]) => date.precision === 'second')
+  // DSCN0004.JPG's camera date is a default, so it is dated by its folder,
+  // to the month only.
+  expect(files.filter(([, date]) => date.precision !== 'second').map(([path]) => path)).toEqual([
+    `${ouroPreto}/DSCN0004.JPG`,
+  ])
+  expect(timed).toHaveLength(3)
+  const was = new Map(files.map(([path]) => [path, mtimeNs(path)]))
+  const target = new Map(
+    timed.map(([path, date]) => {
+      const ns = nanos(date.effective ?? '')
+      return [path, ns - (ns % resolution)]
+    }),
+  )
+  const digests = files.map(([path]) => truth.find((e) => e.path === path)?.sha256)
+  expect(files.map(([path]) => sha256Of(path))).toEqual(digests)
+
+  await page.goto(`/dates?${new URLSearchParams({ source: source.id, within: await entryId(ouroPreto) })}`)
+  const list = page.getByRole('region', { name: en.dates.list.title })
+  await expect(list).toContainText(folderTrail(ouroPreto))
+  await expect(datesRows()).toHaveCount(files.length)
+  await list.getByRole('button', { name: en.dates.actions.setFileDates }).click()
+  const dialog = page.getByRole('dialog', { name: en.dates.setFileDates.title, exact: true })
+  // With nothing selected, it applies to the folder the list shows.
+  await expect(dialog.getByRole('radio', { name: en.dates.targets.folders })).toBeChecked()
+  await expect(dialog.getByRole('list', { name: en.dates.targets.foldersList, exact: true }).getByRole('listitem')).toContainText([
+    folderTrail(ouroPreto),
+  ])
+  const planned = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/commands/plan-set-mtime')
+  await dialog.getByRole('button', { name: en.dates.setFileDates.preview }).click()
+  const plan: { action: ActionState; items: PlanItem[]; summary: { unchanged: number } } = await (await planned).json()
+  expect(plan.action).toMatchObject({ kind: 'set_mtime', state: 'planned', files: timed.length })
+  expect(plan.summary).toEqual({ unchanged: 0 })
+  expect(plan.items.map((i) => ({ path: i.from?.path, state: i.state, reason: i.reason }))).toEqual(
+    files.map(([path, date]) =>
+      date.precision === 'second'
+        ? { path, state: 'planned', reason: null }
+        : { path, state: 'refused', reason: 'date_too_coarse' },
+    ),
+  )
+  for (const item of plan.items.filter((i) => i.state === 'planned')) {
+    const path = item.from?.path ?? ''
+    expect([nanos(item.mtime?.from ?? ''), nanos(item.mtime?.to ?? '')], path).toEqual([was.get(path), target.get(path)])
+  }
+
+  // The preview lists each file with its time before and after, and the
+  // file whose date is too coarse with its reason.
+  const preview = page.getByRole('alertdialog', { name: en.organize.titleNoDestination.set_mtime })
+  await expect(preview.getByRole('list', { name: en.history.counts, exact: true }).getByRole('listitem')).toHaveText([
+    plural(en.organize.preview, 'planned', timed.length),
+    plural(en.organize.preview, 'refused', 1),
+    fill(en.organize.preview.total, { files: fileCount(plan.action.files), bytes: bytes(plan.action.bytes) }),
+  ])
+  await expect(
+    preview.getByRole('list', { name: en.organize.preview.groups.planned, exact: true }).getByRole('listitem'),
+  ).toHaveText(
+    timed.map(([path]) =>
+      fill(en.organize.item.set_mtime, { path, from: instantText(was.get(path)), to: instantText(target.get(path)) }),
+    ),
+  )
+  const refused = preview.getByRole('list', { name: en.organize.preview.groups.refused, exact: true }).getByRole('listitem')
+  await expect(refused).toHaveCount(1)
+  await expect(refused).toContainText(`${ouroPreto}/DSCN0004.JPG`)
+  await expect(refused).toContainText(en.organize.reason.date_too_coarse)
+  // Nothing changed before the owner confirms.
+  expect(files.map(([path]) => mtimeNs(path))).toEqual(files.map(([path]) => was.get(path)))
+
+  await preview.getByRole('button', { name: en.organize.preview.confirm, exact: true }).click()
+  await expect(preview).toBeHidden()
+  const outcome = list.getByRole('status').filter({ hasText: en.organize.status.done.set_mtime })
+  await expect(outcome).toBeVisible()
+  await expect(outcome).toContainText(en.organize.status.notAll)
+  // R5.4: the modification times are the dates, and no content changed.
+  expect(files.map(([path]) => mtimeNs(path))).toEqual(files.map(([path]) => target.get(path) ?? was.get(path)))
+  expect(files.map(([path]) => sha256Of(path))).toEqual(digests)
+
+  // History lists it with its items, and Undo puts the times back.
+  const changes = (await allPages<ActionState>('/api/history', {})).items.length
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.history }).click()
+  const cards = page.getByRole('list', { name: en.history.list }).locator(':scope > li')
+  await expect(cards).toHaveCount(changes)
+  await expect(cards.nth(0)).toContainText(en.organize.titleNoDestination.set_mtime)
+  const card = page.getByRole('article', { name: en.organize.titleNoDestination.set_mtime, exact: true })
+  await expect(card).toContainText(en.history.state.done)
+  await expect(card.getByRole('list', { name: en.history.counts, exact: true }).getByRole('listitem')).toHaveText([
+    fill(en.history.count.done, { formatted: count(timed.length) }),
+    fill(en.history.count.refused, { formatted: count(1) }),
+  ])
+  await card.getByRole('button', { name: en.history.showItems }).click()
+  const items = card.getByRole('list', { name: en.history.items }).getByRole('listitem')
+  for (const [path] of timed) {
+    const line = fill(en.organize.item.set_mtime, { path, from: instantText(was.get(path)), to: instantText(target.get(path)) })
+    await expect(items.filter({ hasText: line }), path).toContainText(en.organize.itemState.done)
+  }
+  await card.getByRole('button', { name: en.history.undo, exact: true }).click()
+  await expect(cards).toHaveCount(changes + 1)
+  await expect(cards.nth(0)).toContainText(en.history.state.done)
+  await expect(card).toContainText(en.history.undone)
+  await expect(card.getByRole('button', { name: en.history.undo, exact: true })).toHaveCount(0)
+  expect(files.map(([path]) => mtimeNs(path))).toEqual(files.map(([path]) => was.get(path)))
+  expect(files.map(([path]) => sha256Of(path))).toEqual(digests)
+})
+
+test('R5.5: organizing Viagens and celular_2011 into Fotos by year and month previews every move, offers the identical copy for discard, suffixes the other file of the same name, and overwrites nothing', async () => {
+  if (offsetCamera === undefined) {
+    throw new Error('the ground truth has no camera with a clock offset')
+  }
+  const source = await corpusSource()
+  const media = [...(await mediaNow())]
+    .filter(([path]) => datedFolders.some((folder) => path.startsWith(`${folder}/`)))
+    .toSorted(byPath)
+  const digest = (path: string) => truth.find((e) => e.path === path)?.sha256 ?? ''
+  // Each file goes to Fotos/{year}/{month} of its date, the Sony's shifted
+  // by R5.2, in path order: a name taken by an earlier file of the same
+  // content is refused as an identical copy, and by another content takes
+  // the first free "stem (k)ext".
+  const moves: { from: string; to: string }[] = []
+  const copies: { path: string; copyOf: string }[] = []
+  const takenBy = new Map<string, string>()
+  for (const [path, date] of media) {
+    const local = date.flags.includes('camera_offset') ? shifted(date.local, offsetCamera.shift_s) : date.local
+    const folder = `Fotos/${local.slice(0, 4)}/${local.slice(5, 7)}`
+    const name = path.split('/').at(-1) ?? ''
+    const dot = name.lastIndexOf('.')
+    let to = `${folder}/${name}`
+    const first = takenBy.get(to)
+    if (first !== undefined && digest(first) === digest(path)) {
+      copies.push({ path, copyOf: first })
+      continue
+    }
+    for (let k = 1; takenBy.has(to) || onDisk(to); k++) {
+      to = `${folder}/${name.slice(0, dot)} (${k})${name.slice(dot)}`
+    }
+    takenBy.set(to, path)
+    moves.push({ from: path, to })
+  }
+  const whatsApp = 'celular_2011/WhatsApp/Media/WhatsApp Images'
+  expect(copies).toEqual([{ path: `${whatsApp}/Sent/IMG-20110416-WA0003.jpg`, copyOf: `${whatsApp}/IMG-20110416-WA0003.jpg` }])
+  const ana = 'Viagens/2010-07 Bahia/do celular da Ana/IMG_0102.JPG'
+  const canon = 'Viagens/2010-07 Bahia/IMG_0102.JPG'
+  expect(moves.filter((m) => m.from === ana || m.from === canon)).toEqual([
+    { from: canon, to: 'Fotos/2010/07/IMG_0102.JPG' },
+    { from: ana, to: 'Fotos/2010/07/IMG_0102 (1).JPG' },
+  ])
+  const folders = new Set(
+    moves.flatMap((m) => {
+      const [, year, month] = m.to.split('/')
+      return [`Fotos/${year}`, `Fotos/${year}/${month}`]
+    }),
+  )
+  const newFolders = [...folders].filter((folder) => !onDisk(folder)).toSorted()
+  // The planned files with another copy among the targets or in the
+  // destination.
+  const withCopies = moves.filter((m) =>
+    (corpus.duplicates.find((d) => d.copies.some((c) => c.path === m.from))?.copies ?? []).some(
+      (c) =>
+        c.path !== m.from &&
+        !c.path.includes('!') &&
+        onDisk(c.path) &&
+        [...datedFolders, 'Fotos'].some((folder) => c.path.startsWith(`${folder}/`)),
+    ),
+  ).length
+  expect(withCopies).toBeGreaterThan(0)
+  const anaId = await entryId(ana)
+  const canonId = await entryId(canon)
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.dates }).click()
+  const list = page.getByRole('region', { name: en.dates.list.title })
+  await list.getByRole('button', { name: en.dates.actions.organize }).click()
+  const dialog = page.getByRole('dialog', { name: en.dates.organize.title, exact: true })
+  await expect(dialog.getByRole('radio', { name: en.dates.targets.folders })).toBeChecked()
+  for (const folder of datedFolders) {
+    await dialog.getByRole('button', { name: en.dates.targets.add }).click()
+    const chooser = page.getByRole('dialog', { name: en.dates.targets.chooserTitle, exact: true })
+    await chooser.getByRole('list', { name: en.organize.chooser.folders }).getByRole('button', { name: folder, exact: true }).click()
+    await chooser.getByRole('button', { name: en.dates.targets.chooserHere }).click()
+    await expect(chooser).toBeHidden()
+  }
+  await expect(dialog.getByRole('list', { name: en.dates.targets.foldersList, exact: true }).getByRole('listitem')).toContainText(
+    datedFolders.map(folderTrail),
+  )
+  await expect(dialog.getByRole('textbox', { name: en.dates.organize.template })).toHaveValue('{year}/{month}')
+  await dialog.getByRole('button', { name: en.dates.organize.choose }).click()
+  const into = page.getByRole('dialog', { name: en.dates.organize.chooserTitle, exact: true })
+  await into.getByRole('list', { name: en.organize.chooser.folders }).getByRole('button', { name: 'Fotos', exact: true }).click()
+  await into.getByRole('button', { name: en.dates.organize.chooserHere }).click()
+  await expect(into).toBeHidden()
+  await expect(dialog).toContainText(folderTrail('Fotos'))
+  const planned = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/commands/plan-date-organize')
+  await dialog.getByRole('button', { name: en.dates.organize.preview }).click()
+  const plan: { action: ActionState & { counts: Record<string, number> }; summary: Record<string, number> } = await (
+    await planned
+  ).json()
+  expect(plan.action).toMatchObject({ kind: 'date_organize', state: 'planned', template: '{year}/{month}', rename: false })
+  expect(plan.summary).toEqual({ files_with_copies: withCopies, split_siblings: 0 })
+  const items = (await allPages<PlanItem>(`/api/history/${plan.action.id}/items`, {})).items
+  const plannedItems = items.filter((i) => i.state === 'planned')
+  expect(plannedItems.filter((i) => i.op === 'mkdir').map((i) => i.to?.path).toSorted()).toEqual(newFolders)
+  expect(plannedItems.filter((i) => i.op === 'rename').map((i) => ({ from: i.from?.path, to: i.to?.path }))).toEqual(moves)
+  expect(items.filter((i) => i.state !== 'planned').map((i) => ({ state: i.state, reason: i.reason, path: i.from?.path, copyOf: i.copy_of?.path }))).toEqual(
+    copies.map((c) => ({ state: 'refused', reason: 'identical_copy', path: c.path, copyOf: c.copyOf })),
+  )
+  expect(plan.action).toMatchObject({
+    files: moves.length,
+    bytes: moves.reduce((sum, m) => sum + (truth.find((e) => e.path === m.from)?.size ?? Number.NaN), 0),
+  })
+
+  // R5.5: the preview lists every move and new folder, the copies notice,
+  // and the identical copy left where it is.
+  const preview = page.getByRole('alertdialog', { name: fill(en.organize.title.date_organize, { destination: 'Fotos' }) })
+  await expect(preview.getByRole('list', { name: en.history.counts, exact: true }).getByRole('listitem')).toHaveText([
+    plural(en.organize.preview, 'planned', plannedItems.length),
+    plural(en.organize.preview, 'refused', copies.length),
+    fill(en.organize.preview.total, { files: fileCount(plan.action.files), bytes: bytes(plan.action.bytes) }),
+  ])
+  await expect(
+    preview.getByRole('list', { name: en.organize.preview.groups.planned, exact: true }).getByRole('listitem'),
+  ).toHaveText(
+    plannedItems.map((i) =>
+      i.op === 'mkdir'
+        ? fill(en.organize.item.mkdir, { path: i.to?.path ?? '' })
+        : fill(en.organize.item.rename, { from: i.from?.path ?? '', to: i.to?.path ?? '' }),
+    ),
+  )
+  const refused = preview.getByRole('list', { name: en.organize.preview.groups.refused, exact: true }).getByRole('listitem')
+  await expect(refused).toHaveCount(copies.length)
+  for (const copy of copies) {
+    const row = refused.filter({ hasText: copy.path })
+    await expect(row).toContainText(en.organize.reason.identical_copy)
+    await expect(row).toContainText(fill(en.organize.item.copyOf, { path: copy.copyOf }))
+  }
+  const duplicatesLink = /<duplicatesLink>(.*)<\/duplicatesLink>/.exec(en.dates.preview.copies)?.[1] ?? ''
+  await expect(preview.getByRole('status').filter({ hasText: en.dates.preview.copies.split('<')[0] ?? '' })).toHaveText(
+    en.dates.preview.copies.replaceAll(/<\/?duplicatesLink>/g, ''),
+  )
+  await expect(preview.getByRole('link', { name: duplicatesLink })).toHaveAttribute(
+    'href',
+    `/opportunities/duplicates?${new URLSearchParams({ source: source.id })}`,
+  )
+  await expect(preview).toContainText(plural(en.dates.preview, 'identical', copies.length))
+
+  // Discard these copies asks first, then discards them; the plan stays.
+  const sent: string[] = []
+  const record = (r: { url: () => string }) => {
+    if (new URL(r.url()).pathname === '/api/commands/set-decision') {
+      sent.push(r.url())
+    }
+  }
+  page.on('request', record)
+  await preview.getByRole('button', { name: en.dates.preview.discard, exact: true }).click()
+  const confirm = page.getByRole('alertdialog', { name: plural(en.dates.preview, 'discardTitle', copies.length) })
+  await expect(confirm).toContainText(en.dates.preview.discardHelp)
+  expect(sent).toEqual([])
+  await confirm.getByRole('button', { name: en.dates.preview.discardConfirm, exact: true }).click()
+  await expect(confirm).toBeHidden()
+  await expect(preview.getByRole('status').filter({ hasText: plural(en.dates.preview, 'discarded', copies.length) })).toBeVisible()
+  page.off('request', record)
+  expect(sent).toHaveLength(1)
+  for (const copy of copies) {
+    expect((await intentOf(copy.path)).decision, copy.path).toBe('discard')
+  }
+  // Nothing moved before the owner confirms.
+  expect(moves.map((m) => [onDisk(m.from), onDisk(m.to)])).toEqual(moves.map(() => [true, false]))
+  expect(newFolders.filter(onDisk)).toEqual([])
+
+  await preview.getByRole('button', { name: en.organize.preview.confirm, exact: true }).click()
+  await expect(preview).toBeHidden()
+  const outcome = list.getByRole('status').filter({ hasText: en.organize.status.done.date_organize })
+  await expect(outcome).toBeVisible()
+  await expect(outcome).toContainText(en.organize.status.notAll)
+  expect(await actionOf(plan.action.id)).toMatchObject({
+    state: 'done',
+    counts: { done: plannedItems.length, refused: copies.length },
+  })
+  // Every file is at its new place with its content and ID; the identical
+  // copy stayed, and the other IMG_0102.JPG overwrote nothing.
+  for (const move of moves) {
+    expect([onDisk(move.from), onDisk(move.to) && sha256Of(move.to)], move.from).toEqual([false, digest(move.from)])
+  }
+  for (const copy of copies) {
+    expect(sha256Of(copy.path), copy.path).toBe(digest(copy.path))
+  }
+  expect(digest(ana)).not.toBe(digest(canon))
+  expect(await entryId('Fotos/2010/07/IMG_0102.JPG')).toBe(canonId)
+  expect(await entryId('Fotos/2010/07/IMG_0102 (1).JPG')).toBe(anaId)
+
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: en.nav.history }).click()
+  const first = page.getByRole('list', { name: en.history.list }).locator(':scope > li').first()
+  await expect(first).toContainText(fill(en.organize.title.date_organize, { destination: 'Fotos' }))
+  await expect(first).toContainText(fill(en.history.template, { template: '{year}/{month}' }))
+  await expect(first).toContainText(en.history.state.done)
+})
+
 // spaced matches text, ignoring the whitespace between its words, so a list
 // item whose parts are separate elements matches what it reads as.
 function spaced(text: string): RegExp {
@@ -2163,6 +2702,10 @@ interface PlanItem {
   to: ItemPath | null
   bytes: number
   files: number
+  // mtime is set on a set_mtime step, copy_of on an item refused as an
+  // identical copy (r5).
+  mtime?: { from: string | null; to: string } | null
+  copy_of?: { entry: string; path: string } | null
 }
 
 // ActionState is what the cleanup tests read of an action.
@@ -2259,4 +2802,276 @@ async function expectNoScriptRan(p: Page) {
     const ran = await frame.evaluate(() => '__precious_pwned' in window).catch(() => false)
     expect(ran, `a fixture script ran in ${frame.url()}`).toBe(false)
   }
+}
+
+// MediaDate is a row of GET /api/dates: a photo or video and its date.
+interface MediaDate {
+  entry: { id: string; path: string }
+  date: {
+    instant: string | null
+    local: string | null
+    offset_min: number | null
+    precision: string | null
+    source: string
+    confidence: string
+    refined: boolean
+    corrected: string | null
+  }
+  flags: string[]
+  correction: { kind: string } | null
+}
+
+// DateView is what the tests compare of a date: the instant in
+// nanoseconds, as text.
+interface DateView {
+  instant: string | null
+  local: string | null
+  offset_min: number | null
+  precision: string | null
+  source: string
+  confidence: string
+  refined: boolean
+  corrected: string | null
+  flags: string[]
+}
+
+function dateOf(row: MediaDate): DateView {
+  const { instant, local, offset_min, precision, source, confidence, refined, corrected } = row.date
+  return {
+    instant: instant === null ? null : String(nanos(instant)),
+    local,
+    offset_min,
+    precision,
+    source,
+    confidence,
+    refined,
+    corrected,
+    flags: row.flags,
+  }
+}
+
+// truthDate is the date the truth gives a file, as the list shows it
+// without corrections.
+function truthDate(date: TruthDate | undefined): DateView {
+  if (date === undefined) {
+    throw new Error('the ground truth has no date for this file')
+  }
+  return {
+    instant: date.effective === null ? null : String(nanos(date.effective)),
+    local: date.local === '' ? null : date.local,
+    offset_min: offsetOf(date),
+    precision: date.precision === '' ? null : date.precision,
+    source: date.source,
+    confidence: confidenceOf(date),
+    refined: date.refined,
+    corrected: null,
+    flags: date.flags,
+  }
+}
+
+// offsetOf is the UTC offset, in minutes, an EXIF capture records: the
+// truth's local time is in that offset, and its instant in UTC. In the zone
+// UTC, a capture without an offset reads the same in both.
+function offsetOf(date: TruthDate): number | null {
+  if (date.source !== 'exif' || date.effective === null) {
+    return null
+  }
+  const seconds = nanos(date.effective) / 1_000_000_000n
+  const offset = (Date.parse(`${date.local}Z`) - Number(seconds) * 1000) / 60_000
+  return offset === 0 ? null : offset
+}
+
+// confidenceOf is how sure the truth's date is (r5 design D5): a capture
+// with its offset or a GPS time is sure; a capture without an offset or a
+// video's time fairly sure; a name or folder date unsure, and fairly sure
+// once the modification time refines it; a modification time least sure.
+function confidenceOf(date: TruthDate): keyof typeof en.dates.confidence {
+  switch (date.source) {
+    case 'exif':
+      return offsetOf(date) === null ? 'medium' : 'high'
+    case 'gps':
+      return 'high'
+    case 'container':
+      return 'medium'
+    case 'file_name':
+    case 'folder_name':
+      return date.refined ? 'medium' : 'low'
+    case 'mtime':
+      return 'lowest'
+    case 'none':
+      return 'none'
+    case 'owner':
+      throw new Error('the ground truth has no corrections')
+  }
+}
+
+// dateLine is how a row of the Dates list reads the truth's date: the
+// date to its precision, where it comes from, and how sure it is.
+function dateLine(date: TruthDate): string {
+  const local = date.precision === '' ? en.dates.noDate : formatLocal(date.local, date.precision, offsetOf(date), 'en')
+  const from = [en.dates.source[date.source], ...(date.refined ? [en.dates.refined] : [])].join(', ')
+  return `${local} · ${from} · ${en.dates.confidence[confidenceOf(date)]}`
+}
+
+// DatesSummary is the answer of GET /api/dates/summary.
+interface DatesSummary {
+  media: number
+  metadata: Record<keyof typeof en.dates.metadata, number>
+  by_source: Record<keyof typeof en.dates.source, number>
+  by_confidence: Record<keyof typeof en.dates.confidence, number>
+  flags: Record<keyof typeof en.dates.flag, number>
+  cameras: { offset: number; disagrees: number }
+  time_zone: string
+  time_zone_set: boolean
+  detected_at: string | null
+}
+
+async function datesSummary(): Promise<DatesSummary> {
+  const resp = await page.request.get(`/api/dates/summary?source=${(await corpusSource()).id}`)
+  expect(resp.status()).toBe(200)
+  const summary: DatesSummary = await resp.json()
+  return summary
+}
+
+// summaryOf is the summary the truth gives the media at their places now:
+// every file read, and the cameras with a clock offset.
+function summaryOf(media: Map<string, TruthDate>) {
+  const tally = <K extends string>(keys: Record<K, string>, of: (date: TruthDate) => K[]): Record<K, number> => {
+    const out = Object.fromEntries(Object.keys(keys).map((key) => [key, 0])) as Record<K, number>
+    for (const date of media.values()) {
+      for (const key of of(date)) {
+        out[key] += 1
+      }
+    }
+    return out
+  }
+  return {
+    media: media.size,
+    pending: 0,
+    by_source: tally(en.dates.source, (date) => [date.source]),
+    by_confidence: tally(en.dates.confidence, (date) => [confidenceOf(date)]),
+    flags: tally(en.dates.flag, (date) => date.flags),
+    cameras: { offset: corpus.cameras.filter((c) => c.shift_s !== 0).length, disagrees: 0 },
+  }
+}
+
+// mediaNow maps the truth's photos and videos to their places now: each
+// done rename of History, oldest first, moves an entry or a folder's
+// subtree, and the files in quarantine or no longer on the disk are left
+// out.
+async function mediaNow(): Promise<Map<string, TruthDate>> {
+  const moves: [string, string][] = []
+  for (const action of (await allPages<ActionState>('/api/history', {})).items.toReversed()) {
+    const renames = await allPages<PlanItem>(`/api/history/${action.id}/items`, { op: 'rename', state: 'done' })
+    moves.push(...renames.items.map((i): [string, string] => [i.from?.path ?? '', i.to?.path ?? '']))
+  }
+  const media = new Map<string, TruthDate>()
+  for (const entry of truth) {
+    if (entry.date === undefined) {
+      continue
+    }
+    let path = entry.path
+    for (const [from, to] of moves) {
+      if (path === from || path.startsWith(`${from}/`)) {
+        path = to + path.slice(from.length)
+      }
+    }
+    if (!path.startsWith(`${quarantineDir}/`) && onDisk(path)) {
+      media.set(path, entry.date)
+    }
+  }
+  return media
+}
+
+// Camera is an item of GET /api/dates/cameras.
+interface Camera {
+  key: string
+  state: string
+  suggested_shift_s: number | null
+  photos: number
+  events: { folder: { id: string; path: string }; delta_s: number; photos: number; reference: string | null }[]
+}
+
+async function camerasRead(source: string): Promise<Camera[]> {
+  const resp = await page.request.get(`/api/dates/cameras?source=${source}`)
+  expect(resp.status()).toBe(200)
+  const body: { items: Camera[] } = await resp.json()
+  return body.items
+}
+
+// cameraName names a camera by its key as the Dates screen does: its
+// model, after its maker unless the model starts with it, and its serial.
+function cameraName(key: string): string {
+  const [make = '', model = '', serial = ''] = key.split('|')
+  const name = model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`.trim()
+  return serial === '' ? name : `${name} (${fill(en.dates.cameras.serial, { serial })})`
+}
+
+// shiftText reads a shift as the Dates screen does, in years of 365 days,
+// days, hours, and minutes: "+1 year 3 hours".
+function shiftText(seconds: number): string {
+  const units = { years: 365 * 86_400, days: 86_400, hours: 3_600, minutes: 60 }
+  let rest = Math.abs(seconds)
+  const parts: string[] = []
+  for (const [unit, size] of Object.entries(units)) {
+    const n = Math.floor(rest / size)
+    rest -= n * size
+    const form: unknown = (en.dates.shiftUnit as Record<string, string>)[`${unit}_${n === 1 ? 'one' : 'other'}`]
+    if (n > 0 && typeof form === 'string') {
+      parts.push(fill(form, { count: String(n) }))
+    }
+  }
+  return fill(seconds > 0 ? en.dates.shiftText.later : en.dates.shiftText.earlier, { parts: parts.join(' ') })
+}
+
+// shifted moves a local time, read in UTC, by a number of seconds.
+function shifted(local: string, seconds: number): string {
+  return new Date(Date.parse(`${local}Z`) + seconds * 1000).toISOString().slice(0, 19)
+}
+
+// nanos reads an RFC 3339 time in UTC to the nanosecond.
+function nanos(time: string): bigint {
+  const [, whole = '', fraction = ''] = /^(.+T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(time) ?? []
+  const ms = Date.parse(`${whole}Z`)
+  expect(Number.isNaN(ms), time).toBe(false)
+  return BigInt(ms) * 1_000_000n + BigInt(fraction.padEnd(9, '0'))
+}
+
+// instantText formats a time in nanoseconds as the app's formatInstant does
+// in the session's locale and zone, UTC.
+function instantText(ns: bigint | undefined): string {
+  if (ns === undefined) {
+    throw new Error('no time')
+  }
+  return new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'UTC' }).format(
+    new Date(Number(ns / 1_000_000n)),
+  )
+}
+
+// mtimeNs reads the modification time of the file at path, inside the
+// corpus, from the disk.
+function mtimeNs(path: string): bigint {
+  return statSync(join(corpusPath(), path), { bigint: true }).mtimeNs
+}
+
+function sha256Of(path: string): string {
+  return createHash('sha256').update(readFileSync(join(corpusPath(), path))).digest('hex')
+}
+
+function byPath([a]: [string, unknown], [b]: [string, unknown]): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+// folderTrail is a folder of the corpus as the folder choosers name it,
+// from the source.
+function folderTrail(path: string): string {
+  return [sourceLabel, ...path.split('/')].join(' / ')
+}
+
+// datesRows are the rows of the Dates screen's list.
+function datesRows(): Locator {
+  return page
+    .getByRole('region', { name: en.dates.list.title })
+    .getByRole('list', { name: en.dates.list.label, exact: true })
+    .locator(':scope > li')
 }

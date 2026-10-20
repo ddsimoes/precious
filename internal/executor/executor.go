@@ -44,6 +44,15 @@
 // checked item per step, compared whole before its first deletion. Files
 // are created and unlinked only through folders inside the quarantine, and
 // every outcome marks stale the pre-delete checks relying on its paths.
+//
+// R5 sets a file's modification time (r5 D13): a set_mtime item re-checks at
+// intent that the file is present, outside the quarantine, has one link, and
+// would change, and records the index's identity with its change time. The
+// step lstats the name through its folder, journals the time it found, and
+// calls SetModTime, with no folder sync; the outcome carries the index and
+// its content rows to the new time. A file the service does not own ends
+// failed (not_owner) and the action goes on; a set_mtime never turns writes
+// off.
 package executor
 
 import (
@@ -92,6 +101,10 @@ type Index interface {
 	// ApplyUnlink drops the row at path, a record a scan indexed, after an
 	// unlink (r4 D4, D6); a path not indexed is nothing to drop.
 	ApplyUnlink(ctx context.Context, tx *sql.Tx, src domain.SourceID, path []byte) error
+	// ApplyModTime follows a done set_mtime (r5 D13, D15): index.ApplyModTime,
+	// which also carries the time up its folders' newest, oldest, and by-year
+	// figures (r5 H4).
+	ApplyModTime(ctx context.Context, tx *sql.Tx, m index.ModTime) error
 }
 
 // Options configures New.
