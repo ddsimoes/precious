@@ -491,13 +491,21 @@ func (s *Service) observe(src Source, view *mountsView) observation {
 		return observation{state: StateOffline, reason: ReasonNotMounted, caps: src.Caps, deviceKey: src.Volume.DeviceKey}
 	}
 	obs := observation{state: StateUnavailable, mountPoint: m.Point, caps: src.Caps, deviceKey: m.Volume.DeviceKey}
-	if caps, err := s.fs.Capabilities(abs); err == nil {
-		obs.caps = caps
+	// The capabilities are read once: after the root folder opens, so that a
+	// path source is judged by the filesystem actually opened (r5b A3), and
+	// otherwise when the observation fails. mounted stays zero, with no
+	// stable identity, when they cannot be read.
+	var mounted fsaccess.Capabilities
+	readCaps := func() {
+		if caps, err := s.fs.Capabilities(abs); err == nil {
+			obs.caps, mounted = caps, caps
+		}
 	}
 	fail := func(reason string) observation {
 		if probe != nil {
 			probe.Close()
 		}
+		readCaps()
 		obs.reason = reason
 		return obs
 	}
@@ -519,29 +527,19 @@ func (s *Service) observe(src Source, view *mountsView) observation {
 	if info.Mount != nil && filepath.Clean(info.Mount.MountPoint) != m.Point {
 		return fail(ReasonRootCovered)
 	}
-	if src.Volume.Kind == fsaccess.VolumePath && !s.holdsPathSource(src, abs, m, info, d) {
-		d.Close()
-		return observation{state: StateOffline, reason: ReasonOtherFilesystem, caps: src.Caps, deviceKey: src.Volume.DeviceKey}
+	readCaps()
+	if src.Volume.Kind == fsaccess.VolumePath {
+		fsType := m.Volume.FSType // the folder's own mount row, when it has one (r5b A3)
+		if info.Mount != nil && info.Mount.FSType != "" {
+			fsType = info.Mount.FSType
+		}
+		if !samePathVolume(src, fsType, mounted, d.Self().Ino) {
+			d.Close()
+			return observation{state: StateOffline, reason: ReasonOtherFilesystem, caps: src.Caps, deviceKey: src.Volume.DeviceKey}
+		}
 	}
 	obs.state, obs.dir, obs.abs = StateOnline, d, abs
 	return obs
-}
-
-// holdsPathSource reports whether the root folder d, opened at abs for the
-// path source src, is the source's own (r5b design D1). It describes the
-// filesystem d is on as the folder's own mount row says, and its
-// capabilities as read after the open, so a filesystem mounted at the point
-// since the mount table was read is the one judged.
-func (s *Service) holdsPathSource(src Source, abs string, m fsaccess.Mount, info fsaccess.FSInfo, d fsaccess.Dir) bool {
-	fsType := m.Volume.FSType
-	if info.Mount != nil && info.Mount.FSType != "" {
-		fsType = info.Mount.FSType
-	}
-	mounted, err := s.fs.Capabilities(abs)
-	if err != nil {
-		mounted = fsaccess.Capabilities{} // no stable identity known
-	}
-	return samePathVolume(src, fsType, mounted, d.Self().Ino)
 }
 
 // samePathVolume reports whether a root folder opened at a path source's

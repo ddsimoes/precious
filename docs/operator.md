@@ -457,7 +457,7 @@ A source is recorded as a volume plus a folder inside that volume, not as an abs
   - another whole filesystem of the same type, such as an empty ext4 disk at the mount point of a source that is an ext4 disk's top folder, has the same root inode and is taken for the source;
   - on macOS and Windows, any filesystem at the mount point is taken for the source.
 
-  A source rooted at a folder below its mount point, whose folder was made again or copied onto another disk, reads `other_filesystem` as a reformatted disk does for a strong identity: remove the source and add it again.
+  A source rooted at a folder below its mount point, whose folder was made again or copied onto another disk, reads `other_filesystem` as a reformatted disk does for a strong identity: remove the source and add it again. As for a strong identity, it cannot be removed while its quarantine holds items or a change waits for your check in History, since both need the disk.
 - A folder bind-mounted somewhere else belongs to its own volume, so a source added through the bind mount and one added on the original mount are on the same volume.
 - The label shown next to a volume comes from `/dev/disk/by-label` when the filesystem has one.
 

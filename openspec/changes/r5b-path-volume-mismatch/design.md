@@ -104,3 +104,9 @@ An independent review of the first implementation (9cee1f4) found seven problems
   - A source rooted at a folder below its mount point is judged by that folder's inode, not the mount point's: `TestPathSourceRootedBelowItsMountPoint`.
   - A strong volume ignores the root inode: `TestStrongSourceIgnoresTheRootInode`.
   - A source with stable inodes and a stand-in with none known (overlay) is told apart by type: `TestPathSourceStandInWithoutStableInodes`.
+- **A7. One capability read per check (re-review).** A second review of A1–A6 (1ade87a) undid each fix in turn, and the new test failed each time. It accepted A4. It found that a `path` source read the capabilities twice per check, each read parsing the mount table again: once before the open, and once after.
+  - `observe` now reads them once:
+    - after the open, for the check and the recorded capabilities alike;
+    - when the observation fails, in `fail`.
+  - Nothing observable changes, so no test is added.
+  - The operator guide now also says that removal is refused while the quarantine holds items or a change waits for a check, as for a strong identity.
