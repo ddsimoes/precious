@@ -110,3 +110,12 @@ An independent review of the first implementation (9cee1f4) found seven problems
     - when the observation fails, in `fail`.
   - Nothing observable changes, so no test is added.
   - The operator guide now also says that removal is refused while the quarantine holds items or a change waits for a check, as for a strong identity.
+- **V1. Deploy on the reference server (2.3), 2026-10-21.**
+  - **Deploy.** The database was backed up with the r5 binary (`r5-before-r5b.db`), and the server then ran `r5b-smoke-f219308`. All three sources were online. The NTFS source (`path`, ntfs3) was being hashed: 1,776,719 files checked.
+  - **The hazard, reproduced.** The disk was unmounted on the host, and the container restarted. The container platform then bound the host's empty folder (ext4) at the source's mount point, as after a power cut.
+  - **What Precious did.**
+    - The source read `offline`/`other_filesystem`. The Sources screen showed "The disk is not connected" with the reason, and Scan now off ("Connect the disk to scan it").
+    - The hashing job that was running before the restart was claimed again, planned, and ended `failed`/`source_offline` at its `Open`, having read nothing.
+    - The checked count stayed at 1,776,719 files.
+  - **The disk back.** With the disk mounted again and the container restarted, the source was `online`.
+  - **Hashing did not restart on its own.** `Startup` enqueues hashing for the sources recorded online, and this one was recorded offline at shutdown, as a strong volume would be. It was started by hand (`start-hash`). That behavior is older than r5b, and unchanged.
