@@ -2,7 +2,7 @@
 
 ## 1. Identity check
 
-- [ ] 1.1 In `internal/sources`:
+- [x] 1.1 In `internal/sources`:
   - add `ReasonOtherFilesystem` (`other_filesystem`);
   - add `Source.RootIno`, read with the row, and recorded by `add-source` (design D3, A2);
   - add the check of D1 in `observe`, with type families (A1), judged on the opened folder (A3), returning D2's observation.
@@ -15,7 +15,7 @@
   - a source with no root inode recorded: decided by type;
   - a stand-in mounted between the mount table's read and the open: `offline`/`other_filesystem`;
   - a strong volume with another root inode recorded: `online`; R1.16: unchanged.
-- [ ] 1.2 An end-to-end test with real mounts in `internal/index`, through the OS backend, the registry, and the job runner. A tmpfs holding a few files is bound at a mount point, added as a source, and scanned. Then the mount point holds, in turn:
+- [x] 1.2 An end-to-end test with real mounts in `internal/index`, through the OS backend, the registry, and the job runner. A tmpfs holding a few files is bound at a mount point, added as a source, and scanned. Then the mount point holds, in turn:
   - a bind of an empty folder of the test's own filesystem;
   - a bind of an empty folder of another tmpfs, the source's own type;
   - the original tmpfs again.
@@ -25,7 +25,7 @@
   - once the original is back: `online`, and a rescan writes no row.
 
   Verify with `scripts/e2e-docker.sh`.
-- [ ] 1.3 Update `docs/operator.md`:
+- [x] 1.3 Update `docs/operator.md`:
   - the state reasons table gains `other_filesystem`;
   - Volume identity says when a mount at a `path` source's mount point counts as its volume, and what a container's bind of an empty folder then reads.
 
@@ -33,7 +33,7 @@
 
 ## 2. Integration
 
-- [ ] 2.1 Run the full verification:
+- [x] 2.1 Run the full verification:
   - gofmt and both vet runs;
   - `go test -race ./...`;
   - `make cross`;
@@ -43,7 +43,7 @@
   - `openspec validate --all --strict`.
 
   `make test-slow` is not needed: no query on a slow path changes.
-- [ ] 2.2 Smoke-check the built binary with a throwaway script, in a user and mount namespace:
+- [x] 2.2 Smoke-check the built binaries with a throwaway script, Precious running as an unprivileged user (`nobody`) in a privileged container, which makes the mounts (user namespaces are denied on the development machine):
   - the r5 binary adds and scans a `path` source on a tmpfs, and hashes it;
   - the r5b binary runs on a copy of that database. The source is online, and a rescan finds nothing changed.
   - Then an empty folder of another filesystem is bound at the source's mount point. Verify: `offline`/`other_filesystem`; `start-scan` refused; Home's coverage and the entries unchanged.
