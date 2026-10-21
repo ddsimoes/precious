@@ -2,9 +2,9 @@
 
 ## Why
 
-On 2026-10-20 the owner attached a 466 GB NTFS disk to the reference server. The server is a Proxmox container that sees no `/dev/disk`, so the disk is a `path` source, known only by its mount point `/mnt/hd-elements` (a bind of the host's mount). Before a planned power-off, a reading of the code found a hazard:
+On 2026-10-20 the owner attached a 466 GB NTFS disk to the reference server. Precious runs there in a container that sees no `/dev/disk`, so the disk is a `path` source, known only by its mount point (a bind of the host's mount). Before a planned power-off, a reading of the code found a hazard:
 
-- When the host boots without the disk mounted, Proxmox still binds the host's empty folder at `/mnt/hd-elements`.
+- When the host boots without the disk mounted, the container platform still binds the host's empty folder at that mount point.
 - The registry would see a mount at the source's mount point and call the source `online`, holding nothing.
 - The startup hashing job would then find every file still to read gone, and mark it `changed`. A `changed` file whose facts a rescan finds unchanged is never read again.
 - A scan would mark every entry missing.
