@@ -64,6 +64,10 @@ const (
 	// ReasonRootCovered: the root folder's path leads to another filesystem,
 	// mounted over it or reached through a symbolic link.
 	ReasonRootCovered = "root_covered"
+	// ReasonOtherFilesystem: a filesystem is mounted at a path source's
+	// mount point, but not the source's own (r5b design D1, D2): a stand-in
+	// such as a container's bind of an empty folder, or another disk.
+	ReasonOtherFilesystem = "other_filesystem"
 )
 
 // RefreshInterval is how often Run refreshes availability.
@@ -86,6 +90,10 @@ type Source struct {
 	MountPoint string
 	Caps       fsaccess.Capabilities
 	RootEntry  domain.EntryID
+	// RootIno is the inode the index recorded for the root folder (the
+	// scanner's bit-cast of st_ino), 0 when it has no root entry or the
+	// inode is unknown (r5b design D3).
+	RootIno    uint64
 	ScanGen    int64
 	LastScanAt *time.Time
 	// Schedule is the rescan schedule, nil when off (r2b design D6), and
@@ -171,6 +179,7 @@ func (s *Service) AllowedRoots() []string { return append([]string(nil), s.roots
 const sourceColumns = `s.id, s.label, s.volume_kind, s.volume_id, s.volume_label, s.fs_type, s.strong,
 	s.rel_root, s.device_key, s.capabilities, s.state, s.state_reason, s.mount_point, s.scan_gen,
 	s.last_scan_at, (SELECT e.id FROM entries e WHERE e.source_id = s.id AND e.path = X''),
+	(SELECT e.ino FROM entries e WHERE e.source_id = s.id AND e.path = X''),
 	s.scan_schedule, s.next_scan_at, s.schedule_skipped_at, s.schedule_skip_reason, s.write_enabled`
 
 type rowScanner interface {
@@ -184,13 +193,13 @@ func scanSource(r rowScanner) (Source, error) {
 		volumeLabel, deviceKey, reason sql.NullString
 		mountPoint                     []byte
 		strong                         int64
-		lastScanAt, rootEntry          sql.NullInt64
+		lastScanAt, rootEntry, rootIno sql.NullInt64
 		schedule, skipReason           sql.NullString
 		nextScanAt, skippedAt          sql.NullInt64
 	)
 	err := r.Scan(&src.ID, &src.Label, &kind, &src.Volume.ID, &volumeLabel, &src.Volume.FSType, &strong,
 		&src.RelRoot, &deviceKey, &caps, &state, &reason, &mountPoint, &src.ScanGen, &lastScanAt, &rootEntry,
-		&schedule, &nextScanAt, &skippedAt, &skipReason, &src.WriteEnabled)
+		&rootIno, &schedule, &nextScanAt, &skippedAt, &skipReason, &src.WriteEnabled)
 	if err != nil {
 		return Source{}, err
 	}
@@ -212,6 +221,7 @@ func scanSource(r rowScanner) (Source, error) {
 		src.LastScanAt = &t
 	}
 	src.RootEntry = domain.EntryID(rootEntry.Int64)
+	src.RootIno = uint64(rootIno.Int64)
 	if schedule.Valid {
 		var sch domain.Schedule
 		if err := json.Unmarshal([]byte(schedule.String), &sch); err != nil {
@@ -480,8 +490,9 @@ func (s *Service) observe(src Source, view *mountsView) observation {
 		return observation{state: StateOffline, reason: ReasonNotMounted, caps: src.Caps, deviceKey: src.Volume.DeviceKey}
 	}
 	obs := observation{state: StateUnavailable, mountPoint: m.Point, caps: src.Caps, deviceKey: m.Volume.DeviceKey}
+	var mounted fsaccess.Capabilities // zero, without stable identity, when unread
 	if caps, err := s.fs.Capabilities(abs); err == nil {
-		obs.caps = caps
+		obs.caps, mounted = caps, caps
 	}
 	fail := func(reason string) observation {
 		if probe != nil {
@@ -508,8 +519,27 @@ func (s *Service) observe(src Source, view *mountsView) observation {
 	if info.Mount != nil && filepath.Clean(info.Mount.MountPoint) != m.Point {
 		return fail(ReasonRootCovered)
 	}
+	if src.Volume.Kind == fsaccess.VolumePath && !samePathVolume(src, m.Volume.FSType, mounted, d.Self().Ino) {
+		d.Close()
+		return observation{state: StateOffline, reason: ReasonOtherFilesystem, caps: src.Caps, deviceKey: src.Volume.DeviceKey}
+	}
 	obs.state, obs.dir, obs.abs = StateOnline, d, abs
 	return obs
+}
+
+// samePathVolume reports whether the root folder opened at a path source's
+// mount point is the source's own (r5b design D1). With the root's inode
+// recorded, and stable inode numbers on both the source's recorded
+// filesystem and the mounted one, it is when the opened folder has that
+// inode: a folder of another filesystem bound there has another. Otherwise
+// it is when the mounted filesystem's type is the source's, as far as both
+// are known. fsType and mounted describe the mounted filesystem, and
+// rootIno is the opened root folder's inode.
+func samePathVolume(src Source, fsType string, mounted fsaccess.Capabilities, rootIno uint64) bool {
+	if src.RootIno != 0 && src.Caps.StableIdentity && mounted.StableIdentity {
+		return rootIno == src.RootIno
+	}
+	return src.Volume.FSType == "" || fsType == "" || fsType == src.Volume.FSType
 }
 
 // rootReason names why a root folder could not be opened.

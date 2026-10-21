@@ -446,6 +446,12 @@ A source is recorded as a volume plus a folder inside that volume, not as an abs
 
 - A **strong** identity follows the volume to wherever it is mounted next.
 - A **weak** `path` identity is the fallback: for filesystems with none of the above (network shares, tmpfs, most FUSE mounts), and for every source on macOS and Windows. Such a source is recognized only at that same mount point, and the Sources screen says so. Mounted anywhere else, it shows as offline.
+- A filesystem mounted at a `path` source's mount point counts as the source only when it holds the source's own folder:
+  - **On filesystems that keep inode numbers** (ext4, xfs, btrfs, NTFS, tmpfs), the folder there must have the inode the last scan recorded for it. Before the first scan, the type decides, as on the others.
+  - **On the others** (FAT, exFAT, network, and FUSE filesystems), the filesystem type must be the one the source was added on.
+  - **Otherwise** the source shows `offline` with reason `other_filesystem`, and nothing that needs the disk runs.
+
+  This catches the usual stand-in: a container, or a bind mount, that puts a folder of the host's own filesystem at that point while the disk itself is not mounted. Proxmox does this when the host starts without the disk, and so does Docker without `/dev/disk`. The same disk mounted through another driver, such as NTFS through `ntfs3` and then `ntfs-3g`, keeps its folder's inode and is still the source. Another whole filesystem of the same type is not told apart: an empty ext4 disk at an ext4 source's mount point has the same root inode, and is taken for the source when the source is the disk's top folder.
 - A folder bind-mounted somewhere else belongs to its own volume, so a source added through the bind mount and one added on the original mount are on the same volume.
 - The label shown next to a volume comes from `/dev/disk/by-label` when the filesystem has one.
 
@@ -522,6 +528,7 @@ Precious checks where each source's volume is mounted every minute, whenever the
 |---|---|---|
 | `online` | | The volume is mounted and the source's folder opens. |
 | `offline` | `volume_not_mounted` | No mounted filesystem has the source's volume identity: the disk is detached, unmounted, or not visible to the service. |
+| `offline` | `other_filesystem` | Another filesystem is mounted at a `path` source's mount point, such as the host's empty folder that a container binds there while the disk is not mounted (see [Volume identity](#volume-identity)). Mount the source's disk there again. |
 | `unavailable` | `root_missing` | The volume is mounted, but the source's folder no longer exists on it. |
 | `unavailable` | `root_unreadable` | The folder exists, but the service account may not read it. |
 | `unavailable` | `root_unavailable` | Opening the folder failed with an input/output error, or a stale or disconnected mount. |
