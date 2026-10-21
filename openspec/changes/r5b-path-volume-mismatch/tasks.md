@@ -2,13 +2,19 @@
 
 ## 1. Identity check
 
-- [ ] 1.1 In `internal/sources`, add `ReasonOtherFilesystem` (`other_filesystem`), `Source.RootIno` read with the row (design D3), and the check of D1 in `observe`, returning D2's observation. Verify with unit tests over synthfs:
-  - an NTFS-typed `path` source with stable capabilities, scanned, then another filesystem's folder at its mount point: `offline`/`other_filesystem`, `Open` refused with `source_offline`, entries unchanged; and back online once its own filesystem is mounted there;
-  - the same type with another root inode: `offline`/`other_filesystem`;
-  - another type with the same root inode (the driver change): `online`;
+- [ ] 1.1 In `internal/sources`:
+  - add `ReasonOtherFilesystem` (`other_filesystem`);
+  - add `Source.RootIno`, read with the row, and recorded by `add-source` (design D3, A2);
+  - add the check of D1 in `observe`, with type families (A1), judged on the opened folder (A3), returning D2's observation.
+
+  Verify with unit tests over synthfs:
+  - an NTFS-typed `path` source with stable capabilities, then a folder of the host's ext4 at its mount point: `offline`/`other_filesystem`, `Open` refused with `source_offline`, entries unchanged; back online once its own filesystem is mounted there, also through ntfs-3g (a bare `fuseblk` with unknown capabilities), and the reverse;
+  - the same type with another root inode, a source rooted below its mount point, and an overlay stand-in with no stable inodes: `offline`/`other_filesystem`;
   - a FAT-capability source remounted (inodes renumbered): `online`; a folder of another type there: `offline`/`other_filesystem`;
+  - a source added and not yet scanned, then a stand-in of its type: `offline`/`other_filesystem`;
   - a source with no root inode recorded: decided by type;
-  - a strong volume and R1.16: unchanged.
+  - a stand-in mounted between the mount table's read and the open: `offline`/`other_filesystem`;
+  - a strong volume with another root inode recorded: `online`; R1.16: unchanged.
 - [ ] 1.2 An end-to-end test with real mounts in `internal/index`, through the OS backend, the registry, and the job runner. A tmpfs holding a few files is bound at a mount point, added as a source, and scanned. Then the mount point holds, in turn:
   - a bind of an empty folder of the test's own filesystem;
   - a bind of an empty folder of another tmpfs, the source's own type;

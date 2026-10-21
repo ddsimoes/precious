@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Sources are located by volume identity
-A source SHALL be located by its volume identity plus its folder's path inside that volume, never by an absolute path alone. The volume kind SHALL be `uuid` (filesystem UUID), `zfs` (dataset), `fsid` (btrfs filesystem ID), or `path` (mount point, when no other identity exists). `GET /api/sources` SHALL report `volume.strong` as `true` for the first three and `false` for `path`. A `path` source SHALL be recognized only at the same mount point, and only when the filesystem mounted there holds the source's indexed root folder: the same inode when the source's recorded filesystem and the mounted one both keep stable inode numbers and the index recorded it, otherwise the same filesystem type when both are known. Another filesystem at a `path` source's mount point SHALL leave the source `offline` with reason `other_filesystem`.
+A source SHALL be located by its volume identity plus its folder's path inside that volume, never by an absolute path alone. The volume kind SHALL be `uuid` (filesystem UUID), `zfs` (dataset), `fsid` (btrfs filesystem ID), or `path` (mount point, when no other identity exists). `GET /api/sources` SHALL report `volume.strong` as `true` for the first three and `false` for `path`. A `path` source SHALL be recognized only at the same mount point. On Linux, it SHALL be recognized there only when the filesystem mounted there holds the source's indexed root folder. That is the same inode, when the index recorded the folder's inode (from `add-source` or the last scan) and both the source's recorded filesystem and the mounted one keep stable inode numbers. Otherwise it is a filesystem type that names the same filesystem, when both types are known: the same type, or another name of NTFS, exFAT, FAT, NFS, or SMB. Another filesystem at a `path` source's mount point SHALL leave the source `offline` with reason `other_filesystem`.
 
 #### Scenario: ZFS dataset identity
 - **WHEN** a folder on the ZFS dataset `tank/fotos` is added as a source
@@ -30,8 +30,12 @@ A source SHALL be located by its volume identity plus its folder's path inside t
 - **THEN** the source shows `offline` with reason `other_filesystem`
 
 #### Scenario: The same disk through another driver
-- **WHEN** a scanned `path` source on an NTFS disk mounted through `ntfs3` is mounted at the same point through `ntfs-3g`
-- **THEN** the source shows `online`: its root folder has the inode the index recorded
+- **WHEN** a scanned `path` source on an NTFS disk mounted through `ntfs3` is mounted at the same point through `ntfs-3g`, or the other way round
+- **THEN** the source shows `online`
+
+#### Scenario: A stand-in before the first scan
+- **WHEN** a `path` source on an ext4 disk is added, and before any scan a folder of another ext4 filesystem is bound at its mount point
+- **THEN** the source shows `offline` with reason `other_filesystem`
 
 #### Scenario: Filesystems without stable inodes compare by type
 - **WHEN** a scanned `path` source on a FAT card is mounted at the same point again, its folders numbered afresh, and later a folder of an ext4 filesystem is bound there instead

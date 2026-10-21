@@ -25,6 +25,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -490,9 +491,8 @@ func (s *Service) observe(src Source, view *mountsView) observation {
 		return observation{state: StateOffline, reason: ReasonNotMounted, caps: src.Caps, deviceKey: src.Volume.DeviceKey}
 	}
 	obs := observation{state: StateUnavailable, mountPoint: m.Point, caps: src.Caps, deviceKey: m.Volume.DeviceKey}
-	var mounted fsaccess.Capabilities // zero, without stable identity, when unread
 	if caps, err := s.fs.Capabilities(abs); err == nil {
-		obs.caps, mounted = caps, caps
+		obs.caps = caps
 	}
 	fail := func(reason string) observation {
 		if probe != nil {
@@ -519,7 +519,7 @@ func (s *Service) observe(src Source, view *mountsView) observation {
 	if info.Mount != nil && filepath.Clean(info.Mount.MountPoint) != m.Point {
 		return fail(ReasonRootCovered)
 	}
-	if src.Volume.Kind == fsaccess.VolumePath && !samePathVolume(src, m.Volume.FSType, mounted, d.Self().Ino) {
+	if src.Volume.Kind == fsaccess.VolumePath && !s.holdsPathSource(src, abs, m, info, d) {
 		d.Close()
 		return observation{state: StateOffline, reason: ReasonOtherFilesystem, caps: src.Caps, deviceKey: src.Volume.DeviceKey}
 	}
@@ -527,19 +527,71 @@ func (s *Service) observe(src Source, view *mountsView) observation {
 	return obs
 }
 
-// samePathVolume reports whether the root folder opened at a path source's
+// holdsPathSource reports whether the root folder d, opened at abs for the
+// path source src, is the source's own (r5b design D1). It describes the
+// filesystem d is on as the folder's own mount row says, and its
+// capabilities as read after the open, so a filesystem mounted at the point
+// since the mount table was read is the one judged.
+func (s *Service) holdsPathSource(src Source, abs string, m fsaccess.Mount, info fsaccess.FSInfo, d fsaccess.Dir) bool {
+	fsType := m.Volume.FSType
+	if info.Mount != nil && info.Mount.FSType != "" {
+		fsType = info.Mount.FSType
+	}
+	mounted, err := s.fs.Capabilities(abs)
+	if err != nil {
+		mounted = fsaccess.Capabilities{} // no stable identity known
+	}
+	return samePathVolume(src, fsType, mounted, d.Self().Ino)
+}
+
+// samePathVolume reports whether a root folder opened at a path source's
 // mount point is the source's own (r5b design D1). With the root's inode
 // recorded, and stable inode numbers on both the source's recorded
 // filesystem and the mounted one, it is when the opened folder has that
 // inode: a folder of another filesystem bound there has another. Otherwise
-// it is when the mounted filesystem's type is the source's, as far as both
-// are known. fsType and mounted describe the mounted filesystem, and
-// rootIno is the opened root folder's inode.
+// it is when the mounted filesystem's type is of the source's family
+// (sameFSType), as far as both are known. fsType and mounted describe the
+// mounted filesystem, and rootIno is the opened root folder's inode.
 func samePathVolume(src Source, fsType string, mounted fsaccess.Capabilities, rootIno uint64) bool {
 	if src.RootIno != 0 && src.Caps.StableIdentity && mounted.StableIdentity {
 		return rootIno == src.RootIno
 	}
-	return src.Volume.FSType == "" || fsType == "" || fsType == src.Volume.FSType
+	return src.Volume.FSType == "" || fsType == "" || sameFSType(src.Volume.FSType, fsType)
+}
+
+// fsFamilies groups the mount-table type names one filesystem is mounted
+// under (r5b addendum A1): NTFS through either kernel driver or ntfs-3g,
+// exFAT through the kernel or exfat-fuse, FAT, NFS by protocol version, and
+// SMB. A bare fuseblk is either FUSE block driver.
+var fsFamilies = map[string][]string{
+	"ntfs":               {"ntfs"},
+	"ntfs3":              {"ntfs"},
+	"fuseblk.ntfs":       {"ntfs"},
+	"fuseblk.ntfs-3g":    {"ntfs"},
+	"fuseblk.lowntfs-3g": {"ntfs"},
+	"exfat":              {"exfat"},
+	"fuseblk.exfat":      {"exfat"},
+	"fuseblk":            {"ntfs", "exfat"},
+	"vfat":               {"fat"},
+	"msdos":              {"fat"},
+	"nfs":                {"nfs"},
+	"nfs4":               {"nfs"},
+	"cifs":               {"smb"},
+	"smb3":               {"smb"},
+}
+
+// sameFSType reports whether the mount-table types a and b can name one
+// filesystem: equal, or sharing a family of fsFamilies.
+func sameFSType(a, b string) bool {
+	if a == b {
+		return true
+	}
+	for _, f := range fsFamilies[a] {
+		if slices.Contains(fsFamilies[b], f) {
+			return true
+		}
+	}
+	return false
 }
 
 // rootReason names why a root folder could not be opened.

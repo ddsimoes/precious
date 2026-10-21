@@ -54,6 +54,9 @@ type Candidate struct {
 	RelRoot    []byte
 	MountPoint string
 	Caps       fsaccess.Capabilities
+	// RootIno is the folder's inode when it was checked, which Add records
+	// on the root entry until a scan rewrites it (r5b design D3).
+	RootIno uint64
 }
 
 // PrepareAdd checks the folder handle names for add-source, outside any
@@ -105,7 +108,8 @@ func (s *Service) PrepareAdd(ctx context.Context, handle, label string) (Candida
 	if err != nil {
 		return Candidate{}, err
 	}
-	c := Candidate{Path: p, Label: label, Volume: m.Volume, RelRoot: relRoot(m, p), MountPoint: m.Point, Caps: caps}
+	c := Candidate{Path: p, Label: label, Volume: m.Volume, RelRoot: relRoot(m, p), MountPoint: m.Point, Caps: caps,
+		RootIno: d.Self().Ino}
 	if err := checkOverlap(ctx, s.st.Reader(), c); err != nil {
 		return Candidate{}, err
 	}
@@ -195,9 +199,13 @@ func (s *Service) Add(ctx context.Context, tx *sql.Tx, c Candidate) (Source, err
 	if err != nil {
 		return Source{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO entries (source_id, parent_id, name, path, kind, state,
-		first_seen, last_seen, scan_gen) VALUES (?, NULL, X'', X'', 'directory', 'present', ?, ?, 0)`,
-		string(id), clock.Millis(now), clock.Millis(now)); err != nil {
+	var rootIno any
+	if c.RootIno != 0 {
+		rootIno = int64(c.RootIno) // the scanner's bit-cast
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO entries (source_id, parent_id, name, path, kind, state, ino,
+		first_seen, last_seen, scan_gen) VALUES (?, NULL, X'', X'', 'directory', 'present', ?, ?, ?, 0)`,
+		string(id), rootIno, clock.Millis(now), clock.Millis(now)); err != nil {
 		return Source{}, err
 	}
 	if err := s.audit(ctx, tx, AuditSourceAdded, map[string]any{
