@@ -1,15 +1,25 @@
 import type { TFunction } from 'i18next'
 
-import { decisions, duplicationOf, families, fileKinds, lastChange, displayKind, type EntryRow } from '@/api/entries'
+import {
+  decisions,
+  duplicationOf,
+  families,
+  fileKinds,
+  lastChange,
+  displayKind,
+  places,
+  type EntryRow,
+  type Place,
+} from '@/api/entries'
 import type { Decision, Family, FileKind } from '@/api/home'
 import { dominantFamily } from '@/lib/composition'
 
 // The Map's color modes (spec §11.2): each paints a treemap area by one
 // property of its entry, and names its colors in a legend.
 
-export type ColorMode = 'family' | 'kind' | 'age' | 'decision' | 'tag' | 'duplication'
+export type ColorMode = 'family' | 'kind' | 'age' | 'decision' | 'tag' | 'duplication' | 'places'
 
-export const colorModes: ColorMode[] = ['family', 'kind', 'age', 'decision', 'tag', 'duplication']
+export const colorModes: ColorMode[] = ['family', 'kind', 'age', 'decision', 'tag', 'duplication', 'places']
 
 export interface LegendItem {
   key: string
@@ -87,6 +97,20 @@ const dupBands = [
 // uncheckedColor paints what could have a copy and is not all checked yet.
 const uncheckedColor = '#93c5fd'
 
+// placeColors paint where the copies are (R5c design D8), in the treemap,
+// its legend, and the place bars: one per place, and disposable files apart
+// whatever their place.
+export const placeColors: Record<Place | 'disposable', string> = {
+  only_copy: '#ef4444',
+  this_source: '#fb923c',
+  other_source: '#4ade80',
+  unchecked: uncheckedColor,
+  unreadable: '#a78bfa',
+  none: '#a1a1aa',
+  not_computed: '#fde68a',
+  disposable: '#99f6e4',
+}
+
 export function colorOf(row: EntryRow, mode: ColorMode, context: ColorContext): string {
   switch (mode) {
     case 'family': {
@@ -124,6 +148,13 @@ export function colorOf(row: EntryRow, mode: ColorMode, context: ColorContext): 
       }
       return (dupBands.find((band) => duplication.fraction < band.below) ?? dupBands[4]).color
     }
+    case 'places':
+      // Disposable files take their own color whatever their place; a row
+      // fetched without places, or a missing entry, has no place.
+      if (row.disposable === true) {
+        return placeColors.disposable
+      }
+      return row.place === undefined || row.place === null ? neutralColor : placeColors[row.place]
   }
 }
 
@@ -154,5 +185,11 @@ export function legendOf(mode: ColorMode, t: TFunction): LegendItem[] {
         { key: 'unchecked', label: t('map.dup.unchecked'), color: uncheckedColor },
         { key: 'nothing', label: t('map.dup.nothing'), color: neutralColor },
       ]
+    case 'places':
+      return [...places, 'disposable' as const].map((p) => ({
+        key: p,
+        label: t(`map.place.${p}`),
+        color: placeColors[p],
+      }))
   }
 }
