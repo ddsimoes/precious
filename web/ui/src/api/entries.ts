@@ -105,6 +105,71 @@ export type ArchiveState =
   | 'changed'
   | 'unreadable'
 
+// Place is where the copies of an entry's content are (R5c design D1):
+// only_copy has no other copy anywhere, this_source has copies only on its
+// own source, and other_source has one on another source; unchecked is not
+// checked yet, unreadable could not be read, none holds nothing with
+// content, and not_computed is a folder or archive whose figures the next
+// pass computes.
+export type Place =
+  | 'only_copy'
+  | 'this_source'
+  | 'other_source'
+  | 'unchecked'
+  | 'unreadable'
+  | 'none'
+  | 'not_computed'
+
+// places lists every place, from most to least in need of keeping.
+export const places: Place[] = [
+  'only_copy',
+  'this_source',
+  'other_source',
+  'unchecked',
+  'unreadable',
+  'none',
+  'not_computed',
+]
+
+export interface PlaceAmount {
+  files: number
+  bytes: number
+}
+
+// PlaceSums are a folder's or archive's files and bytes by place; disposable
+// files are counted apart, in disposable only (R5c design D14).
+export interface PlaceSums {
+  only_copy: PlaceAmount
+  this_source: PlaceAmount
+  other_source: PlaceAmount
+  unchecked: PlaceAmount
+  unreadable: PlaceAmount
+  disposable: PlaceAmount
+}
+
+// OtherCopy names one copy of a file or member placed this_source or
+// other_source (R5c design D9). ref is an entry ID or a member's "m<id>";
+// archive_id is a member's archive. via_archive marks a member's copy named
+// through its archive's coverage (D6); more is the number of other copies
+// beyond the two the row and this copy make.
+export interface OtherCopy {
+  ref: string
+  source_id: string
+  path: string
+  path_b64: string
+  archive_id: string | null
+  offline: boolean
+  via_archive: boolean
+  more: number
+}
+
+// CoveredBy is the folder or archive that holds the most of a folder's or
+// complete archive's content (R5c design D9).
+export interface CoveredBy {
+  kind: 'same' | 'inside'
+  other: { id: string; source_id: string; path: string; path_b64: string }
+}
+
 // EntryRow is the row of children, treemap, and search responses. name and
 // path are escaped display strings; name_b64 and path_b64 are the raw bytes.
 // Times are RFC 3339 or null.
@@ -156,6 +221,21 @@ export interface EntryRow {
   duplicated_bytes: number | null
   archive_state: ArchiveState | null
   archive_id: string | null
+  // The R5c place fields, sent only when places=1 is asked for (R5c design
+  // Interfaces). place is null for a missing entry; place_offline is set for
+  // a file or member placed other_source whose copies are all on sources
+  // not connected; disposable is set for disposable files. places are the
+  // sums of a folder, complete archive (its split), or member folder, and
+  // null otherwise. member_places are a complete archive's unpacked member
+  // sums, on the entry of the entry and treemap responses only. other_copy
+  // and covered_by come on children rows only.
+  place?: Place | null
+  place_offline?: boolean
+  disposable?: boolean
+  places?: PlaceSums | null
+  member_places?: PlaceSums | null
+  other_copy?: OtherCopy | null
+  covered_by?: CoveredBy | null
 }
 
 export interface Ancestor {
@@ -268,6 +348,9 @@ export interface EntryDetail {
   // design D13): the plan that put it there, when, and where it came from
   // (null when unknown).
   in_quarantine: InQuarantine | null
+  // places_updating is set, when places=1 is asked for, while the places
+  // may still change: relations are being recomputed (R5c design D8).
+  places_updating?: boolean
 }
 
 export interface InQuarantine {
@@ -276,10 +359,24 @@ export interface InQuarantine {
   original: { path: string; path_b64: string } | null
 }
 
-export type ChildSort = 'bytes' | 'files' | 'newest' | 'name'
+// only_here sorts by the bytes kept only on this source and needs places=1
+// (R5c design D7). childSorts lists the sorts any listing takes, so an
+// address read with childSorts alone falls back from only_here; a view with
+// the places on accepts placesSorts as well.
+export type ChildSort = 'bytes' | 'files' | 'newest' | 'name' | 'only_here'
 export type SortOrder = 'desc' | 'asc'
 
 export const childSorts: ChildSort[] = ['bytes', 'files', 'newest', 'name']
+
+export const placesSorts: ChildSort[] = ['only_here']
+
+// ChildrenView asks for the children's places (places=1) and, with them,
+// hides the rows with nothing that needs keeping here (hide=other_source).
+// hide means nothing without places, so it is sent only with them.
+export interface ChildrenView {
+  places: boolean
+  hide: boolean
+}
 
 export interface ChildrenPage {
   items: EntryRow[]
@@ -306,16 +403,23 @@ export interface TextContent {
 // decisions or tags refetches them together.
 export const entriesQueryRoot = ['entries'] as const
 
-export function entryQueryKey(id: string) {
-  return ['entries', id, 'detail'] as const
+// The keys of entry responses asked for with places end in 'places', and
+// children hiding rows in 'hide', so each view has its own cache while the
+// key without them prefixes it.
+export function entryQueryKey(id: string, places = false) {
+  return places ? (['entries', id, 'detail', 'places'] as const) : (['entries', id, 'detail'] as const)
 }
 
-export function childrenQueryKey(id: string, sort: ChildSort, order: SortOrder) {
-  return ['entries', id, 'children', sort, order] as const
+export function childrenQueryKey(id: string, sort: ChildSort, order: SortOrder, view?: ChildrenView) {
+  const key = ['entries', id, 'children', sort, order] as const
+  if (view?.places !== true) {
+    return key
+  }
+  return view.hide ? ([...key, 'places', 'hide'] as const) : ([...key, 'places'] as const)
 }
 
-export function treemapQueryKey(id: string) {
-  return ['entries', id, 'treemap'] as const
+export function treemapQueryKey(id: string, places = false) {
+  return places ? (['entries', id, 'treemap', 'places'] as const) : (['entries', id, 'treemap'] as const)
 }
 
 export function textQueryKey(id: string) {
@@ -330,8 +434,8 @@ function entryPath(id: string, rest = ''): string {
   return `/api/entries/${encodeURIComponent(id)}${rest}`
 }
 
-export function fetchEntry(id: string, signal?: AbortSignal): Promise<EntryDetail> {
-  return apiGet<EntryDetail>(entryPath(id), signal)
+export function fetchEntry(id: string, signal?: AbortSignal, places = false): Promise<EntryDetail> {
+  return apiGet<EntryDetail>(entryPath(id, places ? '?places=1' : ''), signal)
 }
 
 export function fetchChildren(
@@ -340,16 +444,23 @@ export function fetchChildren(
   order: SortOrder,
   cursor: string | null,
   signal?: AbortSignal,
+  view?: ChildrenView,
 ): Promise<ChildrenPage> {
   const params = new URLSearchParams({ sort, order })
   if (cursor !== null) {
     params.set('cursor', cursor)
   }
+  if (view?.places === true) {
+    params.set('places', '1')
+    if (view.hide) {
+      params.set('hide', 'other_source')
+    }
+  }
   return apiGet<ChildrenPage>(entryPath(id, `/children?${params}`), signal)
 }
 
-export function fetchTreemap(id: string, signal?: AbortSignal): Promise<Treemap> {
-  return apiGet<Treemap>(entryPath(id, '/treemap'), signal)
+export function fetchTreemap(id: string, signal?: AbortSignal, places = false): Promise<Treemap> {
+  return apiGet<Treemap>(entryPath(id, places ? '/treemap?places=1' : '/treemap'), signal)
 }
 
 export function fetchText(id: string, signal?: AbortSignal): Promise<TextContent> {
