@@ -50,8 +50,9 @@
   - Once the tmpfs is back: `online`.
 
   Then delete the script.
-- [ ] 2.3 Deploy on the reference server, after a database backup. With the hashing of the NTFS source cancelled, unbind its folder from the container, unmount it on the host, and bind the host's empty folder in its place. Verify:
+- [x] 2.3 Deploy on the reference server, after a database backup. Unmount the NTFS source's disk on the host and restart the container, which then binds the host's empty folder in its place, as after a power cut. Verify:
   - the Sources screen shows the source "not connected" with `other_filesystem`;
-  - restoring the disk brings it back online, and its hashing resumes.
+  - the hashing job that was running ends `source_offline` without reading, and the checked count is unchanged;
+  - restoring the disk brings it back online.
 
   The owner signs off, recorded in the design addendum.

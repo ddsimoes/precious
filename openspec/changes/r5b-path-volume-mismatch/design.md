@@ -119,3 +119,7 @@ An independent review of the first implementation (9cee1f4) found seven problems
     - The checked count stayed at 1,776,719 files.
   - **The disk back.** With the disk mounted again and the container restarted, the source was `online`.
   - **Hashing did not restart on its own.** `Startup` enqueues hashing for the sources recorded online, and this one was recorded offline at shutdown, as a strong volume would be. It was started by hand (`start-hash`). That behavior is older than r5b, and unchanged.
+- **V2. Owner sign-off (2.3), 2026-10-22.** The owner signed off ("A").
+  - **Hashing finished.** The hashing started by hand ended `succeeded` on 2026-10-21. All 3,216,784 files of the NTFS source that could have a copy were checked.
+  - **A real restart.** The owner then restarted the server, and the host came up without the disk mounted. The source read `offline`/`other_filesystem`, and nothing of its index changed.
+  - **The disk back.** With the disk mounted on the host and the container restarted, the source was `online` again, its coverage still complete.
