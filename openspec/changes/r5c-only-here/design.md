@@ -531,3 +531,14 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
 1. On the test server, back up the database and keep the previous binary, as before each deploy.
 2. Start the new binary. Migration 0009 runs, and startup enqueues one relate pass. Measure that pass first on a copy of the reference database (6.2).
 3. Rollback: stop the server, restore the backup, and start the previous binary. The older binary refuses a newer schema (`store.ErrSchemaTooNew`).
+
+## Addendum: decisions made during implementation
+
+- **A1. `SplitArchive` edge cases** (task 1.2):
+  - **Ties:** an equal remainder goes to the earlier place in D1's order. When two shares are equally largest, the earlier place gives up the minimum byte.
+  - **Small archives:** an archive smaller than its number of places with member bytes gives 1 byte each to `size` of them; a 0-byte archive still puts its one file in the first place.
+  - **Inputs:** only the member bytes are read; file counts and `Disposable` are ignored, and the result's `Disposable` is zero. Negative inputs count as 0.
+  - **Overflow:** totals above 64 bits are scaled down before `Div64`.
+  - **No member bytes:** gives the empty split, and the caller places the archive by `own`.
+- **A2. `member_places` sits on the entry row** (task 1.3): `detail.entry.member_places`, and the treemap's `entry`. `places_updating` sits at the top of the entry response. The query keys without options are unchanged, so invalidating them also refreshes the place variants.
+- **A3. The upgrade note** (task 1.1) gives no time for the first relate pass; 6.2 measures it.

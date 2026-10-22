@@ -2,14 +2,14 @@
 
 ## 1. Foundation (merged first; 1.1–1.3 independent)
 
-- [ ] 1.1 Migration `0009_places.sql`, exactly as in design Interfaces (D12). Owns `migrations/`, `internal/store/places_schema_test.go`, and the `docs/operator.md` section "Upgrading from R5b". Verify with store tests:
+- [x] 1.1 Migration `0009_places.sql`, exactly as in design Interfaces (D12). Owns `migrations/`, `internal/store/places_schema_test.go`, and the `docs/operator.md` section "Upgrading from R5b". Verify with store tests:
   - a version-8 database migrates to version 9, and `review_state.dirty` is then 1;
   - each CHECK rejects a negative value;
   - deleting an entry cascades its `entry_places` row;
   - the tests that pin the schema version follow.
 
   Run `go test -race ./internal/store`.
-- [ ] 1.2 `domain.Place`, `PlaceAmount`, `PlaceSums`, `Place(complete)`, `OnlyHereBytes`, `SplitArchive`, and `IsDisposable` (design D1, D5, D14, Interfaces). Owns `internal/domain/places.go` and its tests. Verify with table tests:
+- [x] 1.2 `domain.Place`, `PlaceAmount`, `PlaceSums`, `Place(complete)`, `OnlyHereBytes`, `SplitArchive`, and `IsDisposable` (design D1, D5, D14, Interfaces). Owns `internal/domain/places.go` and its tests. Verify with table tests:
   - **`Place`:** D1's order; disposable sums never decide; no files gives `none`; `complete=false` turns `other_source` and `none` into `unreadable` and keeps the rest.
   - **`SplitArchive`:**
     - the shares always sum to the size;
@@ -21,7 +21,7 @@
   - **`IsDisposable`:** every combination of `domain.Categories`, `domain.FileKinds` (with an unknown category), and triage, against `FileFamily`.
 
   Run `go test -race ./internal/domain`.
-- [ ] 1.3 The front end's types, fetchers, and colors (design Interfaces, Front end):
+- [x] 1.3 The front end's types, fetchers, and colors (design Interfaces, Front end):
   - in `api/entries.ts`, the `Place`, `PlaceAmount`, and `PlaceSums` types, the optional `EntryRow` fields, `member_places`, `places_updating`, `ChildSort` `'only_here'`, and the `fetchChildren`, `fetchTreemap`, and `fetchEntry` options with their query keys;
   - in `map/colors.ts`, `'places'` in `ColorMode`, `placeColors`, `colorOf`, and `legendOf`;
   - the `map.colorBy.places` and `map.place.*` keys.
