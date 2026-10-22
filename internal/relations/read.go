@@ -71,6 +71,102 @@ func RelationsOf(ctx context.Context, q store.Queryer, ref domain.Ref, limit int
 	return out, rows.Err()
 }
 
+// CoveredBy returns, for each ref, D9's relation of the visible generation
+// (r5c design D9): of kind same with ref on either side, or inside with ref
+// as side a (ref is contained), never overlap; the one with the most
+// matched bytes, then the lowest ID. Refs are matched as RelationsOf
+// matches them: an entry ref by the entry's own sides (a folder, or a whole
+// archive), a member ref ("m45") by the member folder's sides. Refs with no
+// such relation are absent. Each relation is as stored, like RelationsOf's:
+// the caller tells ref's side by comparing it with A and B. One statement
+// serves every ref.
+func CoveredBy(ctx context.Context, q store.Queryer, refs []domain.Ref) (map[domain.Ref]Relation, error) {
+	out := map[domain.Ref]Relation{}
+	if len(refs) == 0 {
+		return out, nil
+	}
+	type key struct {
+		member bool
+		id     int64
+	}
+	refsOf := make(map[key][]domain.Ref, len(refs))
+	arg := make([]byte, 0, 16*len(refs)+2)
+	arg = append(arg, '[')
+	for _, ref := range refs {
+		k := key{member: ref.IsMember(), id: int64(ref.Entry)}
+		if k.member {
+			k.id = int64(ref.Member)
+		}
+		if _, ok := refsOf[k]; !ok {
+			if len(arg) > 1 {
+				arg = append(arg, ',')
+			}
+			if k.member {
+				arg = append(arg, "[1,"...)
+			} else {
+				arg = append(arg, "[0,"...)
+			}
+			arg = strconv.AppendInt(arg, k.id, 10)
+			arg = append(arg, ']')
+		}
+		refsOf[k] = append(refsOf[k], ref)
+	}
+	arg = append(arg, ']')
+	rows, err := q.QueryContext(ctx, coveredBySQL, string(arg))
+	if err != nil {
+		return nil, fmt.Errorf("relations: covered by: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var member bool
+		var id int64
+		r, err := scanRelation(prefixScan{rows, []any{&member, &id}})
+		if err != nil {
+			return nil, fmt.Errorf("relations: covered by: %w", err)
+		}
+		for _, ref := range refsOf[key{member: member, id: id}] {
+			out[ref] = r
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("relations: covered by: %w", err)
+	}
+	return out, nil
+}
+
+// prefixScan scans head's columns, then those the caller asks for.
+type prefixScan struct {
+	rows *sql.Rows
+	head []any
+}
+
+func (p prefixScan) Scan(dst ...any) error { return p.rows.Scan(append(p.head, dst...)...) }
+
+// coveredBySQL reads ?1, a JSON array of [member, id], and returns each
+// ref's relation for CoveredBy: one arm per side and kind of ref, each
+// through its side's index.
+const coveredBySQL = `WITH want AS (
+		SELECT json_extract(value, '$[0]') AS member, json_extract(value, '$[1]') AS id FROM json_each(?1)
+	),
+	cand AS (
+		SELECT w.member AS wm, w.id AS wid, r.* FROM want w CROSS JOIN relations r ON r.a_entry = w.id
+		WHERE w.member = 0 AND r.a_member IS NULL AND r.kind IN ('same', 'inside')
+		UNION ALL
+		SELECT w.member, w.id, r.* FROM want w CROSS JOIN relations r ON r.b_entry = w.id
+		WHERE w.member = 0 AND r.b_member IS NULL AND r.kind = 'same'
+		UNION ALL
+		SELECT w.member, w.id, r.* FROM want w CROSS JOIN relations r ON r.a_member = w.id
+		WHERE w.member = 1 AND r.kind IN ('same', 'inside')
+		UNION ALL
+		SELECT w.member, w.id, r.* FROM want w CROSS JOIN relations r ON r.b_member = w.id
+		WHERE w.member = 1 AND r.kind = 'same'
+	),
+	ranked AS (
+		SELECT *, row_number() OVER (PARTITION BY wm, wid ORDER BY matched_bytes DESC, id) AS rn FROM cand
+		WHERE gen = (SELECT gen FROM review_state WHERE id = 1)
+	)
+	SELECT wm, wid, ` + relationColumns + ` FROM ranked WHERE rn = 1`
+
 // Page sizes of Overlaps.
 const (
 	OverlapsDefaultLimit = 50
