@@ -369,6 +369,16 @@ R5 adds media dates: the date each photo and video was taken, your corrections o
 
 To roll back, stop Precious, reinstall the R4 binary, [restore](#restoring) the backup, and start it. The R4 binary refuses the migrated database (`database has version 8, binary supports up to 7`) and leaves it unmodified. Date corrections, and any change made after the upgrade (including file dates set and files organized by date, which stay as they are on the disks), are lost from the index with it; the next rescan sees the files where they are now.
 
+### Upgrading from R5b
+
+R5c adds the Map's "Only here" mode: for each file, folder, and archive, how much of it exists only there and how much has a copy on another source. Its migration `0009_places` adds one empty table, the stored figures of each folder and complete archive, and marks the relations for recomputation. Entries, decisions, tags, overrides, digests, archive listings, media dates, actions, and quarantines stay as they were, and no rescan is needed.
+
+1. **Back up first** with the R5b binary still running: `precious backup`. The migration is one-way.
+2. **Check the configuration** with the new binary; an R5b configuration stays valid.
+3. **Replace and restart.** The migration applies at startup, in one transaction, and only adds the table. Startup then runs one relations pass, which fills the folder and archive figures; like any relations pass, it takes longer the larger the index. Until it ends, the mode places file rows at once, and folders and complete archives show that their figures are not computed yet.
+
+To roll back, stop Precious, reinstall the R5b binary, [restore](#restoring) the backup, and start it. The R5b binary refuses the migrated database (`database has version 9, binary supports up to 8`) and leaves it unmodified, so the backup is the only way back. Decisions, tags, and overrides set after the upgrade are lost with it, and so is any change made after the upgrade; the next rescan sees the files where they are now.
+
 ### Moving from curator to precious
 
 Precious replaces the earlier `curator` release; the two share no data. Moving over is a fresh installation:
