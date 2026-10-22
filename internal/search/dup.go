@@ -56,26 +56,44 @@ var copiesColumn = `CASE WHEN e.state <> 'present' OR ` + inQuarantine("e") + ` 
 	WHEN fc.state = 'hashed' THEN ` + CopiesSQL("fc.content_id") + `
 	WHEN fc.state IN ('unique_size', 'sampled') THEN 1 END`
 
-// otherCopy is an EXISTS over a physical copy of df's content other than
-// the entry e: another present file entry outside e's hard-link set, or a
-// file member of a complete archive whose entry is present, neither in the
-// quarantine. where, when not nil, further restricts the copy's entry (an
-// entry, or a member's archive entry) by its alias, appending its arguments
-// to args.
-func otherCopy(where func(alias string, args *[]any) string, args *[]any) string {
+// otherCopy is an EXISTS over a physical copy of the content whose ID is the
+// SQL expression content, other than the file entry aliased self: another
+// present file entry outside self's hard-link set, or a file member of a
+// complete archive whose entry is present, neither in the quarantine. where,
+// when not nil, further restricts the copy's entry (an entry, or a member's
+// archive entry) by its alias, appending its arguments to args.
+func otherCopy(content, self string, where func(alias string, args *[]any) string, args *[]any) string {
+	return copyArms(content, `oe.id <> `+self+`.id AND (`+copyKey("oe")+`) IS NOT (`+copyKey(self)+`)`, "",
+		where, args)
+}
+
+// copyArms is an EXISTS over a physical copy of the content whose ID is the
+// SQL expression content: a present file entry oe (through its content row
+// of), or a file member om of a complete archive oa whose entry oae is
+// present, neither in the quarantine. Each arm starts with one indexed probe
+// by content (file_content_by_content, archive_members_content). notEntry
+// and notMember, when not "", are further conditions on each arm that leave
+// out the rows that are not another copy; where, when not nil, restricts
+// the copy's entry (oe, or a member's oae) by its alias, appending its
+// arguments to args. The caller's aliases must differ from these.
+func copyArms(content, notEntry, notMember string, where func(alias string, args *[]any) string, args *[]any) string {
 	var b strings.Builder
 	b.WriteString(`(EXISTS (SELECT 1 FROM file_content of JOIN entries oe ON oe.id = of.entry_id
-		WHERE of.content_id = df.content_id AND oe.state = 'present' AND oe.id <> e.id
-			AND ` + notQuarantined("oe") + `
-			AND (` + copyKey("oe") + `) IS NOT (` + copyKey("e") + `)`)
+		WHERE of.content_id = ` + content + ` AND oe.state = 'present' AND ` + notQuarantined("oe"))
+	if notEntry != "" {
+		b.WriteString(` AND ` + notEntry)
+	}
 	if where != nil {
 		b.WriteString(` AND `)
 		b.WriteString(where("oe", args))
 	}
 	b.WriteString(`) OR EXISTS (SELECT 1 FROM archive_members om JOIN archives oa ON oa.entry_id = om.archive_id
 		JOIN entries oae ON oae.id = oa.entry_id
-		WHERE om.content_id = df.content_id AND om.kind = 'file' AND oa.state = 'complete' AND oae.state = 'present'
+		WHERE om.content_id = ` + content + ` AND om.kind = 'file' AND oa.state = 'complete' AND oae.state = 'present'
 			AND ` + notQuarantined("oae"))
+	if notMember != "" {
+		b.WriteString(` AND ` + notMember)
+	}
 	if where != nil {
 		b.WriteString(` AND `)
 		b.WriteString(where("oae", args))
@@ -133,12 +151,12 @@ func dupFilter(b *filterBuilder, dups []domain.DupFilter, w *withinRange, drivin
 		seen[d] = true
 		switch d {
 		case domain.DupCopies:
-			conds = append(conds, `(df.state = 'hashed' AND `+otherCopy(nil, &args)+`)`)
+			conds = append(conds, `(df.state = 'hashed' AND `+otherCopy("df.content_id", "e", nil, &args)+`)`)
 		case domain.DupElsewhere:
-			conds = append(conds, `(df.state = 'hashed' AND `+otherCopy(w.outside, &args)+`)`)
+			conds = append(conds, `(df.state = 'hashed' AND `+otherCopy("df.content_id", "e", w.outside, &args)+`)`)
 		case domain.DupUnique:
 			conds = append(conds, `(df.state IN ('unique_size', 'sampled') OR (df.state = 'hashed' AND NOT `+
-				otherCopy(nil, &args)+`))`)
+				otherCopy("df.content_id", "e", nil, &args)+`))`)
 		case domain.DupUnchecked:
 			conds = append(conds, `df.state IN ('pending', 'changed', 'unreadable')`)
 		}
