@@ -1,6 +1,7 @@
 import { createColumnHelper, tableFeatures, useTable } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
+  Fragment,
   createContext,
   use,
   useEffect,
@@ -229,8 +230,8 @@ function pathEnd(path: string, names: number): string {
 }
 
 // NotePath is a path named on the line under a name: shown by its end,
-// which tells the copy apart, and whole in its tooltip and in the note's
-// accessible name.
+// which tells the copy apart, and whole in the note's tooltip and
+// accessible description.
 interface NotePath {
   shown: string
   full: string
@@ -246,12 +247,38 @@ const noteTag = /(<(?:path|on|archive)\/>)/
 
 const stopPropagation = (event: { stopPropagation: () => void }) => event.stopPropagation()
 
+// noteNameKept is how many characters, about, of a name in a note stay
+// when its line is short of room.
+const noteNameKept = 10
+
+// NoteName is a name in a note: cut from its start, as the location line
+// is, so that its end stays, and never narrower than about noteNameKept
+// characters. A name as short as that never shrinks.
+function NoteName({ text }: { text: string }) {
+  return (
+    <span
+      dir="rtl"
+      className={cn(
+        'truncate text-left',
+        [...text].length > noteNameKept ? 'min-w-[min(100%,10ch)]' : 'max-w-full shrink-0',
+      )}
+    >
+      <bdi dir="ltr">{text}</bdi>
+    </span>
+  )
+}
+
 // NoteLink is the link of a note under a name, its sentence laid out piece
 // by piece, which Trans cannot do for the words between the pieces. The
-// names give way first, cut at their end; then the words, cut with an
-// ellipsis; the other copy's source never shrinks. The link clips what
-// still does not fit, so that it never draws over what follows it on the
-// line. Its accessible name says the whole paths.
+// words give way first, down to nothing; then the names, down to their
+// last characters; the other copy's source never shrinks. The link itself
+// gives way before what follows it on the line, but never gets narrower
+// than its names' last characters and the source; it clips what still
+// does not fit, so that it never draws over what follows it. Giving way
+// first is a shrink weight so large that the others lose no part of a
+// pixel, and so show no ellipsis, before it is spent. The link's name is
+// the words it shows; its tooltip and description are the sentence with
+// the whole paths.
 function NoteLink({
   to,
   i18nKey,
@@ -269,42 +296,46 @@ function NoteLink({
   const on = t('map.places.copy.on', { source })
   const parts = t(i18nKey).split(noteTag)
   const whole: Record<string, string> = { '<path/>': path.full, '<on/>': on, '<archive/>': archive }
+  const shown: Record<string, string> = { '<path/>': path.shown, '<on/>': on, '<archive/>': archive }
+  // The link's floor, in characters: the kept end of each name, the source,
+  // and a gap between each two.
+  const kept = parts.filter((part) => Object.hasOwn(shown, part))
+  const floor = kept.reduce(
+    (sum, part) => sum + Math.min([...(shown[part] ?? '')].length, part === '<on/>' ? Infinity : noteNameKept),
+    0,
+  )
   return (
     <Link
       to={to}
-      aria-label={parts.map((part) => whole[part] ?? part).join('')}
-      className="flex min-w-0 gap-1 overflow-hidden hover:underline"
+      title={parts.map((part) => whole[part] ?? part).join('')}
+      className="flex shrink-[1000000] gap-1 overflow-hidden hover:underline"
+      style={{ minWidth: `min(100%, calc(${floor}ch + ${Math.max(kept.length - 1, 0)} * 0.25rem))` }}
       onClick={stopPropagation}
     >
       {parts.map((part, i) => {
         switch (part) {
           case '<path/>':
-            return (
-              <span key={i} title={path.full} className="min-w-0 truncate">
-                {path.shown}
-              </span>
-            )
+            return <NoteName key={i} text={path.shown} />
           case '<archive/>':
-            return (
-              <span key={i} title={archive} className="min-w-0 truncate">
-                {archive}
-              </span>
-            )
+            return <NoteName key={i} text={archive} />
           case '<on/>':
             return (
               <span key={i} className="shrink-0">
                 {on}
               </span>
             )
-          default:
-            // The spaces stay in the text, for copying; the gap draws them.
-            return part.trim() === '' ? (
-              part
-            ) : (
-              <span key={i} className="max-w-full shrink-0 truncate">
-                {part}
-              </span>
+          default: {
+            // The spaces stay in the text, outside the words, for copying
+            // and for the link's name; the gap draws them.
+            const [, before = '', words = '', after = ''] = /^(\s*)(.*?)(\s*)$/s.exec(part) ?? []
+            return (
+              <Fragment key={i}>
+                {before}
+                {words !== '' && <span className="min-w-0 shrink-[1000000] truncate">{words}</span>}
+                {after}
+              </Fragment>
             )
+          }
         }
       })}
     </Link>
@@ -362,7 +393,13 @@ function PlaceNote({ entry, name }: { entry: EntryRow; name: string }) {
           source={sourceLabel(copy.source_id)}
           archive={archive}
         />{' '}
-        {extra !== '' && <span className="shrink-0">{extra}</span>}
+        {/* What follows the link gives way only once the link is at its
+            floor, cut with an ellipsis under its own title. */}
+        {extra !== '' && (
+          <span title={extra} className="min-w-0 truncate">
+            {extra}
+          </span>
+        )}
       </span>
     )
   }
@@ -548,18 +585,17 @@ function DuplicatedCell({ row }: CellProps) {
 }
 
 // PlaceWords are a row's place in words, and after them a qualifier in a
-// span of its own that never shrinks: in a narrow column the qualifier
-// moves under the words, so that neither is cut while the other shows.
+// span of its own: in a narrow column the qualifier moves under the words,
+// and either is cut with an ellipsis only when it does not fit a line of
+// its own. The whole sentence is their title.
 function PlaceWords({ text, note }: { text: string; note: string | null }) {
   return (
-    <span className="flex flex-wrap items-baseline gap-x-1">
-      <span className="min-w-0 truncate" title={text}>
-        {text}
-      </span>
+    <span className="flex flex-wrap items-baseline gap-x-1" title={note === null ? text : `${text} ${note}`}>
+      <span className="min-w-0 truncate">{text}</span>
       {note !== null && (
         <>
           {' '}
-          <span className="shrink-0 text-xs">{note}</span>
+          <span className="min-w-0 max-w-full truncate text-xs">{note}</span>
         </>
       )}
     </span>

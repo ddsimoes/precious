@@ -180,8 +180,13 @@ test('the mode stays on through drilling and a reload', async () => {
     for (const path of photos.from) {
       const row = rowOf(table, basename(path))
       await expect(await placeCell(table, row), path).toHaveText(en.map.places.file.other_source)
-      const named = noteName(en.map.places.copy.atOn, path, corpusSource.label)
-      await expect(row.getByRole('link', { name: named, exact: true }), path).toBeVisible()
+      // It shows the copy's folder and name, and describes its whole path.
+      const note = row.getByRole('link', {
+        name: noteName(en.map.places.copy.atOn, pathEnd(path), corpusSource.label),
+        exact: true,
+      })
+      await expect(note, path).toBeVisible()
+      await expect(note, path).toHaveAccessibleDescription(noteName(en.map.places.copy.atOn, path, corpusSource.label))
       if (path === again.from) {
         await expect(row, path).toContainText(fill(en.map.places.copy.more, { formatted: '1' }))
       } else {
@@ -299,13 +304,15 @@ test('a copy on the same source: the row names one of the other two and says the
   const row = rowOf(table, 'DSC00104.JPG')
   await expect(await placeCell(table, row)).toHaveText(fill(en.map.places.file.this_source, { formatted: '3' }))
   await expect(row).toContainText(fill(en.map.places.copy.more, { formatted: '1' }))
-  // The row names one of the two, by its accessible name.
-  await expect(row.getByRole('link', { name: /^Also at / })).toBeVisible()
-  const notes = others.map((p) => row.getByRole('link', { name: noteName(en.map.places.copy.at, p), exact: true }))
-  const shown = await Promise.all(notes.map((n) => n.count()))
-  expect(shown.toSorted(), 'the row names exactly one of the other copies').toEqual([0, 1])
-  const named = others[shown.indexOf(1)]
-  const note = notes[shown.indexOf(1)] ?? row
+  // The row names one of the two: it shows its folder and name, and
+  // describes its whole path.
+  const note = row.getByRole('link', { name: /^Also at / })
+  await expect(note).toBeVisible()
+  const described = await note.getAttribute('title')
+  const named = others.find((p) => noteName(en.map.places.copy.at, p) === described)
+  expect(named, `the row names one of the other copies: ${described}`).toBeDefined()
+  await expect(note).toHaveAccessibleName(noteName(en.map.places.copy.at, pathEnd(named ?? '')))
+  await expect(note).toHaveAccessibleDescription(described ?? '')
 
   // The link opens the copy it names.
   await note.click()
@@ -330,10 +337,13 @@ test('a copy inside an archive: the row says it is also inside the tar.gz, namin
   const row = rowOf(table, 'contato.php')
   await expect(await placeCell(table, row)).toHaveText(fill(en.map.places.file.this_source, { formatted: '2' }))
   const note = row.getByRole('link', {
-    name: noteName(en.map.places.copy.inside, fill(en.map.places.copy.member, { archive, member: 'contato.php' })),
+    name: noteName(en.map.places.copy.inside, fill(en.map.places.copy.member, { archive: basename(archive), member: 'contato.php' })),
     exact: true,
   })
   await expect(note).toBeVisible()
+  await expect(note).toHaveAccessibleDescription(
+    noteName(en.map.places.copy.inside, fill(en.map.places.copy.member, { archive, member: 'contato.php' })),
+  )
   await expect(row).not.toContainText(/\+\d+ more/)
   await note.click()
   // The link opens the member: the panel names the archive it is in.
@@ -346,12 +356,12 @@ test('a folder copied whole names the folder it equals, and its Compare link ope
   await openMap(copies.root, 'places=1&color=places')
   const table = page.getByRole('table', { name: `Contents of ${copiesLabel}` })
   const row = rowOf(table, folder.to)
-  await expect(
-    row.getByRole('link', {
-      name: noteName(en.map.places.covered.sameOn, folder.from, corpusSource.label),
-      exact: true,
-    }),
-  ).toBeVisible()
+  const note = row.getByRole('link', {
+    name: noteName(en.map.places.covered.sameOn, pathEnd(folder.from), corpusSource.label),
+    exact: true,
+  })
+  await expect(note).toBeVisible()
+  await expect(note).toHaveAccessibleDescription(noteName(en.map.places.covered.sameOn, folder.from, corpusSource.label))
   const left = await entryAt(copies, folder.to)
   const right = await entryAt(corpusSource, folder.from)
   await row
@@ -367,6 +377,36 @@ test('a folder copied whole names the folder it equals, and its Compare link ope
   await expect(page.getByRole('list', { name: 'Files: Identical' }).locator(':scope > li > a')).toHaveText(
     folderFiles.map((e) => basename(e.path)).toSorted(),
   )
+})
+
+test('at 1366 by 768, the folder copied whole says its place and names the folder it equals without cutting either', async () => {
+  await page.setViewportSize({ width: 1366, height: 768 })
+  try {
+    await openMap(copies.root, 'places=1&color=places')
+    const table = page.getByRole('table', { name: `Contents of ${copiesLabel}` })
+    const row = rowOf(table, folder.to)
+    const shown = pathEnd(folder.from)
+    const note = row.getByRole('link').filter({ hasText: shown })
+    await expect(note).toBeVisible()
+    // The other folder's name shows whole, and the source after it ends
+    // inside the link, which clips what does not fit.
+    const name = note.getByText(shown, { exact: true })
+    const whole = await name.evaluate((e) => {
+      const box = e.closest('.truncate') ?? e
+      return box.scrollWidth <= box.clientWidth && box.getBoundingClientRect().width > 0
+    })
+    expect(whole, 'the other folder’s name is not cut').toBe(true)
+    const on = fill(en.map.places.copy.on, { source: corpusSource.label })
+    const [link, source] = [await note.boundingBox(), await note.getByText(on, { exact: true }).boundingBox()]
+    expect(source?.x ?? Number.NaN).toBeGreaterThanOrEqual(link?.x ?? Number.NaN)
+    expect((source?.x ?? 0) + (source?.width ?? Number.NaN)).toBeLessThanOrEqual((link?.x ?? 0) + (link?.width ?? 0) + 0.5)
+    // The place's words fit the place column.
+    const words = (await placeCell(table, row)).locator('span.truncate').first()
+    await expect(words).toBeVisible()
+    expect(await words.evaluate((e) => e.scrollWidth <= e.clientWidth), 'the place’s words are not cut').toBe(true)
+  } finally {
+    await page.setViewportSize(devices['Desktop Chrome'].viewport)
+  }
 })
 
 test('a folder’s panel lists the files and bytes of each place and of the disposable files, and the checked share', async () => {
@@ -445,6 +485,11 @@ async function placeCell(table: Locator, row: Locator): Promise<Locator> {
 
 function basename(path: string): string {
   return path.split('/').at(-1) ?? ''
+}
+
+// pathEnd is what a note under a name shows of a path: its last two names.
+function pathEnd(path: string): string {
+  return path.split('/').slice(-2).join('/')
 }
 
 // noteName is the accessible name of a note naming another copy or folder:
