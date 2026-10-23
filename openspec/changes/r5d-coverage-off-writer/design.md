@@ -59,7 +59,7 @@ Rejected:
 ```go
 // internal/content/plan.go (unexported)
 type coverageFigures [8]int64 // candidate files/bytes, checked, unchecked, unreadable
-func coverageDrift(ctx context.Context, st *store.Store) (map[string]coverageFigures, error)
+func coverageDrift(ctx context.Context, st *store.Store, held func()) (map[string]coverageFigures, error) // held: the D2 seam (A1)
 func applyDrift(ctx context.Context, tx *sql.Tx, drift map[string]coverageFigures, now int64) error
 ```
 
@@ -81,3 +81,14 @@ func applyDrift(ctx context.Context, tx *sql.Tx, drift map[string]coverageFigure
 ## Migration Plan
 
 Deploy over r5c with no migration: back up the database, keep the previous binary, and restart.
+
+## Addendum: decisions made during implementation
+
+- **A1. Implementation** (task 1.1):
+  - **Seam:** `coverageDrift` takes the seam as a third parameter, `held`, called after both reads while the snapshot is open.
+  - **Write path:** `applyDrift` reuses `deltas.apply` (insert a missing row only if the source exists, then add) and runs in `st.Write`.
+  - **Empty sources:** a source with no files and no stored row no longer gets an all-zero row. Every reader treats a missing row as zero (`CoverageOf`).
+  - **Proof:** with the old code path put back, the sign-in test timed out at 1 s, and the hashing-commit test hung until it got a deadline.
+- **A2. Review** (task 2.2): one independent review found no bugs.
+  - **Exactness:** it confirmed D1 by listing every writer of the figures and of the rows they count. The only commits it misses between the snapshot and the drift write are without deltas (another job's `insertRows`, scans, executor actions), and each is followed by a plan, so nothing persists beyond the next plan. The window is smaller than before, since the snapshot now follows the last state batch.
+  - **Its one suggestion:** a test that pins the aggregate to the read snapshot (a delta-less change committed in the seam stays out until the next plan). It was added.
