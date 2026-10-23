@@ -166,7 +166,8 @@ type arcFile struct {
 
 // LoadSnapshot reads the final snapshot of every source in one read of q
 // (design D9); q should be a read transaction. classify classifies archive
-// members for the place sums (r5c D14); with nil, no member is disposable.
+// members for the place sums (r5c D14), on several goroutines at once; with
+// nil, no member is disposable.
 func LoadSnapshot(ctx context.Context, q store.Queryer, classify func(name []byte, size int64) (domain.Category, domain.FileKind, domain.Triage)) (*Snapshot, error) {
 	s, err := loadSnapshot(ctx, q, false, classify)
 	if err != nil {
@@ -209,6 +210,7 @@ type archiveRow struct {
 	content       int64
 	disposable    bool // its file's classification is disposable (r5c D14)
 	members       []memberRow
+	classified    []bool // members[i] is a disposable non-empty file by its own name and size (r5c D14)
 	folders       []arcFolder
 	keyed         []record           // its members' keyed records, dir = folder index until spliced
 	places        []domain.PlaceSums // its folders' own place sums (final snapshots only)
@@ -399,11 +401,14 @@ func (b *builder) loadArchives(ctx context.Context, q store.Queryer) error {
 	if err != nil {
 		return err
 	}
+	if b.s.dups != nil && b.classify != nil {
+		b.classifyMembers()
+	}
 	for i := range b.arcs {
 		if err := b.keyMembers(&b.arcs[i]); err != nil {
 			return fmt.Errorf("members of archive %d: %w", b.arcs[i].entry, err)
 		}
-		b.arcs[i].members = nil
+		b.arcs[i].members, b.arcs[i].classified = nil, nil
 	}
 	return nil
 }
@@ -493,7 +498,7 @@ func (b *builder) keyMembers(a *archiveRow) error {
 				own.files++
 				own.gapBytes += rows[p.row].size
 				own.gapRegular++
-				b.placeMember(a, p.folder, rows[p.row].name, rows[p.row].size, "", false) // no content: unchecked
+				b.placeMember(a, p.folder, p.row, rows[p.row].size, "", false) // no content: unchecked
 			}
 		case m.kind == domain.MemberSymlink:
 			if m.linkText == nil {
@@ -509,7 +514,7 @@ func (b *builder) keyMembers(a *archiveRow) error {
 			own.bytes += m.size
 			own.files++
 			raw, keyed, gap := b.memberKey(m)
-			disposable := b.placeMember(a, p.folder, rows[p.row].name, m.size, domain.ContentState(m.state),
+			disposable := b.placeMember(a, p.folder, p.row, m.size, domain.ContentState(m.state),
 				keyed && raw>>rawShift == uint64(keyContent))
 			switch {
 			case gap:

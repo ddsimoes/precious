@@ -1,11 +1,13 @@
 package relations
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -32,9 +34,13 @@ import (
 //     the job ends is left to the follow-up job RequestRefresh enqueues
 //     (design Addendum G1).
 
-// Batch sizes: rows per write transaction.
+// Batch sizes: rows per write transaction. A figure table's rows are one
+// short upsert each, in key order (writeFigures): a batch of figureBatch
+// holds the writer for about 50 ms, and a first fill of the places tables
+// commits ten times less often than with insertBatch.
 const (
 	insertBatch = 500
+	figureBatch = 5000
 	deleteBatch = 5000
 	pruneBatch  = 5000
 )
@@ -79,7 +85,8 @@ func (h *Handler) Register(r *jobs.Runner) { r.RegisterPool(KindRelate, h, relat
 
 // SetClassifier gives the relate pass the member classification of D14
 // (wired in cmd/precious/serve.go with the server's policy); without it no
-// member is disposable. Call it before the runner starts.
+// member is disposable. f runs on several goroutines at once. Call it
+// before the runner starts.
 func (h *Handler) SetClassifier(f func(name []byte, size int64) (domain.Category, domain.FileKind, domain.Triage)) {
 	h.classify = f
 }
@@ -392,7 +399,7 @@ func (h *Handler) writeDirDups(ctx context.Context, rt jobs.Runtime, want map[in
 
 // writeFigures upserts the rows of want that differ from the rows of table
 // t, each only while its entry or member exists, and deletes the rows of
-// keys not in want, insertBatch changes per transaction.
+// keys not in want, figureBatch changes per transaction.
 func writeFigures[T comparable](ctx context.Context, h *Handler, rt jobs.Runtime, t figureTable[T], want map[int64]T) error {
 	have := make(map[int64]T, len(want))
 	err := h.st.Read(ctx, func(tx *sql.Tx) error {
@@ -433,6 +440,10 @@ func writeFigures[T comparable](ctx context.Context, h *Handler, rt jobs.Runtime
 	if len(changes) == 0 {
 		return nil
 	}
+	// In key order, so each batch touches a few neighbouring pages of the
+	// table and of its owner's: in map order, a first fill (every row new)
+	// touches a page per row and takes about three times as long.
+	slices.SortFunc(changes, func(x, y change) int { return cmp.Compare(x.id, y.id) })
 	params, set := make([]string, len(t.cols)), make([]string, len(t.cols))
 	for i, c := range t.cols {
 		params[i] = "?" + strconv.Itoa(i+2)
@@ -442,8 +453,8 @@ func writeFigures[T comparable](ctx context.Context, h *Handler, rt jobs.Runtime
 		SELECT ?1, ` + strings.Join(params, ", ") + ` WHERE EXISTS (SELECT 1 FROM ` + t.owner + ` WHERE id = ?1)
 		ON CONFLICT (` + t.key + `) DO UPDATE SET ` + strings.Join(set, ", ")
 	args := make([]any, 1+len(t.cols))
-	for i := 0; i < len(changes); i += insertBatch {
-		batch := changes[i:min(i+insertBatch, len(changes))]
+	for i := 0; i < len(changes); i += figureBatch {
+		batch := changes[i:min(i+figureBatch, len(changes))]
 		err := h.st.Write(ctx, func(tx *sql.Tx) error {
 			up, err := tx.PrepareContext(ctx, upsert)
 			if err != nil {

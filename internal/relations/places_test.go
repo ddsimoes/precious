@@ -280,6 +280,20 @@ func TestPlacesOfSingleFiles(t *testing.T) {
 		r := w.places(t)
 		r.want(t, "t.tar", only(1, 450))
 	})
+	t.Run("a tar link member is classified by its own name and its target's size", func(t *testing.T) {
+		t.Parallel()
+		w := newWorld(t)
+		w.archives = append(w.archives, warc{file: wf{path: "t.tar", size: 450}, format: domain.ArchiveTar,
+			members: []indextest.Member{mem("orig/f.bin", 300, "f"), mem("copy/Thumbs.db", 0, "")}})
+		w.seed()
+		if _, err := w.st.Writer().Exec(`UPDATE archive_members SET link_member = ? WHERE id = ?`,
+			int64(w.ref("t.tar!orig/f.bin").Member), int64(w.ref("t.tar!copy/Thumbs.db").Member)); err != nil {
+			t.Fatal(err)
+		}
+		r := w.places(t)
+		r.wantMember(t, "t.tar!orig", only(1, 300))
+		r.wantMember(t, "t.tar!copy", domain.PlaceSums{Disposable: pa(1, 300)})
+	})
 	t.Run("a copy on an offline source", func(t *testing.T) {
 		t.Parallel()
 		w := newWorld(t)
