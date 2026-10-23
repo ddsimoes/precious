@@ -16,6 +16,8 @@ import { ErrorBanner } from '@/app/ErrorBanner'
 import { CompareWith } from '@/compare/CompareWith'
 import { Button } from '@/components/ui/button'
 import { ArchiveNoteSection, ArchiveSection, CopiesSection, RelationsSection } from '@/detail/ContentSections'
+import { filePlaced } from '@/detail/places'
+import { FilePlace, FolderPlaces } from '@/detail/PlacesSection'
 import { DatesSection } from '@/detail/DatesSection'
 import { ClassificationControls } from '@/detail/ClassificationControls'
 import { DecisionControls } from '@/detail/DecisionControls'
@@ -55,9 +57,13 @@ export function DetailPanel() {
   const headingId = useId()
   const panelRef = useRef<HTMLElement>(null)
 
+  // In the Map's Only here mode (places=1 in its address, R5c design D7) the
+  // panel asks for the entry's places too; elsewhere it does not, so a
+  // complete archive's members are not all placed on every look.
+  const places = params.get('places') === '1'
   const detail = useQuery({
-    queryKey: entryQueryKey(entryId ?? ''),
-    queryFn: ({ signal }) => fetchEntry(entryId ?? '', signal),
+    queryKey: entryQueryKey(entryId ?? '', places),
+    queryFn: ({ signal }) => fetchEntry(entryId ?? '', signal, places),
     enabled: entryId !== null,
   })
 
@@ -306,9 +312,27 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
         quarantined === null &&
         entry.state !== 'missing' && <DatesSection key={entry.id} entry={entry} />}
 
+      {/* Where copies are (R5c design D8), only in the Map's Only here
+          mode: a folder's figures, or a complete archive's members'
+          unpacked sizes (D5). A missing or quarantined entry has no place. */}
+      {entry.place !== undefined && entry.place !== null && (folder || listed) && (
+        <Section title={t('detail.places.title')}>
+          <FolderPlaces
+            sums={(listed ? entry.member_places : entry.places) ?? null}
+            unpacked={listed}
+            updating={detail.places_updating === true}
+            coverage={detail.coverage}
+          />
+        </Section>
+      )}
       {detail.content !== null && (
         <Section title={t('detail.copies')}>
           <CopiesSection entry={entry} content={detail.content} coverage={detail.coverage} />
+        </Section>
+      )}
+      {detail.content === null && filePlaced(entry) && (
+        <Section title={t('detail.copies')}>
+          <FilePlace entry={entry} others={[]} otherCount={0} />
         </Section>
       )}
       {detail.archive !== null && (
