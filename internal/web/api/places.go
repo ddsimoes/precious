@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -16,9 +17,10 @@ import (
 
 // Places on read (r5c design D2, D5, D6, D9, D10, D11, D14). With places=1
 // every row of children, treemap, and the entry carries its place: a file
-// or member live (search.PlaceSQL, search.MemberPlaceSQL), a folder or
+// or member file live (search.PlaceSQL, search.MemberPlaceSQL), a folder or
 // complete archive from its stored entry_places row, a member folder from
-// its members. Nothing is cached: every request reads the live places.
+// its stored member_places row. Nothing is cached: every request reads the
+// live places.
 
 // parsePlaces reads places: "" (off) or "1".
 func parsePlaces(v string) (bool, error) {
@@ -45,14 +47,16 @@ func parseHide(v string, places bool) (bool, error) {
 	return false, domain.Errorf(domain.CodeInvalidRequest, "hide must be other_source, not %q", v)
 }
 
-// sumsColumns are an entry_places row's figures (ep), 0 without one, in
-// sumsDest's order.
-const sumsColumns = `ifnull(ep.only_copy_files, 0), ifnull(ep.only_copy_bytes, 0),
-	ifnull(ep.this_source_files, 0), ifnull(ep.this_source_bytes, 0),
-	ifnull(ep.other_source_files, 0), ifnull(ep.other_source_bytes, 0),
-	ifnull(ep.unchecked_files, 0), ifnull(ep.unchecked_bytes, 0),
-	ifnull(ep.unreadable_files, 0), ifnull(ep.unreadable_bytes, 0),
-	ifnull(ep.disposable_files, 0), ifnull(ep.disposable_bytes, 0)`
+// sumsColumns are a places row's figures (alias t: entry_places,
+// archive_places, or member_places), 0 without one, in sumsDest's order.
+func sumsColumns(t string) string {
+	return `ifnull(` + t + `.only_copy_files, 0), ifnull(` + t + `.only_copy_bytes, 0),
+	ifnull(` + t + `.this_source_files, 0), ifnull(` + t + `.this_source_bytes, 0),
+	ifnull(` + t + `.other_source_files, 0), ifnull(` + t + `.other_source_bytes, 0),
+	ifnull(` + t + `.unchecked_files, 0), ifnull(` + t + `.unchecked_bytes, 0),
+	ifnull(` + t + `.unreadable_files, 0), ifnull(` + t + `.unreadable_bytes, 0),
+	ifnull(` + t + `.disposable_files, 0), ifnull(` + t + `.disposable_bytes, 0)`
+}
 
 func sumsDest(p *domain.PlaceSums) []any {
 	return []any{&p.OnlyCopy.Files, &p.OnlyCopy.Bytes, &p.ThisSource.Files, &p.ThisSource.Bytes,
@@ -82,7 +86,7 @@ type placeRow struct {
 var placeRowColumns = `e.id, e.kind, e.size, e.state, e.partial, e.mount_boundary,
 	ifnull(ds.unreadable, 0), ifnull(ds.mount_boundaries, 0), NOT ` + index.NotQuarantined("e") + `,
 	e.kind = 'file' AND ifnull(ar.state = 'complete', 0), ep.entry_id IS NOT NULL, ` +
-	search.DisposableSQL("e") + `, ` + sumsColumns
+	search.DisposableSQL("e") + `, ` + sumsColumns("ep")
 
 func (r *placeRow) dest() []any {
 	return append([]any{&r.id, &r.kind, &r.size, &r.facts.State, &r.facts.Partial, &r.facts.MountBoundary,
@@ -403,13 +407,13 @@ func memberDisposable(pol *rules.Policy, name []byte, kind domain.FileKind, size
 }
 
 // placedOf is the place of member m of c's archive: a folder's from its
-// unpacked sums (which fillChildren or fillFolder computed with c), a
-// file's from its own place under c. A member placed through c is marked
-// as c's archive is; one placed by its own copies keeps its own mark.
+// stored sums (not_computed without a member_places row), a file's from its
+// own place under c. A member placed through c is marked as c's archive is;
+// one placed by its own copies keeps its own mark.
 func (c *cover) placedOf(m *member, pol *rules.Policy) *placed {
 	r := &m.row
 	if r.Kind == domain.EntryDirectory {
-		p := &placed{level: true, sums: m.sums, place: domain.PlaceNone}
+		p := &placed{level: true, sums: m.sums, place: domain.PlaceNotComputed}
 		if m.sums != nil {
 			p.place = m.sums.Place(true)
 		}
@@ -428,47 +432,20 @@ func (c *cover) placedOf(m *member, pol *rules.Policy) *placed {
 	return p
 }
 
-// addMember adds a non-empty file member named name, of file kind kind,
-// with its own place own to sums, under c: as disposable when D14 counts
-// it apart, else by its place.
-func (c *cover) addMember(sums *domain.PlaceSums, pol *rules.Policy, name []byte, kind domain.FileKind, size int64,
-	own sql.NullString) {
-	if size <= 0 {
-		return
+// archivePlaces is complete archive id's member_places (D5, D6): its
+// stored archive_places row, the unpacked sums of its members under its
+// own coverage; nil without a row.
+func archivePlaces(ctx context.Context, tx *sql.Tx, id domain.EntryID) (*domain.PlaceSums, error) {
+	var s domain.PlaceSums
+	err := tx.QueryRowContext(ctx, `SELECT `+sumsColumns("ap")+` FROM archive_places ap WHERE ap.entry_id = ?`,
+		int64(id)).Scan(sumsDest(&s)...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
-	one := domain.PlaceAmount{Files: 1, Bytes: size}
-	if memberDisposable(pol, name, kind, size) {
-		addPlace(&sums.Disposable, one)
-		return
+	if err != nil {
+		return nil, fmt.Errorf("api: member places of archive %s: %w", id, err)
 	}
-	place, _ := c.apply(domain.Place(own.String))
-	switch place {
-	case domain.PlaceOnlyCopy:
-		addPlace(&sums.OnlyCopy, one)
-	case domain.PlaceThisSource:
-		addPlace(&sums.ThisSource, one)
-	case domain.PlaceOtherSource:
-		addPlace(&sums.OtherSource, one)
-	case domain.PlaceUnchecked:
-		addPlace(&sums.Unchecked, one)
-	case domain.PlaceUnreadable:
-		addPlace(&sums.Unreadable, one)
-	}
-}
-
-func addPlace(a *domain.PlaceAmount, b domain.PlaceAmount) {
-	a.Files += b.Files
-	a.Bytes += b.Bytes
-}
-
-// memberPlaces is the unpacked sums of every member of c's archive, under
-// c: the member_places of a complete archive (D5, D6).
-func memberPlaces(ctx context.Context, tx *sql.Tx, pol *rules.Policy, c *cover) (*domain.PlaceSums, error) {
-	a := newMemberAgg(c)
-	if err := memberSubtree(ctx, tx, pol, c.archive, nil, c, func([]byte) *memberAgg { return a }); err != nil {
-		return nil, err
-	}
-	return a.places, nil
+	return &s, nil
 }
 
 // rowRef is the ref of a row: its member, or its entry.

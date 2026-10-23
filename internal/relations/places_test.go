@@ -30,16 +30,22 @@ func policyClassifier() classifier {
 // storedPlaces reads every entry_places row.
 func storedPlaces(t testing.TB, st *store.Store) map[int64]domain.PlaceSums {
 	t.Helper()
+	return storedRows(t, st, entryPlacesTable)
+}
+
+// storedRows reads every row of places table pt, by its key.
+func storedRows(t testing.TB, st *store.Store, pt figureTable[domain.PlaceSums]) map[int64]domain.PlaceSums {
+	t.Helper()
 	out := map[int64]domain.PlaceSums{}
 	var id int64
 	var p domain.PlaceSums
 	dest := []any{&id}
-	for _, f := range entryPlacesTable.fields(&p) {
+	for _, f := range pt.fields(&p) {
 		dest = append(dest, f)
 	}
-	err := scanAll(context.Background(), st.Reader(), `SELECT entry_id, only_copy_files, only_copy_bytes,
+	err := scanAll(context.Background(), st.Reader(), `SELECT `+pt.key+`, only_copy_files, only_copy_bytes,
 		this_source_files, this_source_bytes, other_source_files, other_source_bytes, unchecked_files, unchecked_bytes,
-		unreadable_files, unreadable_bytes, disposable_files, disposable_bytes FROM entry_places`, nil,
+		unreadable_files, unreadable_bytes, disposable_files, disposable_bytes FROM `+pt.name, nil,
 		func(r *sql.Rows) error {
 			if err := r.Scan(dest...); err != nil {
 				return err
@@ -67,12 +73,15 @@ func (w *world) places(t *testing.T) placeRows {
 	h := w.handler(nil)
 	h.SetClassifier(policyClassifier())
 	runJob(t, h)
-	return placeRows{w: w, rows: storedPlaces(t, w.st)}
+	return placeRows{w: w, rows: storedPlaces(t, w.st), archives: storedRows(t, w.st, archivePlacesTable),
+		members: storedRows(t, w.st, memberPlacesTable)}
 }
 
+// placeRows are the stored rows of entry_places (rows), archive_places, and
+// member_places.
 type placeRows struct {
-	w    *world
-	rows map[int64]domain.PlaceSums
+	w                       *world
+	rows, archives, members map[int64]domain.PlaceSums
 }
 
 // want fails unless the row of "source:path" is p.
@@ -81,6 +90,33 @@ func (r placeRows) want(t *testing.T, path string, p domain.PlaceSums) {
 	got, ok := r.rows[int64(r.w.id(path))]
 	if !ok {
 		t.Errorf("%s: no entry_places row", path)
+		return
+	}
+	if got != p {
+		t.Errorf("%s: places %+v, want %+v", path, got, p)
+	}
+}
+
+// wantArchive fails unless the archive_places row of "source:path" is p.
+func (r placeRows) wantArchive(t *testing.T, path string, p domain.PlaceSums) {
+	t.Helper()
+	got, ok := r.archives[int64(r.w.id(path))]
+	if !ok {
+		t.Errorf("%s: no archive_places row", path)
+		return
+	}
+	if got != p {
+		t.Errorf("%s: unpacked places %+v, want %+v", path, got, p)
+	}
+}
+
+// wantMember fails unless the member_places row of the member folder
+// "source:archive!member" is p.
+func (r placeRows) wantMember(t *testing.T, path string, p domain.PlaceSums) {
+	t.Helper()
+	got, ok := r.members[int64(r.w.ref(path).Member)]
+	if !ok {
+		t.Errorf("%s: no member_places row", path)
 		return
 	}
 	if got != p {
@@ -299,6 +335,9 @@ func TestPlacesOfArchives(t *testing.T) {
 		r.want(t, "bkp.zip", this(1, 250))
 		r.want(t, "fotos", this(2, 300))
 		r.want(t, "", this(3, 550))
+		// The unpacked sums: the archive's and its member folder's.
+		r.wantArchive(t, "bkp.zip", this(2, 300))
+		r.wantMember(t, "bkp.zip!fotos", this(2, 300))
 	})
 	t.Run("the same archive on two sources", func(t *testing.T) {
 		t.Parallel()
@@ -323,6 +362,37 @@ func TestPlacesOfArchives(t *testing.T) {
 		// this_source coverage turns only_copy members into this_source,
 		// and leaves a member with a copy on another source as it is.
 		r.want(t, "q/p.zip", domain.PlaceSums{ThisSource: pa(1, 100), OtherSource: pa(0, 300)})
+		r.wantArchive(t, "z/p.zip", other(2, 300))
+		r.wantArchive(t, "q/p.zip", domain.PlaceSums{ThisSource: pa(1, 100), OtherSource: pa(1, 300)})
+	})
+	t.Run("member folders under their archive's coverage", func(t *testing.T) {
+		t.Parallel()
+		w := newWorld(t)
+		// p.zip has a copy on another source: every member folder reads
+		// other_source, apart from its disposable files.
+		w.archive(wf{path: "z/p.zip", size: 250, content: "p"}, mem("docs/a.txt", 100, ""),
+			mem("docs/sub/b.txt", 200, "b"), mem("docs/Thumbs.db", 10, ""), mem("pics/c.jpg", 50, ""))
+		w.file("usb:y/p.zip", 250, "p")
+		// u.zip is unique: its member folders keep their members' own places;
+		// an empty member folder has a row of zeros.
+		w.archive(wf{path: "q/u.zip", size: 90}, mem("d/x.txt", 60, ""), mem("d/e/y.txt", 70, "y"),
+			indextest.Member{Path: "empty", Kind: domain.MemberDirectory})
+		w.file("usb:y.txt", 70, "y")
+		r := w.places(t)
+		r.wantMember(t, "z/p.zip!docs", domain.PlaceSums{OtherSource: pa(2, 300), Disposable: pa(1, 10)})
+		r.wantMember(t, "z/p.zip!docs/sub", other(1, 200))
+		r.wantMember(t, "z/p.zip!pics", other(1, 50))
+		r.wantArchive(t, "z/p.zip", domain.PlaceSums{OtherSource: pa(3, 350), Disposable: pa(1, 10)})
+		r.wantMember(t, "q/u.zip!d", domain.PlaceSums{OnlyCopy: pa(1, 60), OtherSource: pa(1, 70)})
+		r.wantMember(t, "q/u.zip!d/e", other(1, 70))
+		r.wantMember(t, "q/u.zip!empty", domain.PlaceSums{})
+		r.wantArchive(t, "q/u.zip", domain.PlaceSums{OnlyCopy: pa(1, 60), OtherSource: pa(1, 70)})
+		// One row per member folder and per complete archive, nothing else.
+		if len(r.members) != 6 || len(r.archives) != 2 {
+			t.Errorf("%d member_places and %d archive_places rows, want 6 and 2", len(r.members), len(r.archives))
+		}
+		// The folder that holds them adds the split, not the unpacked sums.
+		r.want(t, "z", other(1, 250))
 	})
 	t.Run("one unique member", func(t *testing.T) {
 		t.Parallel()
@@ -363,6 +433,9 @@ func TestPlacesOfArchives(t *testing.T) {
 		if _, ok := r.rows[int64(w.id("p/y.zip"))]; ok {
 			t.Error("an archive not completely listed has a row")
 		}
+		if _, ok := r.archives[int64(w.id("p/y.zip"))]; ok || len(r.members) != 0 {
+			t.Errorf("an archive not completely listed has unpacked rows: %v, %d member rows", ok, len(r.members))
+		}
 	})
 	t.Run("an archive whose members have no bytes", func(t *testing.T) {
 		t.Parallel()
@@ -373,6 +446,9 @@ func TestPlacesOfArchives(t *testing.T) {
 		r := w.places(t)
 		r.want(t, "e/empty.zip", other(1, 22))
 		r.want(t, "f/empty.zip", only(1, 30))
+		r.wantArchive(t, "e/empty.zip", domain.PlaceSums{})
+		r.wantArchive(t, "f/empty.zip", domain.PlaceSums{})
+		r.wantMember(t, "f/empty.zip!d", domain.PlaceSums{})
 	})
 	t.Run("a nested archive member is a file", func(t *testing.T) {
 		t.Parallel()
@@ -392,6 +468,7 @@ func TestPlacesOfArchives(t *testing.T) {
 		w.file("usb:fotos/b.jpg", 200, "b")
 		r := w.places(t)
 		r.want(t, "z/fotos.zip", other(1, 290))
+		r.wantArchive(t, "z/fotos.zip", domain.PlaceSums{OtherSource: pa(2, 300), Disposable: pa(1, 10)})
 	})
 	t.Run("a disposable archive", func(t *testing.T) {
 		t.Parallel()
@@ -402,6 +479,8 @@ func TestPlacesOfArchives(t *testing.T) {
 		r := w.places(t)
 		r.want(t, "tmp/cache.zip", domain.PlaceSums{Disposable: pa(1, 700)})
 		r.want(t, "tmp", domain.PlaceSums{OnlyCopy: pa(1, 5), Disposable: pa(1, 700)})
+		// Its unpacked members are placed as in any archive.
+		r.wantArchive(t, "tmp/cache.zip", only(1, 1000))
 	})
 }
 

@@ -220,13 +220,13 @@ func (h *handler) loadRows(ctx context.Context, tx *sql.Tx, refs []domain.Ref) (
 	}
 	for len(members) > 0 {
 		n := min(len(members), chunk)
-		ms, err := memberRows(ctx, tx, h.pol, false, `m.id IN (`+marks(n)+`)`, members[:n]...)
+		ms, err := memberRows(ctx, tx, h.pol, `m.id IN (`+marks(n)+`)`, members[:n]...)
 		if err != nil {
 			return nil, err
 		}
 		for i := range ms {
 			if ms[i].row.Kind == domain.EntryDirectory {
-				if _, err := fillFolder(ctx, tx, h.pol, &ms[i], nil); err != nil {
+				if _, err := fillFolder(ctx, tx, h.pol, &ms[i]); err != nil {
 					return nil, err
 				}
 			}
