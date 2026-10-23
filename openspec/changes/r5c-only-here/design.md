@@ -639,3 +639,8 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
     - the disk's root and folders open in 0.1–0.25 s;
     - the 31,163-file folder opens in 0.84–0.86 s with sort or hide, its API page answering in 0.37 s;
     - the 567,623-member archive opens in 2.8 s.
+- **A18. Removing a source is slower** (CI, task 6.4). Removing a source is one transaction. Its foreign-key cascade probes about 25 child tables for each deleted entry; this change's three tables make it 8–11% slower.
+  - **In the browser suite:** removing the 100,000-entry bulk source took 7.8 s before and 8.6 s now. On CI runners that crossed the test's 15 s wait in two push runs.
+  - **The fix:** the test now waits up to 60 s for the card to go, as it already does for the scan.
+  - **No hang:** a goroutine dump showed the removal running its `DELETE` while the other writers queued behind it.
+  - **Older limit:** removing a source of over a million entries takes minutes and holds the writer meanwhile.

@@ -154,7 +154,9 @@ test('scans a source with live progress', async () => {
   // The bulk folder only served to watch a scan; the rest uses the corpus.
   await card.getByRole('button', { name: 'Remove' }).click()
   await page.getByRole('alertdialog', { name: 'Remove “bulk”?' }).getByRole('button', { name: 'Remove' }).click()
-  await expect(card).toBeHidden()
+  // Removing deletes about 100,000 entries in one transaction (the foreign
+  // key cascade); on a small CI runner that takes over 10 s.
+  await expect(card).toBeHidden({ timeout: 60_000 })
 })
 
 test('scans the corpus and Home shows its ground-truth totals', async () => {
