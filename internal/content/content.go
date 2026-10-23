@@ -105,6 +105,9 @@ type Service struct {
 	// hashing commit (design D5). Tests replace them.
 	candidates     func(ctx context.Context, q store.Queryer, src domain.SourceID) ([][2]relations.Range, error)
 	requestRefresh func(tx *jobs.Tx) error
+	// coverageRead, when not nil, runs while a plan's coverage aggregate
+	// holds its read transaction open (r5d design D2). Tests set it.
+	coverageRead func()
 }
 
 // NewService returns the hashing service. Zero settings take the
