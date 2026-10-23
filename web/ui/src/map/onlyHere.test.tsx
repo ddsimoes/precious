@@ -53,7 +53,7 @@ function otherCopy(ref: string, path: string, overrides: Partial<OtherCopy> = {}
     via_archive: false,
     more: 0,
     ...overrides,
-  }
+  } as OtherCopy
 }
 
 // placed is a row as children answer it with places=1.
@@ -128,7 +128,11 @@ const musica = file('22', 'musica.mp3', {
 })
 const nota = file('23', 'nota.txt', {
   place: 'this_source',
-  other_copy: otherCopy('m456', 'Arquivo/backup.tar.gz!docs/nota.txt', { archive_id: '45' }),
+  other_copy: otherCopy('m456', 'Arquivo/backup.tar.gz!docs/nota.txt', {
+    archive_id: '45',
+    archive_path: 'Arquivo/backup.tar.gz',
+    member_path: 'docs/nota.txt',
+  }),
 })
 const novo = file('24', 'novo.bin', { place: 'unchecked' })
 const ruim = file('25', 'ruim.jpg', { place: 'unreadable' })
@@ -434,6 +438,193 @@ describe('Map Only here mode', () => {
   })
 })
 
+// folderRoutes answer the Map opened at row, which lists nothing.
+function folderRoutes(row: EntryRow, detail: Partial<EntryDetail> = {}) {
+  return {
+    ...routes(),
+    [`GET /api/entries/${row.id}`]: () => jsonResponse(200, entryDetail(row, { places_updating: false, ...detail })),
+    [`GET /api/entries/${row.id}/treemap`]: () =>
+      jsonResponse(200, { entry: row, items: [], other: { count: 0, bytes: 0 } }),
+    [`GET /api/entries/${row.id}/children`]: () => jsonResponse(200, { items: [], next_cursor: null }),
+  }
+}
+
+function listed(group: HTMLElement) {
+  return within(group)
+    .getAllByRole('listitem')
+    .map((item) => item.textContent.replace(/\s+/g, ' '))
+}
+
+describe('Map Only here figures and names that read plainly', () => {
+  const montagem = placed(folderRow('15', 'Montagem', { mount_boundary: true, total_bytes: 0, total_files: 0 }), {
+    place: 'unreadable',
+    places: sums({}),
+  })
+
+  it.each([
+    ['could not be read', fechada, 'Could not be read'],
+    ['is a mount point', montagem, 'Partly unreadable'],
+  ])('never calls a folder that %s empty (I7)', async (_, row, words) => {
+    stubApi(folderRoutes(row))
+    renderApp(`/map/${row.id}?places=1&entry=${row.id}`)
+    await table()
+
+    const totals = screen.getByRole('group', { name: 'In this folder:' })
+    expect(totals).toHaveTextContent(words)
+    expect(totals).not.toHaveTextContent('Nothing with content')
+    const panel = within(await screen.findByRole('complementary', { name: row.name }))
+    const places = within(await panel.findByRole('region', { name: 'Where copies are' }))
+    expect(places.getByText(words)).toBeInTheDocument()
+    expect(places.queryByText('Nothing here has content to copy.')).not.toBeInTheDocument()
+  })
+
+  it('says a folder is partly unreadable beside its figures', async () => {
+    stubApi(folderRoutes(parcial))
+    renderApp('/map/10?places=1')
+    await table()
+
+    const totals = screen.getByRole('group', { name: 'In this folder:' })
+    expect(totals).toHaveTextContent('Partly unreadable')
+    expect(listed(totals)).toEqual(['1 GiB with a copy on another source'])
+  })
+
+  it('totals an open archive by its unpacked sizes while its own split is not computed yet', async () => {
+    const fresh = { ...zip, place: 'not_computed' as const, places: null }
+    stubApi({
+      ...routes(),
+      'GET /api/entries/61': () => jsonResponse(200, entryDetail(fresh, { places_updating: true })),
+    })
+    renderApp('/map/61?places=1')
+    await screen.findByRole('table', { name: 'Contents of Backup.zip' })
+
+    const totals = screen.getByRole('group', { name: 'In this archive, unpacked sizes:' })
+    expect(within(totals).queryByText('Not computed yet')).not.toBeInTheDocument()
+    expect(listed(totals)).toEqual(['3 GiB with a copy on another source', '1 GiB not checked yet'])
+  })
+
+  it('gives the same checked share in the totals and, once, in the panel', async () => {
+    const almost: Coverage = coverage({
+      candidate: { bytes: 1000 * GiB, files: 200_000 },
+      checked: { bytes: 996 * GiB, files: 199_000 },
+      unchecked: { bytes: 4 * GiB, files: 1_000 },
+      unreadable: { bytes: 0, files: 0 },
+    })
+    stubApi({
+      ...routes({ root: { coverage: almost } }),
+      'GET /api/entries/5': () => jsonResponse(200, entryDetail(unico, { places_updating: false, coverage: almost })),
+    })
+    renderApp('/map/1?places=1&entry=5')
+    await table()
+
+    expect(screen.getByRole('group', { name: 'In this folder:' })).toHaveTextContent(
+      'On all sources, 99% of the content that could have a copy has been checked',
+    )
+    const panel = within(await screen.findByRole('complementary', { name: 'Unico' }))
+    await panel.findByRole('region', { name: 'Where copies are' })
+    await panel.findByRole('region', { name: 'Related folders' })
+    expect(panel.getAllByText(/^On all disks,/).map((claim) => claim.textContent)).toEqual([
+      'On all disks, 99% of what could have a copy is checked.',
+    ])
+  })
+
+  it('names the archive of a member copy whose folder has a ! in its name', async () => {
+    const bang = file('30', 'nota2.txt', {
+      place: 'this_source',
+      other_copy: otherCopy('m457', 'Importante!/backup.zip!docs/nota2.txt', {
+        archive_id: '46',
+        archive_path: 'Importante!/backup.zip',
+        member_path: 'docs/nota2.txt',
+      }),
+    })
+    stubApi(routes({ children: [bang] }))
+    renderApp('/map/1?places=1')
+    await table()
+
+    expect(
+      within(rowOf('nota2.txt')).getByRole('link', { name: 'Also inside Importante!/backup.zip (docs/nota2.txt)' }),
+    ).toHaveAttribute('href', '/map/1?places=1&entry=m457')
+  })
+
+  it('names a member’s own archive by its name when its path has a !', async () => {
+    const aberto = placed(
+      entryRow({
+        id: '63',
+        name: 'Backup.zip',
+        path: 'Fotos!/Backup.zip',
+        file_kind: 'archive',
+        archive_state: 'complete',
+        content_state: 'hashed',
+      }),
+      {
+        place: 'other_source',
+        places: sums({ other_source: 1 * GiB }),
+        member_places: sums({ other_source: 1 * GiB }),
+      },
+    )
+    const leiame = placed(
+      entryRow({
+        id: 'm72',
+        name: 'leiame.txt',
+        path: 'Fotos!/Backup.zip!leiame.txt',
+        archive_id: '63',
+        decision: null,
+      }),
+      {
+        place: 'other_source',
+        other_copy: otherCopy('64', 'Copias/Backup (1).zip', { source_id: 'backup', via_archive: true }),
+      },
+    )
+    stubApi({
+      ...routes(),
+      'GET /api/entries/63': () => jsonResponse(200, entryDetail(aberto, { places_updating: false })),
+      'GET /api/entries/63/treemap': () =>
+        jsonResponse(200, { entry: aberto, items: [leiame], other: { count: 0, bytes: 0 } }),
+      'GET /api/entries/63/children': () => jsonResponse(200, { items: [leiame], next_cursor: null }),
+    })
+    renderApp('/map/63?places=1')
+    await screen.findByRole('table', { name: 'Contents of Backup.zip' })
+
+    expect(
+      within(rowOf('leiame.txt')).getByRole('link', {
+        name: 'Inside a copy of Backup.zip at Copias/Backup (1).zip on Backup disk',
+      }),
+    ).toHaveAttribute('href', '/map/63?places=1&entry=64')
+  })
+
+  it('keeps qualifiers and the other source whole, and cuts long paths from their start', async () => {
+    stubApi(routes())
+    renderApp('/map/1?places=1')
+    await table()
+
+    // A place's qualifier is a span of its own that does not shrink.
+    const musicaPlace = within(cellOf('musica.mp3', 'Where copies are'))
+    expect(musicaPlace.getByText('Copy on another source')).toBeInTheDocument()
+    expect(musicaPlace.getByText('(the other source is not connected)')).toHaveClass('shrink-0')
+    const copiadaPlace = within(cellOf('Copiada', 'Where copies are'))
+    expect(copiadaPlace.getByText('apart from 3 disposable files')).toHaveClass('shrink-0')
+    // So is the other copy's source, under the name; its path gives way
+    // from the start, as the location line's does.
+    const musica = within(rowOf('musica.mp3'))
+    expect(musica.getByText('on Old disk')).toHaveClass('shrink-0')
+    expect(musica.getByText('Musica/musica.mp3').closest('[dir="rtl"]')).toHaveClass('truncate')
+    const copiada = within(rowOf('Copiada'))
+    expect(copiada.getByText('on Backup disk')).toHaveClass('shrink-0')
+    expect(copiada.getByText('Fotos 2004').closest('[dir="rtl"]')).toHaveClass('truncate')
+  })
+
+  it('says next to the hide option that it hides empty items and system files too', async () => {
+    stubApi(routes())
+    renderApp('/map/1?places=1')
+    await table()
+
+    const hint = 'Empty items and system files are hidden too.'
+    expect(
+      screen.getByRole('checkbox', { name: 'Hide what has a copy on another source' }),
+    ).toHaveAccessibleDescription(hint)
+    expect(screen.getByText(hint)).toBeVisible()
+  })
+})
+
 describe('Map Only here address', () => {
   it('turns on with the treemap colored by place, asking for the places', async () => {
     const requests = stubApi(routes())
@@ -615,10 +806,18 @@ describe('Map Only here column in a narrow card', () => {
     await waitFor(() => expect(headers()).toEqual(['Name', 'Size▼', 'Type or category', 'Where copies are']))
   })
 
-  it('hides the place column last', async () => {
+  it('hides Type or category before the place column, which always stays', async () => {
     stubApi(routes())
-    width = 41 * 16
+    width = 30 * 16
     renderApp('/map/1?places=1')
+    await table()
+    await waitFor(() => expect(headers()).toEqual(['Name', 'Size▼', 'Where copies are']))
+  })
+
+  it('keeps Type or category outside the mode at the same width', async () => {
+    stubApi(routes())
+    width = 30 * 16
+    renderApp('/map/1')
     await table()
     await waitFor(() => expect(headers()).toEqual(['Name', 'Size▼', 'Type or category']))
   })

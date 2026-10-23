@@ -38,6 +38,8 @@ const formatNames: Record<ArchiveFormat, string> = {
   bzip2: 'BZ2',
 }
 
+// CopiesSection lists a file's other copies. coverage is null when a
+// section above already states the checked share.
 export function CopiesSection({
   entry,
   content,
@@ -45,7 +47,7 @@ export function CopiesSection({
 }: {
   entry: EntryRow
   content: EntryContent
-  coverage: Coverage
+  coverage: Coverage | null
 }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -101,7 +103,7 @@ export function CopiesSection({
     <>
       {placed && <FilePlace entry={entry} others={others} otherCount={otherCount} />}
       {body}
-      <CoverageClaim coverage={coverage} />
+      {coverage !== null && <CoverageClaim coverage={coverage} />}
     </>
   )
 }
@@ -132,6 +134,8 @@ function CopyList({ copies }: { copies: Copy[] }) {
   )
 }
 
+// RelationsSection lists a folder's or archive's related folders. coverage
+// is null when a section above already states the checked share.
 export function RelationsSection({
   entry,
   relations,
@@ -139,7 +143,7 @@ export function RelationsSection({
 }: {
   entry: EntryRow
   relations: Relation[]
-  coverage: Coverage
+  coverage: Coverage | null
 }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -149,7 +153,7 @@ export function RelationsSection({
     return (
       <>
         <p className="text-sm">{t('detail.noRelations')}</p>
-        <CoverageClaim coverage={coverage} />
+        {coverage !== null && <CoverageClaim coverage={coverage} />}
       </>
     )
   }
@@ -191,7 +195,7 @@ export function RelationsSection({
           </li>
         ))}
       </ul>
-      <CoverageClaim coverage={coverage} />
+      {coverage !== null && <CoverageClaim coverage={coverage} />}
     </>
   )
 }

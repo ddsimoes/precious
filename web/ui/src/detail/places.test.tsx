@@ -128,7 +128,7 @@ describe('The detail panel shows places', () => {
     )
     const places = within(await panel.findByRole('region', { name: 'Where copies are' }))
     expect(places.getByText(/^Not computed yet/)).toBeInTheDocument()
-    expect(places.getByText(/^Updating…/)).toBeInTheDocument()
+    expect(places.getByText('Updating… These figures will change as Precious finishes checking.')).toBeInTheDocument()
     expect(places.queryByRole('list')).not.toBeInTheDocument()
   })
 
@@ -226,6 +226,12 @@ describe('The detail panel shows places', () => {
       'Has a copy on another source25 MiB · 8 files',
       'Disposable files1 MiB · 1 file',
     ])
+    // The split its row shows in its folder, as a share of its size on disk.
+    expect(
+      places.getByText(
+        'In its folder, its 40 MiB on disk count as: 30 MiB only copy, 10 MiB with a copy on another source.',
+      ),
+    ).toBeInTheDocument()
     // Its members place it; the archive file's own copies say no more.
     const copies = within(panel.getByRole('region', { name: 'Copies' }))
     expect(copies.getByText('No other copy found.')).toBeInTheDocument()

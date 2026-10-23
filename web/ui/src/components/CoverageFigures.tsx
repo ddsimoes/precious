@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 
-import { checkedShare, type Coverage } from '@/api/content'
+import { checkedShare, claimedShare, type Coverage } from '@/api/content'
 import { useFormat } from '@/lib/format'
 
 // CoverageFigures shows how much of what could have a copy was checked
@@ -49,12 +49,13 @@ export function CoverageFigures({ coverage }: { coverage: Coverage }) {
 
 // CoverageClaim is the checked share every "no other copy" claim carries
 // (I7): a copy can be on any disk, so the share is that of all of them.
+// A panel shows it once, under the first section making such a claim.
 export function CoverageClaim({ coverage }: { coverage: Coverage }) {
   const { t } = useTranslation()
   const fmt = useFormat()
   return (
     <p className="text-xs text-muted-foreground">
-      {t('coverage.claim', { percent: fmt.percent(checkedShare(coverage)) })}
+      {t('coverage.claim', { percent: fmt.percent(claimedShare(coverage)) })}
     </p>
   )
 }

@@ -1,9 +1,11 @@
 import { useTranslation } from 'react-i18next'
 
 import type { Copy, Coverage } from '@/api/content'
-import type { EntryRow, PlaceSums } from '@/api/entries'
+import type { EntryRow } from '@/api/entries'
 import { CoverageClaim } from '@/components/CoverageFigures'
 import { BarList, type Bar } from '@/home/BarList'
+import { useFormat } from '@/lib/format'
+import { placeAmountText, placeParts, unreadableText } from '@/lib/places'
 import { placeColors } from '@/map/colors'
 
 // The detail panel's places (R5c design D5, D8, D14): where the copies of
@@ -15,22 +17,27 @@ import { placeColors } from '@/map/colors'
 // order; disposable files follow on their own line.
 const sumPlaces = ['only_copy', 'this_source', 'other_source', 'unchecked', 'unreadable'] as const
 
-// FolderPlaces shows a folder's or complete archive's files and bytes per
-// place and its disposable files, with the checked share of every source.
-// sums are null while the figures are not computed yet; an archive's are
-// its members' unpacked sizes, and unpacked says so.
+// FolderPlaces shows a folder's or complete archive's (listed) files and
+// bytes per place and its disposable files, with the checked share of
+// every source. The sums are null while the figures are not computed yet;
+// an archive's are its members' unpacked sizes, which it says, followed by
+// the split of its size on disk that its row shows in its folder. A folder
+// that could not be read says so in its row's words, never that it holds
+// nothing (I7).
 export function FolderPlaces({
-  sums,
-  unpacked,
+  entry,
+  listed,
   updating,
   coverage,
 }: {
-  sums: PlaceSums | null
-  unpacked: boolean
+  entry: EntryRow
+  listed: boolean
   updating: boolean
   coverage: Coverage
 }) {
   const { t } = useTranslation()
+  const fmt = useFormat()
+  const sums = (listed ? entry.member_places : entry.places) ?? null
   const bars: Bar[] =
     sums === null
       ? []
@@ -44,19 +51,30 @@ export function FolderPlaces({
             color: placeColors[place],
           }))
   const whole = bars.reduce((sum, bar) => sum + bar.bytes, 0)
+  const unreadable = entry.place === 'unreadable' ? unreadableText(entry, t) : null
+  const split = listed ? placeParts(entry.places) : []
 
   return (
     <>
-      {unpacked && <p className="text-sm">{t('detail.places.unpacked')}</p>}
+      {listed && <p className="text-sm">{t('detail.places.unpacked')}</p>}
+      {unreadable !== null && <p className="text-sm font-medium">{unreadable}</p>}
       {sums === null ? (
         <p className="text-sm">{t('detail.places.notComputed')}</p>
-      ) : bars.length === 0 ? (
-        <p className="text-sm">{t('detail.places.nothing')}</p>
-      ) : (
+      ) : bars.length > 0 ? (
         <BarList label={t('detail.places.title')} bars={bars} whole={whole} />
+      ) : (
+        unreadable === null && <p className="text-sm">{t('detail.places.nothing')}</p>
       )}
       {sums !== null && sums.disposable.files > 0 && (
         <p className="text-xs text-muted-foreground">{t('detail.places.disposableHelp')}</p>
+      )}
+      {split.length > 0 && (
+        <p className="text-sm">
+          {t('detail.places.split', {
+            size: fmt.bytes(entry.size),
+            parts: fmt.list(split.map((part) => placeAmountText(part.key, part.bytes, t, fmt))),
+          })}
+        </p>
       )}
       {updating && <p className="text-sm font-medium">{t('detail.places.updating')}</p>}
       <CoverageClaim coverage={coverage} />

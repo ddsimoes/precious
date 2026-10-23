@@ -3,7 +3,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, Navigate, useNavigate, useParams, useSearchParams, type To } from 'react-router'
 
-import { checkedShare } from '@/api/content'
+import { claimedShare } from '@/api/content'
 import {
   childSorts,
   childrenQueryKey,
@@ -31,7 +31,7 @@ import { Label } from '@/components/ui/label'
 import { DetailPanel } from '@/detail/DetailPanel'
 import { useEntryLink } from '@/detail/useEntryLink'
 import { useFormat } from '@/lib/format'
-import { placeAmountText, placeParts } from '@/lib/places'
+import { placeAmountText, placeParts, unreadableText } from '@/lib/places'
 import { cn } from '@/lib/utils'
 import { colorModes, placeColors, type ColorContext, type ColorMode } from '@/map/colors'
 import { MapPath } from '@/map/MapPath'
@@ -70,6 +70,7 @@ function MapFolder({ folderId }: { folderId: string }) {
   const placesId = useId()
   const placesHintId = useId()
   const hideId = useId()
+  const hideHintId = useId()
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [now] = useState(() => Date.now())
   // viewing is the file Enter opened in the viewer.
@@ -200,6 +201,12 @@ function MapFolder({ folderId }: { folderId: string }) {
     }),
     [now, shownTag, folder.data],
   )
+  // A member's archive is the open level or one of its ancestors.
+  const archiveName = useCallback(
+    (id: string) =>
+      folder.data?.entry.id === id ? folder.data.entry.name : folder.data?.ancestors.find((a) => a.id === id)?.name,
+    [folder.data],
+  )
 
   const detail = folder.data
   if (detail !== undefined && !isDrillable(detail.entry)) {
@@ -241,8 +248,12 @@ function MapFolder({ folderId }: { folderId: string }) {
                   type="checkbox"
                   checked={hideOn}
                   onChange={(event) => setView({ hide: event.target.checked ? 'other_source' : null })}
+                  aria-describedby={hideHintId}
                 />
                 <Label htmlFor={hideId}>{t('map.places.hide')}</Label>
+                <span id={hideHintId} className="max-w-64 text-xs text-muted-foreground">
+                  {t('map.places.hideHint')}
+                </span>
               </div>
             )}
             <div className="flex items-center gap-2">
@@ -320,6 +331,7 @@ function MapFolder({ folderId }: { folderId: string }) {
                 selectedId={selectedId}
                 keyboard={keyboard}
                 places={placesOn}
+                archiveName={archiveName}
                 tableRef={tableRef}
                 hasMore={hasNextPage}
                 loadingMore={isFetchingNextPage}
@@ -357,7 +369,8 @@ function MapFolder({ folderId }: { folderId: string }) {
 // checked on every source while it is not all, since an only copy may yet
 // turn out to have one (R2.7); and whether the figures are being updated.
 // An open archive, or a folder inside one, gives its members' unpacked
-// sizes.
+// sizes. A folder that could not be read says so, never that it holds
+// nothing (I7).
 function PlacesTotals({ detail }: { detail: EntryDetail }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -368,14 +381,17 @@ function PlacesTotals({ detail }: { detail: EntryDetail }) {
     return null
   }
   const archive = entry.kind !== 'directory' && entry.archive_state === 'complete'
-  const sums = archive ? (entry.member_places ?? entry.places) : entry.places
+  // The sums shown decide whether there is anything to show: an archive's
+  // members' sums are computed live, even before its own split is stored.
+  const sums = archive ? entry.member_places : entry.places
   const parts = placeParts(sums)
-  const share = checkedShare(detail.coverage)
+  const unreadable =
+    entry.place === 'unreadable' ? <span className="font-medium">{unreadableText(entry, t)}</span> : null
   let figures
-  if (entry.place === 'not_computed' || sums === undefined || sums === null) {
+  if (sums === undefined || sums === null) {
     figures = <span>{t('map.places.notComputed')}</span>
   } else if (parts.length === 0) {
-    figures = <span>{t('map.places.totalsNothing')}</span>
+    figures = unreadable === null && <span>{t('map.places.totalsNothing')}</span>
   } else {
     figures = (
       <ul className="flex flex-wrap gap-x-3 gap-y-1">
@@ -388,12 +404,14 @@ function PlacesTotals({ detail }: { detail: EntryDetail }) {
       </ul>
     )
   }
+  const share = claimedShare(detail.coverage)
   return (
     <div role="group" aria-labelledby={titleId} className="mb-2 grid gap-1 text-sm">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span id={titleId} className="font-medium">
           {t(archive || isMember(entry) ? 'map.places.totalsArchive' : 'map.places.totals')}
         </span>
+        {unreadable}
         {figures}
         {detail.places_updating === true && (
           <span role="status" className="text-muted-foreground">
@@ -403,10 +421,7 @@ function PlacesTotals({ detail }: { detail: EntryDetail }) {
       </div>
       <PlaceBar sums={sums} />
       {share < 1 && (
-        <p className="text-xs text-muted-foreground">
-          {/* A share not yet whole never reads 100%. */}
-          {t('map.places.coverage', { pct: fmt.percent(Math.min(share, 0.99)) })}
-        </p>
+        <p className="text-xs text-muted-foreground">{t('map.places.coverage', { pct: fmt.percent(share) })}</p>
       )}
     </div>
   )
