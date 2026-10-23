@@ -29,6 +29,31 @@ export function corpusPath(): string {
   return setting('PRECIOUS_E2E_CORPUS')
 }
 
+// copiesPath is the copies folder beside the corpus, canonical, as the
+// server shows it.
+export function copiesPath(): string {
+  return setting('PRECIOUS_E2E_COPIES')
+}
+
+// copiesFixture is what global-setup.ts writes into the copies folder for
+// the Only here tests (r5c design D13), taken from the corpus by path: a
+// byte-identical copy of one photo folder, copies of three photos in one
+// folder and of the first of them again in another, and one file of its
+// own. only-here.spec.ts lists why these corpus files stay where they are.
+export const copiesFixture = {
+  folder: { from: 'celular_backup_2009/DCIM/100MEDIA', to: 'fotos do celular' },
+  photos: {
+    to: 'fotos soltas',
+    from: [
+      'Fotos/2009/Viagem Chile/DSC04005.JPG',
+      'Fotos/2007/Formatura/DSC03004.JPG',
+      'celular_backup_2009/WhatsApp/Media/WhatsApp Images/IMG-20090612-WA0001.jpg',
+    ],
+  },
+  again: { to: 'mais fotos', from: 'Fotos/2009/Viagem Chile/DSC04005.JPG' },
+  own: { folder: 'meus', name: 'plano de viagem.txt', text: 'Roteiro da viagem de 2012, escrito só neste disco.\n' },
+} as const
+
 // TruthEntry is one entry of the corpus's ground_truth.json (tools/gencorpus).
 export interface TruthEntry {
   path: string

@@ -7,10 +7,10 @@ import { awaitDuplicates } from './duplicates'
 import { adminPassword, corpusPath, origin } from './env'
 
 // Screens fit the window (design D23): at 1366×768 and 1920×1080, on the Map
-// (with and without the detail panel), on Search, on the panel itself, and
-// on Opportunities, a review list, and Compare, nothing extends past
-// its card or the window and no two controls overlap. Each screen is also
-// saved under test-results/layout/ for review.
+// (with and without the detail panel, and in the Only here mode), on Search,
+// on the panel itself, and on Opportunities, a review list, and Compare,
+// nothing extends past its card or the window and no two controls overlap.
+// Each screen is also saved under test-results/layout/ for review.
 //
 // Files run in alphabetical order, so this one runs before precious.spec.ts,
 // which starts from an index without sources and adds the corpus itself.
@@ -138,6 +138,29 @@ for (const viewport of viewports) {
     }
   })
 
+  // In the Only here mode the place column takes the duplication column's
+  // room, and a file names another copy on a second line (r5c design D8,
+  // D9): Downloads holds such files, and the eMule zip's panel its places.
+  test(`the Map in the Only here mode fits at ${size}`, async () => {
+    await page.setViewportSize(viewport)
+    const view = 'places=1&color=places'
+    const backup = await entryAt('Backup_PC_2004')
+    const downloads = await entryAt('Downloads')
+    const zip = await entryAt('Downloads/eMule0.47c-Installer.zip')
+
+    await openMap(rootId, undefined, view)
+    await expect(page.getByRole('switch', { name: 'Only here' })).toBeChecked()
+    await checkLayout(`map-places-root-${size}`)
+    await openMap(rootId, backup.id, view)
+    await checkLayout(`map-places-root-panel-${size}`)
+    await openMap(downloads.id, undefined, view)
+    await expect(page.getByRole('table', { name: 'Contents of Downloads' }).getByRole('link', { name: /^Also at / }).first()).toBeVisible()
+    await checkLayout(`map-places-downloads-${size}`)
+    await openMap(downloads.id, zip.id, view)
+    await expect(page.getByRole('complementary').getByRole('region', { name: 'Where copies are' })).toBeVisible()
+    await checkLayout(`map-places-downloads-panel-${size}`)
+  })
+
   test(`Search and the detail panel fit at ${size}`, async () => {
     await page.setViewportSize(viewport)
     await page.goto('/search?ext=jpg')
@@ -216,10 +239,11 @@ test('below 1,600 px the panel opens over the Map, takes the focus, and gives it
   await expect(panel).toBeHidden()
 })
 
-// openMap opens the Map at folder, with the detail panel of entry, and waits
-// for its table and treemap.
-async function openMap(folder: string, entry?: string) {
-  await page.goto(`/map/${folder}${entry === undefined ? '' : `?entry=${entry}`}`)
+// openMap opens the Map at folder, with the detail panel of entry and the
+// view parameters in view, and waits for its table and treemap.
+async function openMap(folder: string, entry?: string, view = '') {
+  const query = [view, entry === undefined ? '' : `entry=${entry}`].filter((part) => part !== '').join('&')
+  await page.goto(`/map/${folder}${query === '' ? '' : `?${query}`}`)
   const table = page.getByRole('table', { name: /^Contents of / })
   await expect(table.getByRole('row').nth(1)).toBeVisible()
   await expect(page.getByRole('img', { name: /^Treemap of / })).toBeVisible()

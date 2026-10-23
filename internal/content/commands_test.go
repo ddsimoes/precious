@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"precious/internal/clock"
 	"precious/internal/commands"
 	"precious/internal/config"
 	"precious/internal/domain"
@@ -255,6 +256,51 @@ func TestRegisterRunsJobs(t *testing.T) {
 	waitJobs(t, e, KindHashNow)
 	if acc.JobID == "" {
 		t.Error("no hash_now job")
+	}
+}
+
+// Two sources on one device share its one slot: the first hashing job
+// yields it to the second while it creates the file_content rows, and the
+// second plans while the first waits for the slot. The planning must not
+// wait for the first job, which waits for it in turn: both jobs end.
+func TestHashJobsOfTwoSourcesOnOneDeviceBothEnd(t *testing.T) {
+	e := newEnv(t)
+	pairOf(e.disk("fotos", "/mnt/fotos", posix), 1234, "a", "b")
+	pairOf(e.disk("usb", "/mnt/usb", posix), 1234, "c", "d")
+	e.scan("fotos")
+	e.scan("usb")
+	if _, err := e.st.Writer().Exec(`UPDATE sources SET device_key = 'dev:shared'`); err != nil {
+		t.Fatal(err)
+	}
+	// A running clock: the arbiter gives the slot to the job that waited
+	// longest, so the yielding job's turn comes after the queued one's.
+	r, err := jobs.NewRunner(jobs.Options{Store: e.st, Registry: e.src, Clock: clock.Real{},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), TickInterval: 5e6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(e.st, e.src, fixedClock{testNow}, e.h, e.a, config.Defaults().Duplicates)
+	svc.Register(r)
+	svc.candidates = e.svc.candidates
+	ctx := context.Background()
+	// Startup enqueues both jobs before the runner claims either.
+	if err := svc.Startup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		// A deadlocked attempt never returns: stop waiting for it.
+		stop, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		_ = r.Stop(stop)
+	}()
+	waitJobs(t, e, KindHash)
+	for _, f := range [][2]string{{"fotos", "a"}, {"fotos", "b"}, {"usb", "c"}, {"usb", "d"}} {
+		if s := e.state(domain.SourceID(f[0]), f[1]); s != domain.ContentHashed {
+			t.Errorf("%s/%s is %s after both jobs", f[0], f[1], s)
+		}
 	}
 }
 
