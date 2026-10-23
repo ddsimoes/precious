@@ -742,6 +742,8 @@ A file inside a listed archive counts under the archive's source. A file with no
 
 Files in quarantine are not in these figures, nor are the members of an archive in quarantine. The figures are recomputed whenever a hashing job groups the files, so a cleanup or a restore shows in them from the next hashing job.
 
+Recomputing counts every file and archive member, which can take a minute on a large index. It only reads while it counts, so sign-in, decisions, and other writes go on meanwhile. It then corrects each source's figures by the difference it found, in one short write, so a file a hashing job checks meanwhile stays counted as checked.
+
 ### Check now
 
 `check-now` with `{"entry_ids":["12","m45"]}` (one or two folders, archive files, or folders inside archives) hashes what is not checked yet inside them before any other hashing on their disks, for example to compare two folders while the first hashing run has not reached their small files. It answers 202 with `{"jobs":[{"job_id","state","coalesced"}]}`, one job per source; a second request for the same source adds its folders to the job already waiting or running. A file is 400 `invalid_request`, an unknown ID 404, a folder on an unmounted source 409 `source_offline`, and an entry in a quarantine 409 `in_quarantine`: only the [pre-delete check](#the-pre-delete-check) reads what is there. The rest of the source continues with its regular hashing job afterwards.
