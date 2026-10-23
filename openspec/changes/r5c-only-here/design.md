@@ -644,3 +644,11 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
   - **The fix:** the test now waits up to 60 s for the card to go, as it already does for the scan.
   - **No hang:** a goroutine dump showed the removal running its `DELETE` while the other writers queued behind it.
   - **Older limit:** removing a source of over a million entries takes minutes and holds the writer meanwhile.
+- **A19. Deploy to the test server** (task 6.4), 2026-10-23. PR #9 passed CI.
+  - **Backup:** the database was backed up (`backups/r5b-before-r5c.db`; quick check ok, version 8), and the previous binary kept as `precious.r5b-eada8b3`. Then `precious.r5c-smoke-ad8c081` was installed.
+  - **First relate pass:** migration 0009 and the pass took 428 s on the container's 4 cores. It wrote 157,686 + 256,491 + 18,622 rows.
+  - **Browser, while three startup hash jobs ran:**
+    - the disk's root and folders open in 0.15–0.3 s;
+    - the 31,163-file folder opens in 1.8–2.3 s with sort or hide (API 1.6 s);
+    - the 567,623-member archive opens in 10.9 s.
+  - **The startup hash jobs** stay in the candidate small-file pass for an hour or more even when everything is checked; on R5b, hash jobs of these sources took 58–130 min. This is older behavior, seen in a goroutine dump: `smallPass` queries for each candidate span.

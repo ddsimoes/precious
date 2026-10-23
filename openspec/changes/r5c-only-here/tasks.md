@@ -256,5 +256,5 @@
     - a Compare link;
     - the panel.
 - [x] 6.3 Independent reviews of the change. Fix each finding with a test that fails before the fix, and record the findings in the Addendum.
-- [ ] 6.4 Open a PR, wait for CI, then deploy to the test server: back up the database and keep the previous binary (design Migration Plan).
+- [x] 6.4 Open a PR, wait for CI, then deploy to the test server: back up the database and keep the previous binary (design Migration Plan).
 - [ ] 6.5 The owner checks the mode in his browser on his sources and signs off. Record the sign-off in the design Addendum and set ADR 0013 to accepted.
