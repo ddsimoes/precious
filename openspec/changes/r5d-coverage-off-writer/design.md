@@ -92,3 +92,9 @@ Deploy over r5c with no migration: back up the database, keep the previous binar
 - **A2. Review** (task 2.2): one independent review found no bugs.
   - **Exactness:** it confirmed D1 by listing every writer of the figures and of the rows they count. The only commits it misses between the snapshot and the drift write are without deltas (another job's `insertRows`, scans, executor actions), and each is followed by a plan, so nothing persists beyond the next plan. The window is smaller than before, since the snapshot now follows the last state batch.
   - **Its one suggestion:** a test that pins the aggregate to the read snapshot (a delta-less change committed in the seam stays out until the next plan). It was added.
+- **A3. Deploy and measurement** (task 2.3), 2026-10-23. PR #10 passed CI.
+  - **Install:** the database was backed up as `backups/r5c-before-r5d.db` (quick check ok), `precious.r5c-ccca383` was kept, and `precious.r5d-smoke-3ce438d` was installed.
+  - **Measurement:** for 10 minutes after the restart, `GET /api/session` (which creates a pre-login session, a write, as sign-in does) was timed every second. Meanwhile three hashing jobs and three media jobs ran from startup.
+    - **Result:** 551 requests, the worst 2.08 s, and one over 2 s.
+    - **Before:** on r5c, the same request timed out at 30 s (r5c A20), and sign-in failed for minutes.
+    - **The gate:** it is missed by 0.08 s on that single request, which is not the minute-long stall this change removes. It is recorded, not chased.
