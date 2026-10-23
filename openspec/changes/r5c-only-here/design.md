@@ -571,3 +571,22 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
   - **Speed** (D10 fixture, 2M entries): on a 30,000-file folder the first page takes p95 468 ms (`only_here`) and 492 ms (`hide` + `bytes`). A 100,000-file folder takes 1.6 s, a 50,000-member archive level 0.53–0.61 s, and its treemap 0.87 s. R1.10 pages stay at p95 9.4 ms.
   - **Golden comparison:** the full comparison without `places` (about 3,500 requests, recorded on the base build) runs under `-tags slow` only.
   - **Test time:** `go test -race ./internal/web/api` now takes about 65 s under load. It was about 56 s before, and the new tests take about 10.5 s of it. This is accepted over the 60 s guideline; the package was already near it.
+- **A10. Code review, round R1** (task 6.3): two independent reviews, one of the back end and one of the front end. Each finding was fixed with a test that failed before the fix.
+  - **Back end:** a complete archive hard-linked to a name that is not a complete archive counted as two copies in the relate pass (the stored figures said `this_source`, the live rows `only_copy`). `dir_dups` had the same overcount since R2. `countCopies` now skips the extra archive copy when its identity is already an entry's.
+  - **Front end:**
+    - an unreadable folder or mount point read as "Nothing with content" in the totals and the panel (I7); it now reads "Could not be read" or "Partly unreadable";
+    - qualifiers and "on <source>" were cut off in narrow columns; they are now their own spans, and paths are cut from the left;
+    - an opened archive showed "Not computed yet" beside live member figures;
+    - member copies were split at the first `!`; `other_copy` now carries `archive_path` and `member_path`;
+    - the Map and the panel rounded the checked share differently, and the panel showed it twice; one helper now does it;
+    - the place column could hide on narrow screens; it no longer hides in the mode;
+    - an archive's row (packed split) and its panel (unpacked sums) looked contradictory; the panel now also gives the split;
+    - the hide option gets a hint ("Empty items and system files are hidden too."), and the panel's "Updating…" sentence is reworded.
+  - **The treemap** no longer carries `member_places`, which nothing read.
+- **A11. A hashing deadlock, older than R5c** (found by task 5.1): since R2, a hash job kept `planMu` while it yielded its device slot. A second hash job then took the slot and waited on `planMu`, and neither ever ended. This happens whenever two hash jobs run at once, for example at startup with two or more online sources. `plan` now creates its rows before it takes the lock, and it no longer yields under it. Test: `TestHashJobsOfTwoSourcesOnOneDeviceBothEnd`, which failed before the fix.
+- **A12. Browser fixture** (task 5.1): `disk/copies` (label "Copies") holds:
+  - a byte-identical copy of `celular_backup_2009/DCIM/100MEDIA`;
+  - copies of three photos, one of them copied twice;
+  - one file of its own.
+
+  Every copy is taken from corpus files that `precious.spec.ts` never changes. The `only-here` Playwright project depends on `chromium`, and `chromium` ignores `only-here.spec.ts`. The "not computed yet comes first" case is tested in the API only.
