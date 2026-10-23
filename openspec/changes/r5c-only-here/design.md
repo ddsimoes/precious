@@ -590,3 +590,11 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
   - one file of its own.
 
   Every copy is taken from corpus files that `precious.spec.ts` never changes. The `only-here` Playwright project depends on `chromium`, and `chromium` ignores `only-here.spec.ts`. The "not computed yet comes first" case is tested in the API only.
+- **A13. Full verification** (task 6.1), on the merged branch:
+  - gofmt, `go vet` (plain and `-tags slow`), and `go test -race ./...` pass;
+  - the slow tests pass, among them `TestRelateAtScale`, the places speed gate, R1.10, and the golden comparison;
+  - `npm test` (352) and `npm run e2e` (64, in 1.9 min) pass;
+  - `scripts/e2e-docker.sh` passes;
+  - the six builds pass.
+
+  Once, with every slow package running at the same time, `TestReviewPagesStayFastAt2MillionEntries` (`internal/review`, which this change does not touch) read a cards p95 of 1.53 s against 1 s. Run alone, it passes both on this branch and on the previous release (55.5 s and 56.6 s), so this is load, not a regression.

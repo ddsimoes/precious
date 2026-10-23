@@ -214,7 +214,7 @@
 
 ## 5. Browser tests (after 4)
 
-- [ ] 5.1 The e2e fixture and Playwright tests (design D13):
+- [x] 5.1 The e2e fixture and Playwright tests (design D13):
   - **Choose the files first.** List the corpus files and folders that no test in `precious.spec.ts` moves, renames, quarantines, purges, or redates. Take the fixture's copies only from that list, and write the list in the spec file.
   - **Fixture:** `global-setup.ts` writes `disk/copies`, holding copies of three such photos (one of them twice), a byte-identical copy of one such photo folder, and one file of its own.
   - **Projects:** `playwright.config.ts` gets two projects. The existing one ignores `only-here.spec.ts` (`testIgnore`). The new one matches that file only (`testMatch`) and depends on the existing one.
@@ -236,7 +236,7 @@
 
 ## 6. Integration (after 5)
 
-- [ ] 6.1 Run the full verification:
+- [x] 6.1 Run the full verification:
   - gofmt and `go vet ./...`;
   - `go test -race ./...`, with no package over about 60 s;
   - the slow tests of 2.1 and 3.1;
