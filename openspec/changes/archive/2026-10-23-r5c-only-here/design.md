@@ -652,3 +652,6 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
     - the 31,163-file folder opens in 1.8–2.3 s with sort or hide (API 1.6 s);
     - the 567,623-member archive opens in 10.9 s.
   - **The startup hash jobs** stay in the candidate small-file pass for an hour or more even when everything is checked; on R5b, hash jobs of these sources took 58–130 min. This is older behavior, seen in a goroutine dump: `smallPass` queries for each candidate span.
+- **A20. Owner sign-off** (task 6.5), 2026-10-23. The owner tested the mode on the test server, on his own sources, and accepted it ("Já testei. Pode prosseguir").
+  - **Before that:** he could not reach the server for a few minutes after a restart. Each hash job's `plan` ends with `recomputeCoverage`, an aggregate over every file and member; on the server it takes about 43 s and runs inside a write transaction. So the writer is held about a minute per hash job, and sign-in waits behind it.
+  - **Older behavior:** this dates from R2 and is not part of this change. It is left to a separate fix, which the owner chose ("A").

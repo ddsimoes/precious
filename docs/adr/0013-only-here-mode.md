@@ -1,6 +1,6 @@
 # ADR 0013: The Map's "Only here" mode: where each file's copies are
 
-- Status: proposed
+- Status: accepted (2026-10-23)
 - Date: 2026-10-22
 - Context: `precious-spec-v0.3.md` §6.4, §11.2, §11.7; ADR 0009; ADR 0010; OpenSpec change `r5c-only-here`.
 
