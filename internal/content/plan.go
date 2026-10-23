@@ -57,25 +57,77 @@ var coverageRows = `SELECT f.source_id AS source_id, f.state AS state, f.size AS
 		JOIN entries e ON e.id = a.entry_id
 		WHERE a.state = 'complete' AND m.kind = 'file' AND e.state = 'present' AND ` + notQuarantinedE
 
-// recomputeCoverage rewrites content_coverage for every source from its
-// rows, which repairs any drift (design D8).
-func recomputeCoverage(ctx context.Context, tx *sql.Tx, now int64) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM content_coverage`); err != nil {
+// coverageFigures are a source's coverage in content_coverage's column
+// order: candidate, checked, not checked, and unreadable files and bytes.
+type coverageFigures [8]int64
+
+// coverageDrift returns, per source, its coverage computed from its rows
+// minus its stored row, both read on one snapshot (r5d design D1). A source
+// without a stored row starts from zero. The aggregate is the long part of
+// a plan, so it runs in a read transaction and holds no writer; held, when
+// not nil, runs while that transaction is open.
+func coverageDrift(ctx context.Context, st *store.Store, held func()) (map[string]coverageFigures, error) {
+	drift := map[string]coverageFigures{}
+	err := st.Read(ctx, func(tx *sql.Tx) error {
+		if err := addFigures(ctx, tx, drift, 1, `SELECT s.id,
+				count(r.state) FILTER (WHERE r.state <> 'unique_size'), coalesce(sum(r.size) FILTER (WHERE r.state <> 'unique_size'), 0),
+				count(r.state) FILTER (WHERE r.state IN ('hashed', 'sampled')), coalesce(sum(r.size) FILTER (WHERE r.state IN ('hashed', 'sampled')), 0),
+				count(r.state) FILTER (WHERE r.state IN ('pending', 'changed')), coalesce(sum(r.size) FILTER (WHERE r.state IN ('pending', 'changed')), 0),
+				count(r.state) FILTER (WHERE r.state = 'unreadable'), coalesce(sum(r.size) FILTER (WHERE r.state = 'unreadable'), 0)
+			FROM sources s LEFT JOIN (`+coverageRows+`) r ON r.source_id = s.id GROUP BY s.id`); err != nil {
+			return err
+		}
+		if err := addFigures(ctx, tx, drift, -1, `SELECT source_id, candidate_files, candidate_bytes,
+				checked_files, checked_bytes, unchecked_files, unchecked_bytes, unreadable_files, unreadable_bytes
+			FROM content_coverage`); err != nil {
+			return err
+		}
+		if held != nil {
+			held()
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("content: compute coverage: %w", err)
+	}
+	return drift, nil
+}
+
+// addFigures adds sign times the figures query returns, a source ID and
+// its 8 figures per row, to m.
+func addFigures(ctx context.Context, tx *sql.Tx, m map[string]coverageFigures, sign int64, query string) error {
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO content_coverage (source_id, candidate_files, candidate_bytes,
-			checked_files, checked_bytes, unchecked_files, unchecked_bytes, unreadable_files, unreadable_bytes, updated_at)
-		SELECT s.id,
-			count(r.state) FILTER (WHERE r.state <> 'unique_size'), coalesce(sum(r.size) FILTER (WHERE r.state <> 'unique_size'), 0),
-			count(r.state) FILTER (WHERE r.state IN ('hashed', 'sampled')), coalesce(sum(r.size) FILTER (WHERE r.state IN ('hashed', 'sampled')), 0),
-			count(r.state) FILTER (WHERE r.state IN ('pending', 'changed')), coalesce(sum(r.size) FILTER (WHERE r.state IN ('pending', 'changed')), 0),
-			count(r.state) FILTER (WHERE r.state = 'unreadable'), coalesce(sum(r.size) FILTER (WHERE r.state = 'unreadable'), 0),
-			?
-		FROM sources s LEFT JOIN (`+coverageRows+`) r ON r.source_id = s.id GROUP BY s.id`, now)
-	if err != nil {
-		return fmt.Errorf("content: recompute coverage: %w", err)
+	defer rows.Close()
+	for rows.Next() {
+		var src string
+		var f coverageFigures
+		if err := rows.Scan(&src, &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7]); err != nil {
+			return err
+		}
+		c := m[src]
+		for i := range f {
+			c[i] += sign * f[i]
+		}
+		m[src] = c
 	}
-	return nil
+	return rows.Err()
+}
+
+// applyDrift adds the drift to content_coverage as deltas do: a coverage
+// change committed since the drift was read is kept, so the figures become
+// those of a full recomputation now (r5d design D1). Sources with no drift
+// are left untouched, and sources removed since are skipped.
+func applyDrift(ctx context.Context, tx *sql.Tx, drift map[string]coverageFigures, now int64) error {
+	d := deltas{}
+	for src, f := range drift {
+		if f != (coverageFigures{}) {
+			d[src] = (*[8]int64)(&f)
+		}
+	}
+	return d.apply(ctx, tx, now)
 }
 
 // bucket is a state's coverage bucket: 0 not a candidate, 1 checked, 2 not
@@ -275,8 +327,8 @@ func distinctSample(g []copyRow, r *copyRow) bool {
 // plan is the planning pass of design D3, serialized across jobs: it
 // creates the missing file_content rows, decides every size group's
 // states, enqueues the hashing of other online sources whose rows became
-// pending, and recomputes coverage. It reports whether it changed any
-// state.
+// pending, and corrects coverage by its drift, computed outside the writer
+// (r5d design D1). It reports whether it changed any state.
 //
 // It never yields its slot while it holds planMu: the job given the slot
 // could be another hashing job, which would wait for planMu while this one
@@ -326,13 +378,7 @@ func (s *Service) plan(ctx context.Context, rt jobs.Runtime, self domain.SourceI
 			if err := applyChanges(ctx, tx.SQL(), batch, nil, wake); err != nil {
 				return err
 			}
-			if err := enqueueOthers(ctx, tx, wake, self); err != nil {
-				return err
-			}
-			if last {
-				return recomputeCoverage(ctx, tx.SQL(), s.now())
-			}
-			return nil
+			return enqueueOthers(ctx, tx, wake, self)
 		})
 		if err != nil {
 			return false, fmt.Errorf("content: write the plan: %w", err)
@@ -343,6 +389,13 @@ func (s *Service) plan(ctx context.Context, rt jobs.Runtime, self domain.SourceI
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
+	}
+	drift, err := coverageDrift(ctx, s.st, s.coverageRead)
+	if err != nil {
+		return false, err
+	}
+	if err := s.st.Write(ctx, func(tx *sql.Tx) error { return applyDrift(ctx, tx, drift, s.now()) }); err != nil {
+		return false, fmt.Errorf("content: correct coverage: %w", err)
 	}
 	return changed, nil
 }

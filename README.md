@@ -68,7 +68,7 @@ The screenshots show the built-in regression corpus, a generated copy of a typic
 
 ## Status and roadmap
 
-Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so are R2b, R2c, and R2d, the short steps after R2, accepted on 2026-10-07. R3 and R4 were accepted on 2026-10-08, R5 on 2026-10-20, R5b, a short step after R5, on 2026-10-22, and R5c on 2026-10-23. There are no tagged releases yet, and things may change incompatibly until 1.0.
+Precious is in **early development**. Milestones R1 and R2 are complete, each accepted by its first user on a real 780 GiB archive on 2026-10-06, and so are R2b, R2c, and R2d, the short steps after R2, accepted on 2026-10-07. R3 and R4 were accepted on 2026-10-08, R5 on 2026-10-20, R5b, a short step after R5, on 2026-10-22, and R5c and R5d on 2026-10-23. There are no tagged releases yet, and things may change incompatibly until 1.0.
 
 | Milestone | Scope | Status |
 |---|---|---|
@@ -82,6 +82,7 @@ Precious is in **early development**. Milestones R1 and R2 are complete, each ac
 | **R5** Media dates | Photo and video dates read from their metadata, file names, and folders; a camera clock found offset and shifted in one step; owner corrections; file dates written back with undo; organizing by date into year and month folders that never overwrites | ✅ Done |
 | **R5b** Stand-in folders | A disk known only by its mount point, such as one in a container without `/dev/disk`, is offline when another filesystem sits at that point, such as the host's empty folder while the disk is not mounted, so nothing is scanned or hashed there by mistake | ✅ Done |
 | **R5c** Only here | A Map mode that shows where each file's and folder's copies are, relative to its own disk: only copy, only on this disk, or on another disk; archives counted by their members and system files apart; naming the other copy, hiding what is safe elsewhere, and sorting by what exists only here ([ADR 0013](docs/adr/0013-only-here-mode.md)) | ✅ Done |
+| **R5d** No sign-in stalls while hashing | The hashing coverage summary is computed without holding the database writer, so signing in and deciding no longer wait about a minute per disk while hashing jobs plan | ✅ Done |
 | **R6** Classifier assistant | An optional model that suggests categories where the rules are unsure; it never decides | Planned |
 | **R7** Versions and extended viewer | Families of file versions, thumbnails, conversions through optional tools, Brazilian Portuguese | Planned |
 | **R8** macOS, Windows, and removable media | Native backends, optical media, and their acceptance tests | Planned |
