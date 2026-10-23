@@ -90,7 +90,7 @@ func rawRows(t *testing.T, body []byte, path ...string) []map[string]json.RawMes
 
 // r5c Interfaces: the place fields come only with places=1; other_copy and
 // covered_by only on children rows; member_places only on the entry of the
-// entry and treemap responses; places_updating only on the entry response.
+// entry response; places_updating only on the entry response.
 func TestPlaceFieldsOnlyWhereAsked(t *testing.T) {
 	t.Parallel()
 	w := newPWorld(t)
@@ -133,7 +133,7 @@ func TestPlaceFieldsOnlyWhereAsked(t *testing.T) {
 				t.Errorf("treemap items of %s: %v", ref, row)
 			}
 		}
-		if e := rawRows(t, tm, "entry")[0]; !has(e, append(placeFields, "member_places")...) || !none(e, "other_copy", "covered_by") {
+		if e := rawRows(t, tm, "entry")[0]; !has(e, placeFields...) || !none(e, "member_places", "other_copy", "covered_by") {
 			t.Errorf("treemap entry of %s: %v", ref, e)
 		}
 		if e := rawRows(t, w.bodyOf(t, "/api/entries/"+ref+"/treemap"), "entry")[0]; !none(e, all...) {
@@ -165,8 +165,63 @@ func TestPlaceFieldsOnlyWhereAsked(t *testing.T) {
 	if d := w.detail(fotos); d.Entry.MemberPlaces != nil {
 		t.Errorf("folder member_places %+v", d.Entry.MemberPlaces)
 	}
-	if m := w.treemap(zip); m.Entry.MemberPlaces == nil || m.Entry.MemberPlaces.OnlyCopy != (pamount{1, 70}) {
-		t.Errorf("treemap of the zip: member_places %+v", m.Entry.MemberPlaces)
+	if m := w.treemap(zip); m.Entry.Places == nil || m.Entry.Places.OnlyCopy != (pamount{1, 50}) {
+		t.Errorf("treemap of the zip: places %+v", m.Entry.Places)
+	}
+}
+
+// A member copy names its archive and its path inside it apart, since a '!'
+// in either makes the joined path ambiguous; an entry copy carries neither.
+func TestOtherCopyNamesItsArchiveApart(t *testing.T) {
+	t.Parallel()
+	w := newPWorld(t)
+	w.file("a/nota2.txt", 30, "nota")
+	w.file("a/leiame.txt", 20, "leiame")
+	w.file("b:copy/leiame.txt", 20, "leiame")
+	w.archive(pf{path: "b:Importante!/backup.zip", size: 25}, pmem("docs/nota2.txt", 30, "nota"))
+	// inner.zip's members are placed through its copy, a member of Backup.zip.
+	w.archive(pf{path: "a/inner.zip", size: 60, content: "inner"}, pmem("x.txt", 70, ""))
+	w.archive(pf{path: "b:Fotos!/Backup.zip", size: 65}, pmem("pack!/inner.zip", 60, "inner"))
+	w.seed()
+	str := func(p *string) string {
+		if p == nil {
+			return "<absent>"
+		}
+		return *p
+	}
+	rows, _ := w.children(w.id("a"), "", 100)
+	got := byName(rows)
+	backup := w.seeded["b"].ID("Importante!/backup.zip").String()
+	if c := got["nota2.txt"].OtherCopy; c == nil || str(c.ArchiveID) != backup ||
+		str(c.ArchivePath) != "Importante!/backup.zip" || str(c.MemberPath) != "docs/nota2.txt" {
+		t.Errorf("nota2.txt: copy %+v", c)
+	}
+	inner, _ := w.children(w.id("a/inner.zip"), "", 100)
+	fotos := w.seeded["b"].ID("Fotos!/Backup.zip").String()
+	if len(inner) != 1 || inner[0].OtherCopy == nil || !inner[0].OtherCopy.ViaArchive {
+		t.Fatalf("inner.zip: %+v", inner)
+	}
+	if c := inner[0].OtherCopy; str(c.ArchiveID) != fotos || str(c.ArchivePath) != "Fotos!/Backup.zip" ||
+		str(c.MemberPath) != "pack!/inner.zip" {
+		t.Errorf("x.txt: copy %+v", c)
+	}
+	for _, row := range rawRows(t, w.bodyOf(t, "/api/entries/"+w.id("a")+"/children?places=1"), "items") {
+		var c map[string]json.RawMessage
+		if err := json.Unmarshal(row["other_copy"], &c); err != nil {
+			t.Fatal(err)
+		}
+		if string(c["archive_id"]) != "null" {
+			continue
+		}
+		if _, ok := c["archive_path"]; ok {
+			t.Errorf("entry copy with archive_path: %s", row["other_copy"])
+		}
+		if _, ok := c["member_path"]; ok {
+			t.Errorf("entry copy with member_path: %s", row["other_copy"])
+		}
+	}
+	if got["leiame.txt"].OtherCopy == nil || got["leiame.txt"].OtherCopy.ArchiveID != nil {
+		t.Errorf("leiame.txt: copy %+v", got["leiame.txt"].OtherCopy)
 	}
 }
 

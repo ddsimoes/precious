@@ -62,9 +62,9 @@ type entryRow struct {
 }
 
 // rowPlaces is the place fields of an EntryRow (r5c design D1, D5, D9,
-// D11, D14, Interfaces). member_places goes on the entry of the entry and
-// treemap responses only, other_copy and covered_by on children rows only:
-// each pair is left out where its pointer is nil.
+// D11, D14, Interfaces). member_places goes on the entry of the entry
+// response only, other_copy and covered_by on children rows only: each pair
+// is left out where its pointer is nil.
 type rowPlaces struct {
 	Place        *domain.Place  `json:"place"`
 	PlaceOffline bool           `json:"place_offline"`
@@ -109,16 +109,21 @@ func sumsJSON(p *domain.PlaceSums) *placeSumsJSON {
 // otherCopyJSON is the one copy D9 names for a file or member placed
 // this_source or other_source. ViaArchive marks the copy of a member's
 // archive, named because the member is placed through the archive's own
-// coverage (D6); More is the content's physical copies minus 2.
+// coverage (D6); More is the content's physical copies minus 2. A member
+// copy also carries its archive entry's display path and its own path
+// inside the archive, which a '!' in either keeps Path from telling apart;
+// both are left out for an entry copy.
 type otherCopyJSON struct {
-	Ref        string          `json:"ref"`
-	SourceID   domain.SourceID `json:"source_id"`
-	Path       string          `json:"path"`
-	PathB64    []byte          `json:"path_b64"`
-	ArchiveID  *string         `json:"archive_id"`
-	Offline    bool            `json:"offline"`
-	ViaArchive bool            `json:"via_archive"`
-	More       int             `json:"more"`
+	Ref         string          `json:"ref"`
+	SourceID    domain.SourceID `json:"source_id"`
+	Path        string          `json:"path"`
+	PathB64     []byte          `json:"path_b64"`
+	ArchiveID   *string         `json:"archive_id"`
+	ArchivePath *string         `json:"archive_path,omitempty"`
+	MemberPath  *string         `json:"member_path,omitempty"`
+	Offline     bool            `json:"offline"`
+	ViaArchive  bool            `json:"via_archive"`
+	More        int             `json:"more"`
 }
 
 // coveredByJSON is the relation D9 names for a folder, complete archive,

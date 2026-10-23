@@ -198,6 +198,30 @@ func TestPlacesOfSingleFiles(t *testing.T) {
 		r.want(t, "daily.0/bkp.zip", only(1, 250))
 		r.want(t, "daily.1", only(1, 250))
 	})
+	t.Run("an archive hard-linked to a name that is not listed", func(t *testing.T) {
+		t.Parallel()
+		w := newWorld(t)
+		w.archive(wf{path: "a/bkp.zip", size: 250, content: "bkp", ino: 9}, mem("a.txt", 100, "a"), mem("b.txt", 200, "b"))
+		w.add(wf{path: "b/bkp.dat", size: 250, content: "bkp", ino: 9}) // .dat: never listed
+		r := w.places(t)
+		r.want(t, "b", only(1, 250))
+		r.want(t, "a/bkp.zip", only(1, 250))
+		// dir_dups agrees: the two names are one file, no duplicate.
+		if n := count(t, w.st, `SELECT duplicated_bytes FROM dir_dups WHERE entry_id = ?`, int64(w.id(""))); n != 0 {
+			t.Errorf("the top's duplicated bytes %d, want 0", n)
+		}
+	})
+	t.Run("an archive hard-linked to one not completely listed", func(t *testing.T) {
+		t.Parallel()
+		w := newWorld(t)
+		members := []indextest.Member{mem("a.txt", 100, "a"), mem("b.txt", 200, "b")}
+		w.archive(wf{path: "daily.0/bkp.zip", size: 250, content: "bkp", ino: 9}, members...)
+		w.archives = append(w.archives, warc{file: wf{path: "daily.1/bkp.zip", size: 250, content: "bkp", ino: 9},
+			format: domain.ArchiveZip, state: domain.ArchivePartial, members: members[:1]})
+		r := w.places(t)
+		r.want(t, "daily.1", only(1, 250))
+		r.want(t, "daily.0/bkp.zip", only(1, 250))
+	})
 	t.Run("two sources with the same dev and ino", func(t *testing.T) {
 		t.Parallel()
 		w := newWorld(t)

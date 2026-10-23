@@ -286,13 +286,15 @@ func (s *psums) add(o psums) {
 }
 
 type pcopy struct {
-	Ref        string  `json:"ref"`
-	SourceID   string  `json:"source_id"`
-	Path       string  `json:"path"`
-	ArchiveID  *string `json:"archive_id"`
-	Offline    bool    `json:"offline"`
-	ViaArchive bool    `json:"via_archive"`
-	More       int     `json:"more"`
+	Ref         string  `json:"ref"`
+	SourceID    string  `json:"source_id"`
+	Path        string  `json:"path"`
+	ArchiveID   *string `json:"archive_id"`
+	ArchivePath *string `json:"archive_path"`
+	MemberPath  *string `json:"member_path"`
+	Offline     bool    `json:"offline"`
+	ViaArchive  bool    `json:"via_archive"`
+	More        int     `json:"more"`
 }
 
 type pcovered struct {
