@@ -409,13 +409,19 @@ func memberDisposable(pol *rules.Policy, name []byte, kind domain.FileKind, size
 // placedOf is the place of member m of c's archive: a folder's from its
 // stored sums (not_computed without a member_places row), a file's from its
 // own place under c. A member placed through c is marked as c's archive is;
-// one placed by its own copies keeps its own mark.
+// one placed by its own copies keeps its own mark. When the archive entry
+// itself has no place (it is not present, or quarantined), a member folder
+// has none either, as its member files (D10).
 func (c *cover) placedOf(m *member, pol *rules.Policy) *placed {
 	r := &m.row
 	if r.Kind == domain.EntryDirectory {
-		p := &placed{level: true, sums: m.sums, place: domain.PlaceNotComputed}
-		if m.sums != nil {
-			p.place = m.sums.Place(true)
+		p := &placed{level: true}
+		switch {
+		case c.own == "":
+		case m.sums != nil:
+			p.sums, p.place = m.sums, m.sums.Place(true)
+		default:
+			p.place = domain.PlaceNotComputed
 		}
 		return p
 	}
