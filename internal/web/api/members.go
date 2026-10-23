@@ -25,15 +25,22 @@ import (
 // candidate, checked, and duplicated bytes) are computed on read from the
 // members below it, which one archive bounds (design D10).
 
-// memberSelect reads a member of a complete archive outside the quarantine
-// (r4 design D2; a WHERE condition follows it): the columns scanMember
-// takes. A file member's copies count it and every other physical copy.
-var memberSelect = `SELECT m.id, m.archive_id, ae.source_id, m.name, ae.path, m.path, a.format = 'zip', m.kind, m.size,
+// memberColumns and memberFrom read a member of a complete archive outside
+// the quarantine (r4 design D2; a WHERE condition follows memberFrom): the
+// columns memberRows scans. A file member's copies count it and every other
+// physical copy.
+var memberColumns = `m.id, m.archive_id, ae.source_id, m.name, ae.path, m.path, a.format = 'zip', m.kind, m.size,
 	m.total_bytes, m.total_files, m.mtime_ns, ae.eff_decision, m.state,
 	CASE WHEN m.state = 'hashed' THEN ` + search.CopiesSQL("m.content_id") + `
-		WHEN m.state = 'unique_size' THEN 1 END
+		WHEN m.state = 'unique_size' THEN 1 END`
+
+var memberFrom = `
 	FROM archive_members m JOIN archives a ON a.entry_id = m.archive_id AND a.state = 'complete'
 	JOIN entries ae ON ae.id = m.archive_id AND ` + index.NotQuarantined("ae")
+
+// memberPlaceColumns are a member's own place and mark (r5c design D6),
+// before its archive's coverage.
+var memberPlaceColumns = search.MemberPlaceSQL("m", "ae") + `, ` + search.MemberOfflineOnlySQL("m", "ae")
 
 // memberCopySQL holds for a hashed file member m with another physical
 // copy outside the quarantine: a present file entry, or a member of a
@@ -48,17 +55,28 @@ var memberCopySQL = `CASE WHEN m.state = 'hashed' THEN
 			AND oa.state = 'complete' AND oae.state = 'present' AND ` + index.NotQuarantined("oae") + `)
 	ELSE 0 END`
 
-// member is a member's row with the facts its folder figures need.
+// member is a member's row with the facts its folder figures need, and,
+// read with places, its own place and mark (own, offline: before its
+// archive's coverage), a member folder's unpacked sums, and its place.
 type member struct {
 	row     search.Row
 	archive domain.EntryID
 	path    []byte // the path inside the archive
+	own     sql.NullString
+	offline bool
+	sums    *domain.PlaceSums
+	pl      *placed
 }
 
 // memberRows reads the members matching where (a condition on m), in no
-// particular order, without their folder figures.
-func memberRows(ctx context.Context, tx *sql.Tx, pol *rules.Policy, where string, args ...any) ([]member, error) {
-	rows, err := tx.QueryContext(ctx, memberSelect+` WHERE `+where, args...)
+// particular order, without their folder figures; with places, with their
+// own place and mark.
+func memberRows(ctx context.Context, tx *sql.Tx, pol *rules.Policy, places bool, where string, args ...any) ([]member, error) {
+	cols := memberColumns
+	if places {
+		cols += `, ` + memberPlaceColumns
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT `+cols+memberFrom+` WHERE `+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("api: members: %w", err)
 	}
@@ -74,8 +92,12 @@ func memberRows(ctx context.Context, tx *sql.Tx, pol *rules.Policy, where string
 			state                    sql.NullString
 		)
 		r := &m.row
-		if err := rows.Scan(&id, &archive, &source, &name, &archivePath, &mpath, &r.Zip, &kind, &r.Size,
-			&r.TotalBytes, &r.TotalFiles, &mtime, &eff, &state, &r.Copies); err != nil {
+		dest := []any{&id, &archive, &source, &name, &archivePath, &mpath, &r.Zip, &kind, &r.Size,
+			&r.TotalBytes, &r.TotalFiles, &mtime, &eff, &state, &r.Copies}
+		if places {
+			dest = append(dest, &m.own, &m.offline)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("api: members: %w", err)
 		}
 		m.archive, m.path = domain.EntryID(archive), mpath
@@ -107,20 +129,32 @@ func memberRows(ctx context.Context, tx *sql.Tx, pol *rules.Policy, where string
 	return out, nil
 }
 
-// memberAgg sums the members below a member folder or an archive.
+// memberAgg sums the members below a member folder or an archive; with an
+// archive's coverage, also their places (r5c design D6).
 type memberAgg struct {
 	dirs, files                    int64
 	candidate, checked, duplicated int64
 	newest, oldest                 int64
 	dated                          bool
 	b                              *breakdowns
+	cover                          *cover
+	places                         *domain.PlaceSums
 }
 
-func newMemberAgg() *memberAgg { return &memberAgg{b: newBreakdowns()} }
+// newMemberAgg is an empty aggregate, which sums places under c unless c is
+// nil.
+func newMemberAgg(c *cover) *memberAgg {
+	a := &memberAgg{b: newBreakdowns(), cover: c}
+	if c != nil {
+		a.places = &domain.PlaceSums{}
+	}
+	return a
+}
 
-// add counts one member below the folder.
+// add counts one member below the folder, with its own place own when a
+// sums places.
 func (a *memberAgg) add(pol *rules.Policy, kind string, name []byte, size int64, mtime sql.NullInt64,
-	state sql.NullString, copied bool) {
+	state sql.NullString, copied bool, own sql.NullString) {
 	switch domain.MemberKind(kind) {
 	case domain.MemberDirectory:
 		a.dirs++
@@ -131,6 +165,9 @@ func (a *memberAgg) add(pol *rules.Policy, kind string, name []byte, size int64,
 	}
 	a.files++
 	fk := pol.FileKind(name)
+	if a.places != nil {
+		a.cover.addMember(a.places, pol, name, fk, size, own)
+	}
 	one := amount{Files: 1, Bytes: size}
 	k := a.b.kinds[fk]
 	k.add(one)
@@ -196,10 +233,16 @@ func (a *memberAgg) apply(r *search.Row) {
 // (a folder's path and "/", or empty for the whole archive) to the
 // aggregate at returns for its path relative to prefix; at returns nil to
 // skip a member. It is one read of the archive's (archive_id, path) index.
+// With the archive's coverage c, it reads each member's own place too.
 func memberSubtree(ctx context.Context, tx *sql.Tx, pol *rules.Policy, archive domain.EntryID, prefix []byte,
-	at func(rel []byte) *memberAgg) error {
+	c *cover, at func(rel []byte) *memberAgg) error {
 	q := `SELECT m.kind, m.name, m.path, m.size, m.mtime_ns, m.state, ` + memberCopySQL + `
 		FROM archive_members m WHERE m.archive_id = ?`
+	if c != nil {
+		q = `SELECT m.kind, m.name, m.path, m.size, m.mtime_ns, m.state, ` + memberCopySQL + `,
+			` + search.MemberPlaceSQL("m", "ae") + `
+		FROM archive_members m JOIN entries ae ON ae.id = m.archive_id WHERE m.archive_id = ?`
+	}
 	args := []any{int64(archive)}
 	if len(prefix) > 0 {
 		q += ` AND m.path >= ? AND m.path < ?`
@@ -217,14 +260,18 @@ func memberSubtree(ctx context.Context, tx *sql.Tx, pol *rules.Policy, archive d
 			name, path []byte
 			size       int64
 			mtime      sql.NullInt64
-			state      sql.NullString
+			state, own sql.NullString
 			copied     bool
 		)
-		if err := rows.Scan(&kind, &name, &path, &size, &mtime, &state, &copied); err != nil {
+		dest := []any{&kind, &name, &path, &size, &mtime, &state, &copied}
+		if c != nil {
+			dest = append(dest, &own)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return fmt.Errorf("api: members of archive %s: %w", archive, err)
 		}
 		if a := at(path[len(prefix):]); a != nil {
-			a.add(pol, kind, name, size, mtime, state, copied)
+			a.add(pol, kind, name, size, mtime, state, copied, own)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -238,30 +285,33 @@ func folderPrefix(path []byte) []byte {
 	return append(path[:len(path):len(path)], '/')
 }
 
-// fillFolder computes the figures of one member folder.
-func fillFolder(ctx context.Context, tx *sql.Tx, pol *rules.Policy, m *member) (*memberAgg, error) {
-	a := newMemberAgg()
-	if err := memberSubtree(ctx, tx, pol, m.archive, folderPrefix(m.path), func([]byte) *memberAgg { return a }); err != nil {
+// fillFolder computes the figures of one member folder, and its unpacked
+// place sums under c unless c is nil.
+func fillFolder(ctx context.Context, tx *sql.Tx, pol *rules.Policy, m *member, c *cover) (*memberAgg, error) {
+	a := newMemberAgg(c)
+	if err := memberSubtree(ctx, tx, pol, m.archive, folderPrefix(m.path), c, func([]byte) *memberAgg { return a }); err != nil {
 		return nil, err
 	}
 	a.apply(&m.row)
+	m.sums = a.places
 	return a, nil
 }
 
 // fillChildren computes the figures of the folders among ms, the children
 // of one level (prefix as memberSubtree takes it), in one read of the
-// level's members.
-func fillChildren(ctx context.Context, tx *sql.Tx, pol *rules.Policy, archive domain.EntryID, prefix []byte, ms []member) error {
+// level's members; and their unpacked place sums under c unless c is nil.
+func fillChildren(ctx context.Context, tx *sql.Tx, pol *rules.Policy, archive domain.EntryID, prefix []byte, ms []member,
+	c *cover) error {
 	folders := map[string]*memberAgg{}
 	for i := range ms {
 		if ms[i].row.Kind == domain.EntryDirectory {
-			folders[string(ms[i].row.Name)] = newMemberAgg()
+			folders[string(ms[i].row.Name)] = newMemberAgg(c)
 		}
 	}
 	if len(folders) == 0 {
 		return nil
 	}
-	err := memberSubtree(ctx, tx, pol, archive, prefix, func(rel []byte) *memberAgg {
+	err := memberSubtree(ctx, tx, pol, archive, prefix, c, func(rel []byte) *memberAgg {
 		i := bytes.IndexByte(rel, '/')
 		if i < 0 {
 			return nil // a child itself
@@ -274,16 +324,18 @@ func fillChildren(ctx context.Context, tx *sql.Tx, pol *rules.Policy, archive do
 	for i := range ms {
 		if a := folders[string(ms[i].row.Name)]; a != nil && ms[i].row.Kind == domain.EntryDirectory {
 			a.apply(&ms[i].row)
+			ms[i].sums = a.places
 		}
 	}
 	return nil
 }
 
 // memberByID reads one member with its folder figures, and the folder's
-// sums (nil for anything but a folder). An unknown member, or one of an
-// archive that is not complete, is not_found.
-func memberByID(ctx context.Context, tx *sql.Tx, pol *rules.Policy, id domain.MemberID) (*member, *memberAgg, error) {
-	ms, err := memberRows(ctx, tx, pol, `m.id = ?`, int64(id))
+// sums (nil for anything but a folder); with places, also its place under
+// its archive's coverage. An unknown member, or one of an archive that is
+// not complete, is not_found.
+func memberByID(ctx context.Context, tx *sql.Tx, pol *rules.Policy, id domain.MemberID, places bool) (*member, *memberAgg, error) {
+	ms, err := memberRows(ctx, tx, pol, places, `m.id = ?`, int64(id))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -291,11 +343,22 @@ func memberByID(ctx context.Context, tx *sql.Tx, pol *rules.Policy, id domain.Me
 		return nil, nil, domain.Errorf(domain.CodeNotFound, "member %s not found", domain.Ref{Member: id})
 	}
 	m := &ms[0]
-	if m.row.Kind != domain.EntryDirectory {
-		return m, nil, nil
+	var c *cover
+	if places {
+		if c, err = coverOf(ctx, tx, m.archive); err != nil {
+			return nil, nil, err
+		}
 	}
-	a, err := fillFolder(ctx, tx, pol, m)
-	return m, a, err
+	var a *memberAgg
+	if m.row.Kind == domain.EntryDirectory {
+		if a, err = fillFolder(ctx, tx, pol, m, c); err != nil {
+			return nil, nil, err
+		}
+	}
+	if c != nil {
+		m.pl = c.placedOf(m, pol)
+	}
+	return m, a, nil
 }
 
 // memberAncestors lists what holds member m, from the source root: the
@@ -361,13 +424,18 @@ type level struct {
 	folder  *member
 	// leaf is a member that is no folder: it has no children.
 	leaf *member
+	// cover is set, with places, on an archive's level and a leaf: the
+	// archive's own coverage, read once for the request (r5c design D6).
+	cover *cover
 }
 
-// resolveLevel resolves a ref to the level children and treemap list. An
+// resolveLevel resolves a ref to the level children and treemap list, with
+// its archive's coverage and the leaf's place when places is set. An
 // unknown entry, or an unknown member, is not_found.
-func resolveLevel(ctx context.Context, tx *sql.Tx, pol *rules.Policy, ref domain.Ref) (level, error) {
+func resolveLevel(ctx context.Context, tx *sql.Tx, pol *rules.Policy, ref domain.Ref, places bool) (level, error) {
+	var l level
 	if ref.IsMember() {
-		ms, err := memberRows(ctx, tx, pol, `m.id = ?`, int64(ref.Member))
+		ms, err := memberRows(ctx, tx, pol, places, `m.id = ?`, int64(ref.Member))
 		if err != nil {
 			return level{}, err
 		}
@@ -375,9 +443,19 @@ func resolveLevel(ctx context.Context, tx *sql.Tx, pol *rules.Policy, ref domain
 			return level{}, domain.Errorf(domain.CodeNotFound, "member %s not found", ref)
 		}
 		if ms[0].row.Kind != domain.EntryDirectory {
-			return level{leaf: &ms[0]}, nil
+			l.leaf = &ms[0]
+		} else {
+			l.archive, l.folder = ms[0].archive, &ms[0]
 		}
-		return level{archive: ms[0].archive, folder: &ms[0]}, nil
+		if places {
+			if l.cover, err = coverOf(ctx, tx, ms[0].archive); err != nil {
+				return level{}, err
+			}
+			if l.leaf != nil {
+				l.leaf.pl = l.cover.placedOf(l.leaf, pol)
+			}
+		}
+		return l, nil
 	}
 	var complete bool
 	err := tx.QueryRowContext(ctx, `SELECT e.kind = 'file' AND ifnull(a.state = 'complete', 0)
@@ -388,14 +466,21 @@ func resolveLevel(ctx context.Context, tx *sql.Tx, pol *rules.Policy, ref domain
 	if err != nil {
 		return level{}, fmt.Errorf("api: entry %s: %w", ref.Entry, err)
 	}
-	if complete {
-		return level{archive: ref.Entry}, nil
+	if !complete {
+		return level{entry: ref.Entry}, nil
 	}
-	return level{entry: ref.Entry}, nil
+	l.archive = ref.Entry
+	if places {
+		if l.cover, err = coverOf(ctx, tx, ref.Entry); err != nil {
+			return level{}, err
+		}
+	}
+	return l, nil
 }
 
 // members reads the members of an archive level with their folder
-// figures; a leaf has none.
+// figures, and their places when the level has its archive's coverage; a
+// leaf has none.
 func (l level) members(ctx context.Context, tx *sql.Tx, pol *rules.Policy) ([]member, error) {
 	if l.leaf != nil {
 		return nil, nil
@@ -404,17 +489,26 @@ func (l level) members(ctx context.Context, tx *sql.Tx, pol *rules.Policy) ([]me
 		ms     []member
 		prefix []byte
 		err    error
+		places = l.cover != nil
 	)
 	if l.folder == nil {
-		ms, err = memberRows(ctx, tx, pol, `m.archive_id = ? AND m.parent_id IS NULL`, int64(l.archive))
+		ms, err = memberRows(ctx, tx, pol, places, `m.archive_id = ? AND m.parent_id IS NULL`, int64(l.archive))
 	} else {
 		prefix = folderPrefix(l.folder.path)
-		ms, err = memberRows(ctx, tx, pol, `m.parent_id = ?`, int64(l.folder.row.Member))
+		ms, err = memberRows(ctx, tx, pol, places, `m.parent_id = ?`, int64(l.folder.row.Member))
 	}
 	if err != nil {
 		return nil, err
 	}
-	return ms, fillChildren(ctx, tx, pol, l.archive, prefix, ms)
+	if err := fillChildren(ctx, tx, pol, l.archive, prefix, ms, l.cover); err != nil {
+		return nil, err
+	}
+	if places {
+		for i := range ms {
+			ms[i].pl = l.cover.placedOf(&ms[i], pol)
+		}
+	}
+	return ms, nil
 }
 
 // sortMembers orders the rows of a member level as o orders children: by
@@ -422,58 +516,6 @@ func (l level) members(ctx context.Context, tx *sql.Tx, pol *rules.Policy) ([]me
 // newest time sorts as the smallest key.
 func (o childOrder) sortMembers(ms []member) {
 	slices.SortFunc(ms, func(a, b member) int {
-		c := o.compare(&a.row, &b.row)
-		if o.desc {
-			return -c
-		}
-		return c
+		return o.cmpDir(o.keyOf(&a.row, a.pl), o.keyOf(&b.row, b.pl))
 	})
-}
-
-// compare compares two member rows by the order's key, then by ID,
-// ascending.
-func (o childOrder) compare(a, b *search.Row) int {
-	var c int
-	switch o.sort {
-	case search.SortBytes:
-		c = cmp.Compare(a.TotalBytes, b.TotalBytes)
-	case search.SortFiles:
-		c = cmp.Compare(a.TotalFiles, b.TotalFiles)
-	case search.SortNewest:
-		c = cmp.Compare(newestKey(a), newestKey(b))
-	case search.SortName:
-		c = bytes.Compare(a.Name, b.Name)
-	}
-	return cmp.Or(c, cmp.Compare(a.Member, b.Member))
-}
-
-// newestKey is a row's newest time as a sort key, the smallest for none.
-func newestKey(r *search.Row) int64 {
-	if r.Newest.IsZero() {
-		return -1 << 63
-	}
-	return r.Newest.UnixNano()
-}
-
-// afterCursor reports whether r comes after the cursor in the order.
-func (o childOrder) afterCursor(r *search.Row, c *childCursor) bool {
-	at := search.Row{Member: domain.MemberID(c.ID), Name: c.B}
-	switch o.sort {
-	case search.SortBytes:
-		at.TotalBytes = *c.N
-	case search.SortFiles:
-		at.TotalFiles = *c.N
-	case search.SortNewest:
-		if c.N != nil {
-			at.Newest = time.Unix(0, *c.N)
-		}
-	}
-	if at.Name == nil {
-		at.Name = []byte{}
-	}
-	c2 := o.compare(r, &at)
-	if o.desc {
-		return c2 < 0
-	}
-	return c2 > 0
 }

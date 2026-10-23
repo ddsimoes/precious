@@ -40,6 +40,14 @@ type entryBody struct {
 	// InQuarantine is set for an entry at or below its source's quarantine
 	// folder (r4 design D13), null otherwise.
 	InQuarantine *inQuarantine `json:"in_quarantine"`
+	// The r5c field, sent only with places=1 (r5c design Interfaces).
+	*placesUpdatingJSON
+}
+
+// placesUpdatingJSON tells whether the stored places may still change: the
+// relations are dirty, or a relate job is queued or running (r5c design D8).
+type placesUpdatingJSON struct {
+	PlacesUpdating bool `json:"places_updating"`
 }
 
 // inQuarantine tells where a quarantined entry came from: the cleanup plan
@@ -155,10 +163,18 @@ type folderStats struct {
 // zero for a folder not scanned yet); and its content, relations, archive,
 // and the global coverage; a folder's only folder, and an archive file's
 // note. A member ("m<id>") reads as readMember says.
+//
+// With places=1 the entry carries its place, member_places for a complete
+// archive (null otherwise), and the body places_updating (r5c design
+// Interfaces).
 func (h *handler) entry(w http.ResponseWriter, r *http.Request) {
+	var places bool
 	ref, err := pathRef(r)
 	if err == nil {
-		err = checkParams(r.URL.Query())
+		err = checkParams(r.URL.Query(), "places")
+	}
+	if err == nil {
+		places, err = parsePlaces(r.URL.Query().Get("places"))
 	}
 	if err != nil {
 		h.fail(w, err)
@@ -170,12 +186,21 @@ func (h *handler) entry(w http.ResponseWriter, r *http.Request) {
 			err  error
 		)
 		if ref.IsMember() {
-			body, err = h.readMember(ctx, tx, ref.Member)
+			body, err = h.readMember(ctx, tx, ref.Member, places)
 		} else {
 			body, err = h.readEntry(ctx, tx, ref.Entry)
+			if err == nil && places {
+				err = h.entryPlaces(ctx, tx, ref.Entry, &body.Entry)
+			}
 		}
 		if err != nil {
 			return nil, err
+		}
+		if places {
+			body.placesUpdatingJSON = &placesUpdatingJSON{}
+			if body.PlacesUpdating, err = placesUpdating(ctx, tx); err != nil {
+				return nil, err
+			}
 		}
 		if body.Content, err = readContent(ctx, tx, ref); err != nil {
 			return nil, err
@@ -205,13 +230,17 @@ func (h *handler) entry(w http.ResponseWriter, r *http.Request) {
 // (the archive's, the archive, and the member folders above it), no
 // classification, the intent of its archive (the decision and tags it
 // reads, all inherited), and a member folder's stats.
-func (h *handler) readMember(ctx context.Context, tx *sql.Tx, id domain.MemberID) (*entryBody, error) {
-	m, agg, err := memberByID(ctx, tx, h.pol, id)
+func (h *handler) readMember(ctx context.Context, tx *sql.Tx, id domain.MemberID, places bool) (*entryBody, error) {
+	m, agg, err := memberByID(ctx, tx, h.pol, id, places)
 	if err != nil {
 		return nil, err
 	}
 	body := &entryBody{Entry: rowJSON(&m.row),
 		Classification: classification{Traits: []domain.Trait{}, Rules: []ruleJSON{}, Indicators: []indicator{}}}
+	if places {
+		body.Entry.rowPlaces = m.pl.json(false)
+		body.Entry.memberPlacesJSON = &memberPlacesJSON{}
+	}
 	if body.Ancestors, err = memberAncestors(ctx, tx, m); err != nil {
 		return nil, err
 	}
@@ -238,6 +267,34 @@ func (h *handler) readMember(ctx context.Context, tx *sql.Tx, id domain.MemberID
 			Inside: []insideItem{}}
 	}
 	return body, nil
+}
+
+// entryPlaces sets the place of entry id on its row e, and its
+// member_places: a complete archive's unpacked member sums under its own
+// coverage, null for anything else.
+func (h *handler) entryPlaces(ctx context.Context, tx *sql.Tx, id domain.EntryID, e *entryRow) error {
+	pl, err := placesOf(ctx, tx, []domain.EntryID{id})
+	if err != nil {
+		return err
+	}
+	p := pl[id]
+	if p == nil {
+		return notFound(id)
+	}
+	e.rowPlaces = p.json(false)
+	e.memberPlacesJSON = &memberPlacesJSON{}
+	if p.level && e.Kind == domain.EntryFile {
+		c, err := coverOf(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		sums, err := memberPlaces(ctx, tx, h.pol, c)
+		if err != nil {
+			return err
+		}
+		e.MemberPlaces = sumsJSON(sums)
+	}
+	return nil
 }
 
 func (h *handler) readEntry(ctx context.Context, tx *sql.Tx, id domain.EntryID) (*entryBody, error) {

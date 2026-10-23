@@ -40,10 +40,10 @@ import (
 // classifies with.
 //
 //   - GET /api/home[?source=ID]
-//   - GET /api/entries/{ref}
+//   - GET /api/entries/{ref}[?places=1]
 //   - GET /api/entries/{ref}/copies?cursor=&limit=
-//   - GET /api/entries/{ref}/children?sort=&order=&cursor=&limit=
-//   - GET /api/entries/{ref}/treemap
+//   - GET /api/entries/{ref}/children?sort=&order=&cursor=&limit=&kind=&places=&hide=
+//   - GET /api/entries/{ref}/treemap[?places=1]
 //   - GET /api/search?…
 //   - GET /api/tags
 //   - GET /api/opportunities[?source=ID]
