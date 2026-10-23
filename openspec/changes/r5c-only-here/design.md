@@ -542,3 +542,21 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
   - **No member bytes:** gives the empty split, and the caller places the archive by `own`.
 - **A2. `member_places` sits on the entry row** (task 1.3): `detail.entry.member_places`, and the treemap's `entry`. `places_updating` sits at the top of the entry response. The query keys without options are unchanged, so invalidating them also refreshes the place variants.
 - **A3. The upgrade note** (task 1.1) gives no time for the first relate pass; 6.2 measures it.
+- **A4. The relate pass** (task 2.1):
+  - **Classifier:** `LoadSnapshot` takes the classifier as a third parameter; its only caller is the pass.
+  - **D14 in the pass:** the pass computes D14 in its own SQL column, generated from the domain lists. A table test pins it to `IsDisposable`, as 2.2's `DisposableSQL` is pinned.
+  - **Odd content states:** a hashed file or member with no content ID, and a tar link member with no file target, are `unchecked`.
+  - **Disposable members:** they drop out of an archive's split weights. Only a disposable archive puts `{1 file, its size}` into `Disposable`.
+  - **Member classification:** it passes no sibling stems.
+  - **Slow gate**, median of 3 runs on the extended fixture: 5.41 s and 493 MiB, against a 4.90 s and 474 MiB baseline (+10.4%, +4.0%).
+- **A5. Member copies** (task 2.2): a member's other copies leave out the member itself, its tar link group, and the members of the *other* names in its archive's hard-link set. Other members of its own archive do count, as in the snapshot.
+  - **Folders and archives:** `PlaceSQL` is `NULL` for a folder; `MemberPlaceSQL` is `NULL` when the archive entry is not present or is quarantined.
+  - **Disposable:** `DisposableSQL` requires `kind = 'file'`.
+- **A6. `CoveredBy`** (task 2.3) returns relations as stored, without reversing them, and accepts member-folder refs. `PreferredCopy` leaves the decision fields empty.
+- **A7. Panel** (task 4.2): the panel asks for places only when the address has `places=1`. For a file not checked or unreadable, the place sentence replaces the older not-checked line.
+- **A8. Map** (task 4.1):
+  - **Checked share:** it is capped at 99% until whole.
+  - **Member paths:** a member copy's path is split at its first `!`.
+  - **Second line:** it adds "on <source>" for another source.
+  - **Special files** read "No content".
+  - **Treemap:** its "other" area keeps its existing gray.

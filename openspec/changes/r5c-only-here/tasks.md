@@ -37,7 +37,7 @@
 
 ## 2. Places in the index (after 1; 2.1, 2.2, and 2.3 independent)
 
-- [ ] 2.1 The relate pass (design D3, D4, D5, D14).
+- [x] 2.1 The relate pass (design D3, D4, D5, D14).
   - **Baseline first:** commit the extended slow fixture (a second source, and archives with members) on its own. Record the previous build's pass time and peak RSS on it at that commit.
   - **Copy counting:** `physOf` keyed with the source, `dd.srcOf`, `dd.arcSrc`, and `arcFile`'s content state.
   - **Folder sums:** the per-directory place and disposable sums, in `addFile` (after the `arcAt` test) and in `keyMembers`.
@@ -89,7 +89,7 @@
   - In `relations/slow_test.go` (tag `slow`), on the extended fixture: the pass must stay within 15% of the recorded baseline in time and peak RSS, with both figures recorded in the Addendum, and a second pass must write nothing.
 
   Run `go test -race ./internal/relations`, then `go test -race -tags slow -run Slow ./internal/relations`.
-- [ ] 2.2 `search.PlaceSQL`, `DisposableSQL`, `MemberPlaceSQL`, `OfflineOnlySQL`, and `MemberOfflineOnlySQL` (design D1, D2, D6, D11, D14).
+- [x] 2.2 `search.PlaceSQL`, `DisposableSQL`, `MemberPlaceSQL`, `OfflineOnlySQL`, and `MemberOfflineOnlySQL` (design D1, D2, D6, D11, D14).
   - `DisposableSQL` is generated through `domain.IsDisposable`.
   - `otherCopy` may take alias parameters, as long as what `dupFilter` produces is unchanged.
 
@@ -106,7 +106,7 @@
   - the existing `dup=` tests, unchanged.
 
   Run `go test -race ./internal/search`.
-- [ ] 2.3 `content.PreferredCopies` and `relations.CoveredBy` (design D9). Owns `internal/content/preferred.go` and `internal/relations/read.go` (additions only), with their tests. Verify:
+- [x] 2.3 `content.PreferredCopies` and `relations.CoveredBy` (design D9). Owns `internal/content/preferred.go` and `internal/relations/read.go` (additions only), with their tests. Verify:
   - **`PreferredCopies`:**
     - for other source, an online other-source copy wins over an offline one, and an offline one is named when it is the only one;
     - for this source, a loose copy wins over a member;
