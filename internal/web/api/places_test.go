@@ -653,6 +653,49 @@ func TestMemberPlaces(t *testing.T) {
 	}
 }
 
+// r5c design D6, D10, A5: inside a complete archive whose entry is missing
+// or unreadable, member folders take no place, as its member files do: not
+// not_computed, though the relate pass stores no row for them. Hide drops
+// them, and the only-here sort counts them as holding nothing.
+func TestMemberFoldersOfAGoneArchiveHaveNoPlace(t *testing.T) {
+	t.Parallel()
+	w := newPWorld(t)
+	w.archive(pf{path: "d/gone.zip", size: 40}, pmem("sub/a.txt", 30, ""), pmem("b.txt", 5, ""))
+	w.archive(pf{path: "d/bad.zip", size: 40}, pmem("sub/a.txt", 30, ""))
+	w.missing = []string{"d/gone.zip"}
+	w.seed()
+	w.exec(t, `UPDATE entries SET state = 'unreadable' WHERE id = ?`, w.seeded["disk"].ID("d/bad.zip"))
+	w.relate()
+	for _, arc := range []string{"d/gone.zip", "d/bad.zip"} {
+		ref := w.id(arc)
+		rows, _ := w.children(ref, "", 10)
+		if len(rows) == 0 {
+			t.Fatalf("%s lists no members", arc)
+		}
+		for _, r := range rows {
+			if r.Place != nil || r.Places != nil {
+				t.Errorf("%s: %s reads %s, places %+v; want no place", arc, r.Name, r.place(), r.Places)
+			}
+		}
+		if hidden, _ := w.children(ref, "hide=other_source", 10); len(hidden) != 0 {
+			t.Errorf("%s: hide keeps %d members", arc, len(hidden))
+		}
+		for _, order := range []string{"desc", "asc"} {
+			sorted, _ := w.children(ref, "sort=only_here&order="+order, 10)
+			if len(sorted) != len(rows) {
+				t.Errorf("%s: %d rows sorted, %d listed", arc, len(sorted), len(rows))
+			}
+			checkOnlyHereOrder(t, sorted, order == "desc")
+		}
+		if d := w.detail(w.id(arc + "!sub")); d.Entry.Place != nil || d.Entry.Places != nil {
+			t.Errorf("%s: entry of sub reads %s, places %+v", arc, d.Entry.place(), d.Entry.Places)
+		}
+		if tm := w.treemap(w.id(arc + "!sub")); tm.Entry.Place != nil {
+			t.Errorf("%s: treemap of sub reads %s", arc, tm.Entry.place())
+		}
+	}
+}
+
 // r5c task 3.1, design D11, D14: the not-connected mark follows the copy's
 // source; a Thumbs.db is disposable.
 func TestPlaceOfflineMarkAndDisposable(t *testing.T) {
