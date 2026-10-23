@@ -125,7 +125,7 @@
 
 ## 3. Read API (after 2; 3.2 after 3.1)
 
-- [ ] 3.1 Children, treemap, and entry (design D2, D5, D6, D9, D10, D11, D14, Interfaces):
+- [x] 3.1 Children, treemap, and entry (design D2, D5, D6, D9, D10, D11, D14, Interfaces):
   - **Children:**
     - the `places`, `hide`, and `sort=only_here` parameters;
     - the set-based sort and hide evaluation;
@@ -168,7 +168,7 @@
     If the gate fails, stop and report (design D10).
 
   Run `go test -race ./internal/web/api`, then the slow tests.
-- [ ] 3.2 Tests of scenario R2.7 for places ("R2.7 Not checked is not an only copy" and "R2.7 Only-copy figures name the checked share"). Owns `internal/web/api/r2_7_places_test.go`. Verify on a world where hashing has checked 80% of the content that could have a copy across all sources, with one file not yet planned:
+- [x] 3.2 Tests of scenario R2.7 for places ("R2.7 Not checked is not an only copy" and "R2.7 Only-copy figures name the checked share"). Owns `internal/web/api/r2_7_places_test.go`. Verify on a world where hashing has checked 80% of the content that could have a copy across all sources, with one file not yet planned:
   - no unchecked or unplanned file reads `only_copy` in children, treemap, or entry;
   - the entry response's all-sources coverage is 0.8;
   - the folder's `places.unchecked` holds its unchecked files, archive members included.
@@ -177,7 +177,7 @@
 
 ## 4. The Map and the panel (after 1.3 and 3.1; 4.1 and 4.2 independent)
 
-- [ ] 4.1 The Map's Only here mode (design D7, D8, D10):
+- [x] 4.1 The Map's Only here mode (design D7, D8, D10):
   - the toolbar's mode toggle and hide option;
   - the totals line, with the coverage note and "Updating…" from `places_updating`;
   - the `place` column, which replaces `duplicated` in the mode, with its track, bar, and texts. "{{n}} copies" comes from `other_copy.more + 2`, and the other-source text notes any disposable files;
@@ -199,7 +199,7 @@
   - the Compare link's decimal IDs.
 
   Run `npm test` in `web/ui`.
-- [ ] 4.2 The detail panel's places:
+- [x] 4.2 The detail panel's places:
   - a folder's files and bytes per place and disposable, with the all-sources checked share;
   - an archive's `member_places`, labelled as unpacked sizes;
   - a file's place sentence above its copies;

@@ -560,3 +560,13 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
   - **Second line:** it adds "on <source>" for another source.
   - **Special files** read "No content".
   - **Treemap:** its "other" area keeps its existing gray.
+- **A9. Read API** (tasks 3.1, 3.2):
+  - **Parameters:** an empty `places=` or `hide=` counts as absent; `only_here` defaults to descending. The cursor gains `u` (the second key) and `h` (hide).
+  - **"Any other copy":** in the set-based query, this means at least two physical identities.
+  - **A file's second key** is its size when it is unchecked or unreadable and not disposable.
+  - **Folders:** a folder whose own state is `unreadable` still reads its stored figures. A missing complete archive has place `null`.
+  - **Archive coverage:** `other_source` lifts every member with content; `this_source` lifts only-copy members. `via_archive` means the coverage changed the member's place. Complete archive rows get no `other_copy`.
+  - **`places_updating`** counts queued or running relate jobs, not paused ones.
+  - **Speed** (D10 fixture, 2M entries): on a 30,000-file folder the first page takes p95 468 ms (`only_here`) and 492 ms (`hide` + `bytes`). A 100,000-file folder takes 1.6 s, a 50,000-member archive level 0.53–0.61 s, and its treemap 0.87 s. R1.10 pages stay at p95 9.4 ms.
+  - **Golden comparison:** the full comparison without `places` (about 3,500 requests, recorded on the base build) runs under `-tags slow` only.
+  - **Test time:** `go test -race ./internal/web/api` now takes about 65 s under load. It was about 56 s before, and the new tests take about 10.5 s of it. This is accepted over the 60 s guideline; the package was already near it.
