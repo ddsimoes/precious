@@ -1166,9 +1166,9 @@ The interface reads the index through a small JSON API under `/api`. The same en
 | Endpoint | Answers |
 |---|---|
 | `GET /api/home`, `GET /api/home?source=ID` | The figures of Home for every source, or for one: totals, bytes and files by family, by file kind, and by year, the decision totals, whether the figures are partial, and the scans in progress. The decision totals are `undecided`, `keep`, `discard`, and `later`, each `{"bytes","files"}` over the present files outside the quarantine, and `quarantine`, the bytes and files of every quarantine folder chosen, kept apart from the other four and from the totals. |
-| `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). |
-| `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable); with `kind=directory`, only its folders, archives left out. |
-| `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. |
+| `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). With `places=1`, also the entry's [place](#places-in-the-read-api) and `places_updating`. |
+| `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable); with `kind=directory`, only its folders, archives left out. With `places=1`, each row's [place](#places-in-the-read-api), and `hide=other_source` and `sort=only_here` may be used. |
+| `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. With `places=1`, each row's [place](#places-in-the-read-api); the treemap is never filtered. |
 | `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
 | `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text` | A file's content, and its text decoded. See [Viewer safety](#viewer-safety). |
@@ -1188,10 +1188,23 @@ Errors use the usual envelope, `{"error":{"code","message"}}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | An unknown or repeated parameter, a bad value (such as `sort=color`, `limit=0`, or a `kind` other than `directory`), or a cursor the server did not give for this order and `kind`. |
+| 400 | `invalid_request` | An unknown or repeated parameter, a bad value (such as `sort=color`, `limit=0`, a `kind` other than `directory`, a `places` other than `1`, or a `hide` other than `other_source`), `hide` or `sort=only_here` without `places=1`, or a cursor the server did not give for this order, `kind`, and `hide`. |
 | 404 | `not_found` | An entry, source, or folder (`within`) that does not exist, or an ID that is not a valid one. |
 | 409 | `invalid_entry_state` | The content or text of a folder, of a missing file, or of a file that changed on disk since the last scan. |
 | 409 | `source_offline` | The content or text of a file whose source is not online. |
+
+#### Places in the read API
+
+With `places=1`, `GET /api/entries/{id}`, its `children`, and its `treemap` add to every row where the copies of its content are (see [Where copies are](#where-copies-are)). Without it, nothing in their answers changes.
+
+- `place`: `only_copy`, `this_source`, `other_source`, `unchecked`, `unreadable`, `none` (an empty file, a link, a special file, or a folder with nothing in a place), `not_computed` (a folder or opened archive the `relate` job has not computed yet), or `null` for a missing entry. A file, and a file inside an opened archive, is placed as it is now. A folder or opened archive reads its stored figures: the first place, in the order only copy, only on this source, not checked yet, could not be read, copy on another source, that holds a file other than a disposable one. A folder that could not be read completely (it is unreadable, partly read, or a mount point, or holds an unreadable folder or a mount point) reads `unreadable` where it would read `other_source` or `none`.
+- `place_offline`: `true` for a file placed `other_source` whose copies on other sources are all on sources that are not connected.
+- `disposable`: `true` for a disposable file (see [Where copies are](#where-copies-are)).
+- `places`: a folder's or opened archive's files and bytes in each place, `{"only_copy","this_source","other_source","unchecked","unreadable","disposable"}`, each `{"files","bytes"}`; `null` for a plain file and while not computed. An opened archive counts at its packed size here, as its folder adds it; a folder inside an archive counts its members' unpacked sizes.
+- On children rows only: `other_copy`, one other copy of a file placed `this_source` or `other_source`: `{"ref","source_id","path","path_b64","archive_id","offline","via_archive","more"}`, a copy on another source for `other_source` (connected sources first), one on the same source for `this_source` (loose files first), where `more` is the number of copies beyond the file and this one. A file inside an archive placed only because the archive file itself has a copy names the archive's copy, with `via_archive` `true`, and takes its `place_offline`. `covered_by`, for a folder, opened archive, or folder inside one: the relation with the most bytes in common of kind `same`, or `inside` when this one is inside the other, as `{"kind","other":{"id","source_id","path","path_b64"}}`; `null` when there is none.
+- On the entry of `GET /api/entries/{id}` and of the treemap only: `member_places`, an opened archive's members' unpacked sizes by place, with the archive file's own copies applied; `null` for anything else. The entry answer also carries `places_updating`, `true` while the `relate` job is due or running, when folder figures may still change.
+
+`sort=only_here` sorts children by the bytes only on this source (only copies and copies on the same source, without disposable files), then by the bytes not checked yet or unreadable, largest first unless `order=asc`. A folder or opened archive not computed yet sorts first; a missing entry counts as holding nothing, so it sorts last. `hide=other_source` leaves out the rows with nothing to keep here: those placed `other_source` or `none`, disposable files, and missing entries. Both need `places=1`, place every item of the folder on each request, and page with cursors of their own.
 
 ### Search parameters
 
