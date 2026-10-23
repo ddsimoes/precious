@@ -31,14 +31,18 @@ type world struct {
 // wf is one entry. A regular file with a content label is hashed (digest
 // sha256(label)); without one it is unique_size unless state says
 // otherwise. ino > 0 makes it one name of a multiply-linked file (dev 1).
+// category, fileKind, and triage are its classification.
 type wf struct {
-	path    string
-	size    int64
-	content string
-	state   domain.ContentState
-	kind    domain.EntryKind
-	link    string
-	ino     uint64
+	path     string
+	size     int64
+	content  string
+	state    domain.ContentState
+	kind     domain.EntryKind
+	link     string
+	ino      uint64
+	category domain.Category
+	fileKind domain.FileKind
+	triage   domain.Triage
 	// folder flags (kind directory)
 	unreadable, mount bool
 }
@@ -90,7 +94,7 @@ func mem(path string, size int64, content string) indextest.Member {
 func (f wf) node() indextest.Node {
 	_, path := where(f.path)
 	n := indextest.Node{Path: path, Kind: f.kind, Size: f.size, LinkText: f.link, Unreadable: f.unreadable,
-		MountBoundary: f.mount}
+		MountBoundary: f.mount, Category: f.category, FileKind: f.fileKind, Triage: f.triage}
 	if f.ino > 0 {
 		n.Size = 0
 		n.Lstat = &fsaccess.EntryInfo{Kind: domain.EntryFile, Size: f.size, ModTime: indextest.DefaultNow,
@@ -185,7 +189,7 @@ func (w *world) snapshot(provisional bool) *Snapshot {
 	var s *Snapshot
 	err := w.st.Read(context.Background(), func(tx *sql.Tx) error {
 		var err error
-		s, err = loadSnapshot(context.Background(), tx, provisional)
+		s, err = loadSnapshot(context.Background(), tx, provisional, nil)
 		return err
 	})
 	if err != nil {

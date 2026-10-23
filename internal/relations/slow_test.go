@@ -307,6 +307,7 @@ func TestRelateAtScale(t *testing.T) {
 	rssBefore := maxRSS(t)
 
 	h := NewHandler(st, nil, configDuplicates(), nil)
+	h.SetClassifier(policyClassifier())
 	start := time.Now()
 	if err := h.Run(context.Background(), jobs.Job{Kind: KindRelate}, &fakeRT{}); err != nil {
 		t.Fatal(err)
@@ -346,6 +347,18 @@ func TestRelateAtScale(t *testing.T) {
 		t.Errorf("t05 dir_dups %+v", dd)
 	}
 
+	// R5c task 2.1: t05's places, each of its files with a copy (in t04,
+	// and some on big2), and one row per folder and complete archive.
+	places := storedPlaces(t, st)
+	if p := places[int64(t05.Entry)]; p.OnlyCopy.Files != 0 || p.OtherSource.Files == 0 ||
+		p.ThisSource.Files+p.OtherSource.Files != bigMids*(bigLeaves+1)*bigFiles {
+		t.Errorf("t05 places %+v", p)
+	}
+	if n := count(t, st, `SELECT (SELECT count(*) FROM entries WHERE kind = 'directory')
+		+ (SELECT count(*) FROM archives WHERE state = 'complete')`); int64(len(places)) != n {
+		t.Errorf("%d entry_places rows, want %d", len(places), n)
+	}
+
 	// Compare two 100,000-file sides.
 	start = time.Now()
 	res, err := Compare(context.Background(), st.Reader(), t04, t05, BucketIdentical, "", 100)
@@ -359,6 +372,33 @@ func TestRelateAtScale(t *testing.T) {
 	}
 	if took > 2*time.Second {
 		t.Errorf("compare took %v, target 2 s", took)
+	}
+
+	// A second pass over the unchanged index writes no dir_dups or
+	// entry_places row (temporary triggers on the single writer
+	// connection count them).
+	for _, stmt := range []string{
+		`CREATE TEMP TABLE big_writes (n INTEGER)`,
+		`CREATE TEMP TRIGGER big_ep_ins AFTER INSERT ON main.entry_places BEGIN INSERT INTO big_writes VALUES (1); END`,
+		`CREATE TEMP TRIGGER big_ep_upd AFTER UPDATE ON main.entry_places BEGIN INSERT INTO big_writes VALUES (1); END`,
+		`CREATE TEMP TRIGGER big_ep_del AFTER DELETE ON main.entry_places BEGIN INSERT INTO big_writes VALUES (1); END`,
+		`CREATE TEMP TRIGGER big_dd_ins AFTER INSERT ON main.dir_dups BEGIN INSERT INTO big_writes VALUES (1); END`,
+		`CREATE TEMP TRIGGER big_dd_upd AFTER UPDATE ON main.dir_dups BEGIN INSERT INTO big_writes VALUES (1); END`,
+		`CREATE TEMP TRIGGER big_dd_del AFTER DELETE ON main.dir_dups BEGIN INSERT INTO big_writes VALUES (1); END`,
+	} {
+		if _, err := st.Writer().Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.Run(context.Background(), jobs.Job{Kind: KindRelate}, &fakeRT{}); err != nil {
+		t.Fatal(err)
+	}
+	var writes int64
+	if err := st.Writer().QueryRow(`SELECT count(*) FROM big_writes`).Scan(&writes); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 0 {
+		t.Errorf("a second pass over the unchanged index wrote %d dir_dups and entry_places rows", writes)
 	}
 }
 
