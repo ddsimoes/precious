@@ -1799,11 +1799,23 @@ The Map answers "where is my space?" for one folder at a time. The Map link open
 - **The table** lists every item of the folder with its name, size, file count (for folders, everything inside), type or category, the range of modification dates, whether it has copies (**Has copies**, see [Opportunities and Compare](#opportunities-and-compare)), the suggestion of the rules, and the decision. Under each folder's size, a thin bar shows its composition in the family colors; when at least 1% of a folder's bytes belongs to another family, the category also gives the main family's share, such as "Personal media · 98% personal" (see [What a folder is made of](#what-a-folder-is-made-of)). A decision followed from a folder above reads like "Keep (inherited)". Click a column title (Name, Size, Files, Changed) to sort by it, and click it again to reverse the order. Scrolling down loads more rows; a Load more button does the same. In a narrow window the table hides the Changed column first, then Suggestion, Decision, Has copies, and Files, and scrolls sideways inside its frame if it still does not fit.
 - **The two follow each other:** pointing at a row outlines its area, and pointing at an area highlights its row.
 - **Clicking a folder's area or its name** opens that folder in both. Clicking a file's area or any row opens the [detail panel](#the-detail-panel) for it.
-- **Color by** paints the areas by category family, file type, age (time since the last change), decision, whether they have copies, or tag (choose the tag next to it). By family, each area takes the family holding most of its bytes, so a photo no rule recognized is still Personal and valuable. The legend names each color.
+- **Color by** paints the areas by category family, file type, age (time since the last change), decision, whether they have copies, where their copies are, or tag (choose the tag next to it). By family, each area takes the family holding most of its bytes, so a photo no rule recognized is still Personal and valuable. The legend names each color.
 - **Search in this folder** opens Search limited to the folder.
 - **The keyboard** works in the table, as in the review lists: the up and down arrows move the selected row and open its details, scrolling the table; Enter opens the selected folder, or shows the selected file in the viewer; Escape closes the details. With no row selected, the down arrow selects the first row and the up arrow the last. The keys do nothing while you type in a field, inside a dialog, or in the detail panel, which handles its own keys.
 
-The address keeps the folder, the order, the coloring, and the open details, so it can be bookmarked or reloaded.
+**Only here** switches the Map to where copies are: whether each item also exists somewhere else. The treemap is then colored by place, and the **Where copies are** column replaces Has copies. Each row says its place in words:
+
+- **Only copy,** highlighted with its name in bold: nothing else holds this content, on any source.
+- **Copies only on this source,** highlighted more lightly, such as "3 copies, all on this source": losing this disk loses them all.
+- **Copy on another source,** dimmed. A copy on a source that is not connected still counts, and the row says "(the other source is not connected)".
+- **Not checked yet, Could not be read, and Not computed yet** carry a dashed mark: Precious cannot tell yet.
+- **Empty files, links, and disposable files** (see [Categories and families](#categories-and-families)) are muted; a disposable file adds "· disposable".
+
+A folder or archive names its first place, such as "2 GiB only copy", over a bar of its bytes by place; an archive is placed by what is inside it. Under a file's name, "Also at …" names one other copy, links to it, and says how many more there are. A folder whose whole content is also in another folder names it, with a **Compare** link. The line above the table totals the open folder by place, an archive's in unpacked sizes. Until hashing has checked everything on all sources, it says how much was checked, since an only copy may still turn out to have one. Folder figures follow hashing and scans when relations are recomputed (see [When relations are recomputed](#when-relations-are-recomputed)); meanwhile the line says "Updating…".
+
+Click **Where copies are** to sort by the size kept only on this source, largest first, with folders not computed yet before all. **Hide what has a copy on another source** leaves what still needs keeping here: only copies, copies only on this source, and what is not known yet. Empty and missing items and disposable files are hidden too; the treemap still shows everything.
+
+The address keeps the folder, the order, the coloring, Only here and its hiding, and the open details, so it can be bookmarked or reloaded.
 
 ### Search
 

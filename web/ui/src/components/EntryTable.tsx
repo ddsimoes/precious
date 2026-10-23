@@ -28,6 +28,7 @@ import {
 } from '@/api/entries'
 import { useSources } from '@/api/sources'
 import { CompositionBar } from '@/components/CompositionBar'
+import { PlaceBar } from '@/components/PlaceBar'
 import { Button } from '@/components/ui/button'
 import { useEntryLink } from '@/detail/useEntryLink'
 import { withShare } from '@/lib/composition'
@@ -41,7 +42,7 @@ import { cn } from '@/lib/utils'
 // panel (?entry=); a folder's name drills into it. The table stays inside
 // its card (design D23): when the card is narrow its lowest-priority
 // columns hide, and what still does not fit scrolls sideways inside it. The
-// Map turns on the keys (TableKeyboard).
+// Map turns on the keys (TableKeyboard) and the Only here mode (places).
 
 export interface TableSort {
   sort: ChildSort
@@ -80,6 +81,10 @@ interface EntryTableProps {
   selectedId: string | null
   selection?: TableSelection
   keyboard?: TableKeyboard
+  // places turns on the Only here mode (R5c design D8): the Where copies
+  // are column replaces Has copies, each row takes the emphasis of its
+  // place, and a name shows another copy of it on a second line.
+  places?: boolean
   // tableRef receives the table, which can take the focus.
   tableRef?: Ref<HTMLDivElement>
   hasMore: boolean
@@ -88,7 +93,8 @@ interface EntryTableProps {
 }
 
 export const rowHeight = 36
-// locatedRowHeight leaves room for the location line under the name.
+// locatedRowHeight leaves room for the location line, or the line naming
+// another copy, under the name.
 const locatedRowHeight = 48
 // loadAhead is how many rows before the end scrolling asks for the next page.
 const loadAhead = 20
@@ -102,6 +108,7 @@ interface RowLinks {
   folderLink: (row: EntryRow) => To
   selection: TableSelection | undefined
   location: RowLocation | undefined
+  places: boolean
   // sourceLabel names a source by its ID, or gives the ID while loading.
   sourceLabel: (id: string) => string
 }
@@ -171,22 +178,138 @@ function SelectCell({ row }: CellProps) {
   )
 }
 
+// Emphasis is how strongly a row stands out in the Only here mode (R5c
+// design D8): an only copy most, a copy only on this source less, what has
+// a copy elsewhere or nothing to copy muted, and what is not known yet
+// marked as such. Disposable files are muted whatever their place.
+type Emphasis = 'strong' | 'light' | 'muted' | 'unknown'
+
+function emphasisOf(entry: EntryRow): Emphasis | null {
+  if (entry.place === undefined || entry.place === null) {
+    return null
+  }
+  if (entry.disposable === true) {
+    return 'muted'
+  }
+  switch (entry.place) {
+    case 'only_copy':
+      return 'strong'
+    case 'this_source':
+      return 'light'
+    case 'other_source':
+    case 'none':
+      return 'muted'
+    case 'unchecked':
+    case 'unreadable':
+    case 'not_computed':
+      return 'unknown'
+  }
+}
+
+// emphasisStyles are each emphasis's background tint, drawn only while the
+// row is neither hovered nor selected so that those still win, and its
+// text and left bar. The bar is drawn over the row's edge, so it moves no
+// column.
+const barBase = "before:absolute before:inset-y-0 before:left-0 before:content-['']"
+const emphasisStyles: Record<Emphasis, { tint?: string; rest: string }> = {
+  strong: { tint: 'bg-red-500/10', rest: `${barBase} before:w-1 before:bg-red-500` },
+  light: { tint: 'bg-orange-400/10', rest: `${barBase} before:w-1 before:bg-orange-400` },
+  muted: { rest: 'text-muted-foreground' },
+  unknown: { rest: `${barBase} before:border-l-2 before:border-dashed before:border-muted-foreground` },
+}
+
+// memberParts splits a member's display path, its archive's path, '!', and
+// its path inside the archive, at the first '!'.
+function memberParts(path: string): { archive: string; member: string } {
+  const bang = path.indexOf('!')
+  return bang < 0 ? { archive: path, member: '' } : { archive: path.slice(0, bang), member: path.slice(bang + 1) }
+}
+
+// PlaceNote names, on the line under the name, another copy of a file or
+// member (other_copy), or the folder or archive holding all of a folder's
+// content (covered_by) with a link to Compare the two (R5c design D9).
+function PlaceNote({ entry, name }: { entry: EntryRow; name: string }) {
+  const { t } = useTranslation()
+  const fmt = useFormat()
+  const { entryLink, places, sourceLabel } = useRowLinks()
+  if (!places) {
+    return null
+  }
+  const stop = (event: { stopPropagation: () => void }) => event.stopPropagation()
+  const copy = entry.other_copy
+  if (copy !== undefined && copy !== null) {
+    const on = copy.source_id !== entry.source_id
+    const source = sourceLabel(copy.source_id)
+    let text: string
+    if (copy.via_archive) {
+      // The member's own archive has the copy named, by its name.
+      const { archive: archivePath } = memberParts(entry.path)
+      const archive = archivePath.slice(archivePath.lastIndexOf('/') + 1)
+      text = t(on ? 'map.places.copy.viaArchiveOn' : 'map.places.copy.viaArchive', { archive, path: copy.path, source })
+    } else if (copy.archive_id !== null) {
+      const { archive, member } = memberParts(copy.path)
+      text = t(on ? 'map.places.copy.insideOn' : 'map.places.copy.inside', { archive, member, source })
+    } else {
+      text = t(on ? 'map.places.copy.atOn' : 'map.places.copy.at', { path: copy.path, source })
+    }
+    const extra = [
+      ...(copy.offline ? [t('map.places.copy.offline')] : []),
+      ...(copy.more > 0 ? [t('map.places.copy.more', { formatted: fmt.count(copy.more) })] : []),
+    ].join(' ')
+    return (
+      <span className="flex min-w-0 gap-1 text-xs text-muted-foreground">
+        <Link to={{ search: entryLink(copy.ref) }} title={text} className="truncate hover:underline" onClick={stop}>
+          {text}
+        </Link>{' '}
+        {extra !== '' && <span className="shrink-0">{extra}</span>}
+      </span>
+    )
+  }
+  const covered = entry.covered_by
+  if (covered === undefined || covered === null) {
+    return null
+  }
+  const on = covered.other.source_id !== entry.source_id
+  const text = t(`map.places.covered.${covered.kind}${on ? 'On' : ''}`, {
+    path: covered.other.path,
+    source: sourceLabel(covered.other.source_id),
+  })
+  return (
+    <span className="flex min-w-0 gap-2 text-xs text-muted-foreground">
+      <Link to={{ search: entryLink(covered.other.id) }} title={text} className="truncate hover:underline" onClick={stop}>
+        {text}
+      </Link>{' '}
+      <Link
+        to={{ pathname: '/compare', search: `?${new URLSearchParams({ left: entry.id, right: covered.other.id })}` }}
+        aria-label={t('map.places.covered.compareLabel', { name, path: covered.other.path })}
+        className="shrink-0 text-primary underline"
+        onClick={stop}
+      >
+        {t('map.places.covered.compare')}
+      </Link>
+    </span>
+  )
+}
+
 function NameCell({ row }: CellProps) {
   const { t } = useTranslation()
   const { entryLink, folderLink, sourceLabel } = useRowLinks()
   const entry = row.original
   const name = rowName(entry, sourceLabel)
+  // An only copy's name is the strongest mark of the Only here mode.
+  const bold = emphasisOf(entry) === 'strong' && 'font-bold'
   if (!isDrillable(entry)) {
     return (
       <span className="grid min-w-0">
         <Link
           to={{ search: entryLink(entry.id) }}
-          className="truncate hover:underline"
+          className={cn('truncate hover:underline', bold)}
           onClick={(event) => event.stopPropagation()}
         >
           {name}
         </Link>
         <LocationLine entry={entry} />
+        <PlaceNote entry={entry} name={name} />
       </span>
     )
   }
@@ -205,12 +328,13 @@ function NameCell({ row }: CellProps) {
       <span className="grid min-w-0">
         <Link
           to={folderLink(entry)}
-          className="truncate font-medium text-primary hover:underline"
+          className={cn('truncate font-medium text-primary hover:underline', bold)}
           onClick={(event) => event.stopPropagation()}
         >
           {name}
         </Link>
         <LocationLine entry={entry} />
+        <PlaceNote entry={entry} name={name} />
       </span>
       <Button asChild variant="ghost" size="sm" className="ml-auto h-6 shrink-0 px-2 text-xs text-muted-foreground">
         <Link
@@ -321,6 +445,81 @@ function DuplicatedCell({ row }: CellProps) {
   return duplication.fraction === 0 ? t('map.dupCell.unchecked') : t('map.dupCell.partial', { percent })
 }
 
+// PlaceCell says where the copies of a row are, in words (R5c design D8):
+// a file by its own place, and a folder or archive by its sums, with a bar
+// of its bytes by place. A missing entry has no place and stays blank.
+function PlaceCell({ row }: CellProps) {
+  const { t } = useTranslation()
+  const fmt = useFormat()
+  const entry = row.original
+  const place = entry.place
+  if (place === undefined || place === null) {
+    return ''
+  }
+  let text: string
+  if (!isDrillable(entry)) {
+    switch (place) {
+      case 'this_source':
+        // The row and its named copy, and the copies beyond them (D9).
+        text = t('map.places.file.this_source', { formatted: fmt.count((entry.other_copy?.more ?? 0) + 2) })
+        break
+      case 'other_source':
+        text = t(entry.place_offline === true ? 'map.places.file.otherOffline' : 'map.places.file.other_source')
+        break
+      case 'none':
+        text = t(
+          entry.kind === 'file'
+            ? 'map.places.file.empty'
+            : entry.kind === 'symlink'
+              ? 'map.places.file.link'
+              : 'map.places.file.special',
+        )
+        break
+      case 'not_computed':
+        text = t('map.places.folder.not_computed')
+        break
+      default:
+        text = t(`map.places.file.${place}`)
+    }
+    if (entry.disposable === true) {
+      text = t('map.places.file.disposable', { text })
+    }
+    return <span title={text}>{text}</span>
+  }
+  const sums = entry.places
+  switch (place) {
+    case 'only_copy':
+    case 'this_source':
+      text = t(`map.places.folder.${place}`, { bytes: fmt.bytes(sums?.[place].bytes ?? 0) })
+      break
+    case 'other_source': {
+      const disposable = sums?.disposable.files ?? 0
+      text =
+        disposable > 0
+          ? t('map.places.folder.otherDisposable', { count: disposable, formatted: fmt.count(disposable) })
+          : t('map.places.folder.other_source')
+      break
+    }
+    case 'unreadable':
+      // A folder read in part says so; one not read at all could not be.
+      text = t(entry.state === 'unreadable' ? 'map.places.folder.unreadable' : 'map.places.folder.partlyUnreadable')
+      break
+    case 'none':
+      text = t((sums?.disposable.files ?? 0) > 0 ? 'map.places.folder.onlyDisposable' : 'map.places.folder.nothing')
+      break
+    default:
+      text = t(`map.places.folder.${place}`)
+  }
+  return (
+    <span className="grid gap-0.5">
+      <span className="truncate" title={text}>
+        {text}
+      </span>
+      <PlaceBar sums={sums} />
+    </span>
+  )
+}
+
 // DecisionCell stays blank for what only follows "undecided", and says an
 // inherited decision briefly, with its full wording as the title (r2b
 // design D9).
@@ -356,11 +555,23 @@ const allColumns = helper.columns([
   helper.display({ id: 'kind', cell: KindCell }),
   helper.display({ id: 'dates', cell: DatesCell }),
   helper.display({ id: 'duplicated', cell: DuplicatedCell }),
+  // The Only here mode's column, in place of Has copies (R5c design D8).
+  helper.display({ id: 'place', cell: PlaceCell }),
   helper.display({ id: 'triage', cell: TriageCell }),
   helper.display({ id: 'decision', cell: DecisionCell }),
 ])
 
-type ColumnId = 'select' | 'name' | 'size' | 'files' | 'kind' | 'dates' | 'duplicated' | 'triage' | 'decision'
+type ColumnId =
+  | 'select'
+  | 'name'
+  | 'size'
+  | 'files'
+  | 'kind'
+  | 'dates'
+  | 'duplicated'
+  | 'place'
+  | 'triage'
+  | 'decision'
 
 function isColumnId(id: string | undefined): id is ColumnId {
   return id !== undefined && Object.hasOwn(columnLayout, id)
@@ -369,7 +580,8 @@ function isColumnId(id: string | undefined): id is ColumnId {
 // columnLayout gives each column its grid track and its narrowest width, in
 // rem. Columns with a hide rank hide in that order when the card is too
 // narrow for every column: Changed and Suggestion first, then Decision,
-// then Has copies, then Files; name, size, and type or category always stay.
+// then Has copies, then Files, and last Where copies are, which the Only
+// here mode is about; name, size, and type or category always stay.
 const columnLayout: Record<ColumnId, { track: string; min: number; hide?: number }> = {
   select: { track: '2rem', min: 2 },
   name: { track: 'minmax(12rem, 1.5fr)', min: 12 },
@@ -378,6 +590,7 @@ const columnLayout: Record<ColumnId, { track: string; min: number; hide?: number
   kind: { track: 'minmax(9rem, 2fr)', min: 9 },
   dates: { track: 'minmax(9rem, 1.5fr)', min: 9, hide: 1 },
   duplicated: { track: '6rem', min: 6, hide: 4 },
+  place: { track: 'minmax(12rem, 2fr)', min: 12, hide: 6 },
   triage: { track: '6rem', min: 6, hide: 2 },
   decision: { track: '9rem', min: 9, hide: 3 },
 }
@@ -390,6 +603,7 @@ const columnSorts: Partial<Record<ColumnId, ChildSort>> = {
   size: 'bytes',
   files: 'files',
   dates: 'newest',
+  place: 'only_here',
 }
 
 // rowWidth is the narrowest width, in rem, of a row of the columns ids.
@@ -426,6 +640,7 @@ export function EntryTable({
   selectedId,
   selection,
   keyboard,
+  places = false,
   tableRef,
   hasMore,
   loadingMore,
@@ -454,8 +669,13 @@ export function EntryTable({
     return () => observer.disconnect()
   }, [])
 
+  // The Only here mode shows where copies are in place of Has copies.
   const columnIds = visibleColumns(
-    allColumns.map((column) => column.id).filter(isColumnId).filter((id) => selection !== undefined || id !== 'select'),
+    allColumns
+      .map((column) => column.id)
+      .filter(isColumnId)
+      .filter((id) => selection !== undefined || id !== 'select')
+      .filter((id) => id !== (places ? 'duplicated' : 'place')),
     width,
   )
   const columnKey = columnIds.join(' ')
@@ -465,8 +685,8 @@ export function EntryTable({
   )
   const links = useMemo<RowLinks>(() => {
     const labels = new Map(sources.data?.sources.map((s) => [s.id, s.label]))
-    return { entryLink, folderLink, selection, location, sourceLabel: (id) => labels.get(id) ?? id }
-  }, [entryLink, folderLink, selection, location, sources.data])
+    return { entryLink, folderLink, selection, location, places, sourceLabel: (id) => labels.get(id) ?? id }
+  }, [entryLink, folderLink, selection, location, places, sources.data])
 
   const table = useTable({ features, columns, data: rows, getRowId: (row) => row.id })
   const tableRows = table.getRowModel().rows
@@ -486,7 +706,7 @@ export function EntryTable({
   const virtualizer = useVirtualizer({
     count: tableRows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => (location === undefined ? rowHeight : locatedRowHeight),
+    estimateSize: () => (location === undefined && !places ? rowHeight : locatedRowHeight),
     getItemKey: (index) => tableRows[index]?.id ?? index,
     overscan: 10,
   })
@@ -593,7 +813,14 @@ export function EntryTable({
   }, [keys])
 
   const headerCell = (id: ColumnId): ReactNode => {
-    const content = id === 'select' ? <span className="sr-only">{t('map.columns.select')}</span> : t(`map.columns.${id}`)
+    const content =
+      id === 'select' ? (
+        <span className="sr-only">{t('map.columns.select')}</span>
+      ) : id === 'place' ? (
+        t('map.places.column')
+      ) : (
+        t(`map.columns.${id}`)
+      )
     const key = columnSorts[id]
     if (key === undefined) {
       return content
@@ -603,6 +830,7 @@ export function EntryTable({
       <button
         type="button"
         className="flex items-center gap-1 font-medium hover:underline"
+        title={id === 'place' ? t('map.places.sort') : undefined}
         onClick={() => sort.onSort(key)}
       >
         {content}
@@ -672,20 +900,28 @@ export function EntryTable({
                 return null
               }
               const entry = row.original
+              const hovered = entry.id === hoveredId
+              const selected = entry.id === selectedId
+              const emphasis = places ? emphasisOf(entry) : null
+              const style = emphasis === null ? null : emphasisStyles[emphasis]
               return (
                 <div
                   key={row.id}
                   role="row"
                   aria-rowindex={item.index + 2}
-                  aria-selected={entry.id === selectedId}
-                  data-hovered={entry.id === hoveredId ? 'true' : undefined}
+                  aria-selected={selected}
+                  data-hovered={hovered ? 'true' : undefined}
                   data-row-id={entry.id}
+                  data-emphasis={emphasis ?? undefined}
                   // With the keys, the selected row is the table's tab stop.
-                  tabIndex={keyboard === undefined ? undefined : entry.id === selectedId ? 0 : -1}
+                  tabIndex={keyboard === undefined ? undefined : selected ? 0 : -1}
                   className={cn(
                     'absolute top-0 left-0 grid w-full cursor-pointer items-center gap-2 border-b px-3',
-                    entry.id === hoveredId && 'bg-accent',
-                    entry.id === selectedId && 'bg-primary/10',
+                    style?.rest,
+                    // Hover and selection win over a place's tint.
+                    !hovered && !selected && style?.tint,
+                    hovered && 'bg-accent',
+                    selected && 'bg-primary/10',
                     entry.state === 'missing' && 'text-muted-foreground line-through',
                   )}
                   style={{
