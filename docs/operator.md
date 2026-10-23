@@ -967,6 +967,28 @@ Every folder carries:
 
 Its **percent duplicated** is its duplicated bytes over its total bytes; a file is 0% or 100%. The interface names it **Has copies** (ADR 0010): it counts every copy, the one you would keep included, so it is not the space you could free. That space is on [Opportunities](#opportunities), whose duplicates card counts the redundant bytes. The Map colors folders by it in five bands (0%, under 25%, under 50%, under 75%, and 75% or more), and as **not checked** while its checked bytes are below its candidate bytes, because the figure can still grow. A file that could not be read never gets checked, so it does not keep its folders "not checked"; Home still counts it under **Could not be read**. An archive counts in its folder at its packed size, by its own file, never by its members.
 
+### Where copies are
+
+Every file outside the quarantine has a **place**, relative to its own source; a file inside an opened archive belongs to the archive's source:
+
+| Place | Meaning |
+|---|---|
+| Only copy | No other copy exists anywhere: no other file has its size, its samples differ from every file of its size, or it was read and no other file has its digest. |
+| Only on this source | It has copies, and all of them are on its own source. |
+| Copy on another source | At least one copy is on another source, connected or not. |
+| Not checked yet | Hashing has not read it yet, or it changed since it was read. |
+| Could not be read | Hashing could not read it. |
+
+Copies count as in [Duplicate groups](#duplicate-groups): hard links to one file are one copy, and so are a tar hard link and its target, and the members of two hard-linked names of one archive. An opened archive's own file is a copy of the same content. Offline sources count; the quarantine does not. On a filesystem that does not record file identity, each name of a hard-linked file counts as a copy. Two sources whose filesystems use the same device number never share hard links, which can correct a folder's **Has copies** after the update.
+
+The `relate` job (see [When relations are recomputed](#when-relations-are-recomputed)) stores, for every folder and opened archive, its files and bytes in each place, and its **disposable** files apart: files whose category is disposable (or, without a category, system files such as `Thumbs.db` and `desktop.ini`), unless the rules suggest review, as for recovered file chunks. Disposable files never decide where a folder stands. Files inside opened archives are classified by their names and sizes with the same rules.
+
+- **A folder** adds up every file below it. An unreadable folder or a mount point below it adds nothing.
+- **An opened archive** counts at its packed size, split among the places in proportion to its members' unpacked bytes, with at least 1 byte for each place that holds any. When the archive file itself has a copy on another source, every member counts as having one; when its copy is on its own source, its members that are only copies count as only on this source. An archive whose members hold no bytes counts by its own file, and a disposable archive counts whole as disposable.
+- **Other archives** (not opened) count as plain files.
+
+The figures follow the index at each run, so they can lag the files by up to `duplicates.refresh_interval` plus the run itself. A change of category reaches them at the next run.
+
 ### Compare
 
 Compare takes two folders, opened archives, or folders inside an archive, and lists their files in five groups:

@@ -121,37 +121,54 @@ type Snapshot struct {
 	dups *dupInputs
 }
 
-// dupInputs are what dir_dups needs beyond the relation arrays (design
-// D10): each entry directory's own candidate and checked bytes, its
-// regular content files (keyed entries outside archives), and the complete
-// archives' own file contents, which are copies too (design D8).
+// dupInputs are what dir_dups and entry_places need beyond the relation
+// arrays (design D10, r5c D3, D4): each entry directory's own candidate and
+// checked bytes, its regular content files (keyed entries outside
+// archives), the complete archives' own file contents, which are copies too
+// (design D8), and each directory's own place sums.
 type dupInputs struct {
-	own      []dupOwn // per directory: its own files' candidate and checked bytes
-	arcFiles []arcFile
+	own      []dupOwn  // per directory: its own files' candidate and checked bytes
+	arcFiles []arcFile // per archive (an index of arcDir)
 	// copies counts each content key's physical copies: inode groups
 	// among its occurrences plus complete archive files with that content.
 	copies []int32
+	// srcOf is each content key's source: the source index shared by all
+	// its physical copies, or multiSource (r5c D3).
+	srcOf []int32
 	// arcExtra counts, per content of a complete archive file, those files
 	// (one per physical identity); arcKeys maps those contents to their
-	// keys, -1 when no entry or member has the content.
+	// keys, -1 when no entry or member has the content; arcSrc is srcOf
+	// for the contents without a key.
 	arcExtra map[int64]int32
 	arcKeys  map[int64]int32
+	arcSrc   map[int64]int32
+	// places holds each directory's own place sums (r5c D4): its
+	// non-empty regular files and file members not placed by a key, by
+	// content state, and its disposable ones (D14). entryPlaces adds the
+	// keyed ones and sums them bottom-up.
+	places []domain.PlaceSums
+	// disposable marks the entries D14 counts apart; nil when none is.
+	disposable []bool
 }
 
 type dupOwn struct{ candidate, checked int64 }
 
 // arcFile is a complete archive's file entry: a regular file of its
-// directory, with its content when hashed (0 otherwise).
+// directory, with its content state and its content when hashed (0
+// otherwise), and whether D14 counts it apart.
 type arcFile struct {
 	dir           int32
 	size, content int64
 	phys          [2]int64
+	state         domain.ContentState
+	disposable    bool
 }
 
 // LoadSnapshot reads the final snapshot of every source in one read of q
-// (design D9); q should be a read transaction.
-func LoadSnapshot(ctx context.Context, q store.Queryer) (*Snapshot, error) {
-	s, err := loadSnapshot(ctx, q, false)
+// (design D9); q should be a read transaction. classify classifies archive
+// members for the place sums (r5c D14); with nil, no member is disposable.
+func LoadSnapshot(ctx context.Context, q store.Queryer, classify func(name []byte, size int64) (domain.Category, domain.FileKind, domain.Triage)) (*Snapshot, error) {
+	s, err := loadSnapshot(ctx, q, false, classify)
 	if err != nil {
 		return nil, fmt.Errorf("relations: snapshot: %w", err)
 	}
@@ -160,7 +177,7 @@ func LoadSnapshot(ctx context.Context, q store.Queryer) (*Snapshot, error) {
 
 // loadProvisional reads the provisional snapshot of Candidates (design D4).
 func loadProvisional(ctx context.Context, q store.Queryer) (*Snapshot, error) {
-	s, err := loadSnapshot(ctx, q, true)
+	s, err := loadSnapshot(ctx, q, true, nil)
 	if err != nil {
 		return nil, fmt.Errorf("relations: provisional snapshot: %w", err)
 	}
@@ -187,12 +204,14 @@ type archiveRow struct {
 	entry, parent int64
 	path          []byte
 	size          int64
-	phys          [2]int64 // its file's physical identity: (dev, ino) when linkable, else (-1, entry)
+	phys          [2]int64 // its file's physical identity (see physOf)
 	state         string   // its file's content state, "" without a row
 	content       int64
+	disposable    bool // its file's classification is disposable (r5c D14)
 	members       []memberRow
 	folders       []arcFolder
-	keyed         []record // its members' keyed records, dir = folder index until spliced
+	keyed         []record           // its members' keyed records, dir = folder index until spliced
+	places        []domain.PlaceSums // its folders' own place sums (final snapshots only)
 }
 
 // memberRow is one archive_members row while its archive loads.
@@ -212,12 +231,13 @@ type arcFolder struct {
 
 // record is a keyed entry before the entries are put in directory order.
 type record struct {
-	dir  int32
-	raw  uint64
-	size int64
+	dir        int32
+	disposable bool // D14 counts it apart (final snapshots only)
+	raw        uint64
+	size       int64
 	// phys places a content entry in an inode group: a linkable file's
-	// (dev, ino, 0); a member's archive identity and its ordinal (from 1).
-	// phys[0] == 0 && phys[1] == 0: in no group.
+	// (device, ino, 0) (see physOf); a member's archive identity and its
+	// ordinal (from 1). phys[0] == 0 && phys[1] == 0: in no group.
 	phys [3]int64
 }
 
@@ -233,11 +253,16 @@ type builder struct {
 	recs   []record
 	links  map[string]uint64
 	inodes map[[2]int64]uint64
+	devs   map[[2]int64]int64 // (source index, dev) -> device number, from 1
+	// classify classifies archive members (r5c D14); nil: none is
+	// disposable.
+	classify classifier
 }
 
-func loadSnapshot(ctx context.Context, q store.Queryer, provisional bool) (*Snapshot, error) {
+func loadSnapshot(ctx context.Context, q store.Queryer, provisional bool, classify classifier) (*Snapshot, error) {
 	b := &builder{s: &Snapshot{provisional: provisional, pathAt: []int{0}}, index: map[int64]int32{},
-		arcAt: map[int64]int32{}, links: map[string]uint64{}, inodes: map[[2]int64]uint64{}}
+		arcAt: map[int64]int32{}, links: map[string]uint64{}, inodes: map[[2]int64]uint64{},
+		devs: map[[2]int64]int64{}, classify: classify}
 	if !provisional {
 		b.s.dups = &dupInputs{}
 	}
@@ -311,12 +336,19 @@ func (b *builder) loadDirs(ctx context.Context, q store.Queryer) error {
 	})
 }
 
-// physOf is a file's physical identity: (dev, ino) when it may share it
+// physOf is a file's physical identity: (device, ino) when it may share it
 // with another name (more than one link on a source with stable identity),
-// else (-1, its entry id).
+// else (-1, its entry id). The device is numbered per source and dev (r5c
+// D3), so two sources that reuse a device number share no hard-link set.
 func (b *builder) physOf(src int32, entry int64, dev, ino, nlink sql.NullInt64) [2]int64 {
 	if b.stable[src] && nlink.Int64 > 1 && dev.Valid && ino.Valid {
-		return [2]int64{dev.Int64, ino.Int64}
+		k := [2]int64{int64(src), dev.Int64}
+		n, ok := b.devs[k]
+		if !ok {
+			n = int64(len(b.devs)) + 1
+			b.devs[k] = n
+		}
+		return [2]int64{n, ino.Int64}
 	}
 	return [2]int64{-1, entry}
 }
@@ -326,7 +358,7 @@ func (b *builder) physOf(src int32, entry int64, dev, ino, nlink sql.NullInt64) 
 // orders each one's folders depth first.
 func (b *builder) loadArchives(ctx context.Context, q store.Queryer) error {
 	err := scanAll(ctx, q, `SELECT a.entry_id, e.parent_id, e.source_id, e.path, e.size, e.dev, e.ino, e.nlink,
-			COALESCE(fc.state, ''), COALESCE(fc.content_id, 0)
+			COALESCE(fc.state, ''), COALESCE(fc.content_id, 0), `+b.disposableColumn()+`
 		FROM archives a JOIN entries e ON e.id = a.entry_id LEFT JOIN file_content fc ON fc.entry_id = a.entry_id
 		WHERE a.state = 'complete' AND e.state = 'present' AND e.parent_id IS NOT NULL AND `+notQuarantinedE+`
 		ORDER BY a.entry_id`,
@@ -334,7 +366,8 @@ func (b *builder) loadArchives(ctx context.Context, q store.Queryer) error {
 			var a archiveRow
 			var src domain.SourceID
 			var dev, ino, nlink sql.NullInt64
-			if err := r.Scan(&a.entry, &a.parent, &src, &a.path, &a.size, &dev, &ino, &nlink, &a.state, &a.content); err != nil {
+			if err := r.Scan(&a.entry, &a.parent, &src, &a.path, &a.size, &dev, &ino, &nlink, &a.state, &a.content,
+				&a.disposable); err != nil {
 				return err
 			}
 			i, ok := b.sourceIndex(src)
@@ -427,6 +460,9 @@ func (b *builder) keyMembers(a *archiveRow) error {
 	if got := len(a.folders) - 1 + len(order); got != len(rows) {
 		return fmt.Errorf("%d of %d members are not below the top level", len(rows)-got, len(rows))
 	}
+	if b.s.dups != nil {
+		a.places = make([]domain.PlaceSums, len(a.folders))
+	}
 
 	for _, p := range order {
 		own := &a.folders[p.folder].sums
@@ -457,6 +493,7 @@ func (b *builder) keyMembers(a *archiveRow) error {
 				own.files++
 				own.gapBytes += rows[p.row].size
 				own.gapRegular++
+				b.placeMember(a, p.folder, rows[p.row].name, rows[p.row].size, "", false) // no content: unchecked
 			}
 		case m.kind == domain.MemberSymlink:
 			if m.linkText == nil {
@@ -472,6 +509,8 @@ func (b *builder) keyMembers(a *archiveRow) error {
 			own.bytes += m.size
 			own.files++
 			raw, keyed, gap := b.memberKey(m)
+			disposable := b.placeMember(a, p.folder, rows[p.row].name, m.size, domain.ContentState(m.state),
+				keyed && raw>>rawShift == uint64(keyContent))
 			switch {
 			case gap:
 				own.gaps++
@@ -482,7 +521,7 @@ func (b *builder) keyMembers(a *archiveRow) error {
 				own.keyed++ // unique: never matches
 			default:
 				own.keyed++
-				r := record{dir: p.folder, raw: raw, size: m.size}
+				r := record{dir: p.folder, disposable: disposable, raw: raw, size: m.size}
 				if raw>>rawShift == uint64(keyContent) {
 					r.phys = [3]int64{a.phys[0], a.phys[1], int64(t) + 1}
 				}
@@ -582,6 +621,9 @@ func (b *builder) order() {
 		s.paths = append(s.paths, path...)
 		s.pathAt = append(s.pathAt, len(s.paths))
 		b.direct = append(b.direct, own)
+		if dd := s.dups; dd != nil {
+			dd.places = append(dd.places, domain.PlaceSums{})
+		}
 		return d
 	}
 	type frame struct {
@@ -652,13 +694,15 @@ func (b *builder) splice(d int32, run [2]int32, src int32) {
 			b.recs = append(b.recs, r)
 		}
 		if dd := s.dups; dd != nil {
+			dd.places = append(dd.places, a.places...)
 			c := int64(0)
 			if domain.ContentState(a.state) == domain.ContentHashed {
 				c = a.content
 			}
-			dd.arcFiles = append(dd.arcFiles, arcFile{dir: d, size: a.size, content: c, phys: a.phys})
+			dd.arcFiles = append(dd.arcFiles, arcFile{dir: d, size: a.size, content: c, phys: a.phys,
+				state: domain.ContentState(a.state), disposable: a.disposable})
 		}
-		a.folders, a.keyed = nil, nil
+		a.folders, a.keyed, a.places = nil, nil, nil
 	}
 }
 
@@ -670,7 +714,7 @@ func (b *builder) loadFiles(ctx context.Context, q store.Queryer) error {
 		s.dups.own = make([]dupOwn, len(s.parent))
 	}
 	return scanAll(ctx, q, `SELECT e.id, e.parent_id, e.kind, e.size, e.dev, e.ino, e.nlink, e.link_text,
-			COALESCE(fc.state, ''), COALESCE(fc.content_id, 0)
+			COALESCE(fc.state, ''), COALESCE(fc.content_id, 0), `+b.disposableColumn()+`
 		FROM entries e LEFT JOIN file_content fc ON fc.entry_id = e.id
 		WHERE e.kind <> 'directory' AND e.state = 'present' AND e.parent_id IS NOT NULL
 			AND `+notQuarantinedE, nil, func(r *sql.Rows) error {
@@ -678,20 +722,23 @@ func (b *builder) loadFiles(ctx context.Context, q store.Queryer) error {
 		var kind, state string
 		var dev, ino, nlink sql.NullInt64
 		var linkText []byte
-		if err := r.Scan(&id, &parent, &kind, &size, &dev, &ino, &nlink, &linkText, &state, &content); err != nil {
+		var disposable bool
+		if err := r.Scan(&id, &parent, &kind, &size, &dev, &ino, &nlink, &linkText, &state, &content, &disposable); err != nil {
 			return err
 		}
 		d, ok := b.index[parent]
 		if !ok {
 			return nil // below a missing folder
 		}
-		b.addFile(d, id, kind, size, dev, ino, nlink, linkText, domain.ContentState(state), content)
+		b.addFile(d, id, kind, size, dev, ino, nlink, linkText, domain.ContentState(state), content, disposable)
 		return nil
 	})
 }
 
+// addFile adds a file entry to directory d. disposable: D14 counts it apart
+// (final snapshots only).
 func (b *builder) addFile(d int32, id int64, kind string, size int64, dev, ino, nlink sql.NullInt64, linkText []byte,
-	state domain.ContentState, content int64) {
+	state domain.ContentState, content int64, disposable bool) {
 	s := b.s
 	regular := kind == string(domain.EntryFile)
 	if regular && size > 0 && s.dups != nil && state != "" {
@@ -709,12 +756,17 @@ func (b *builder) addFile(d int32, id int64, kind string, size int64, dev, ino, 
 	if regular && size == 0 {
 		return // an empty file holds no content
 	}
+	disposable = disposable && regular
+	if regular && s.dups != nil {
+		hashed := state == domain.ContentHashed && content > 0 // placed by its key (entryPlaces)
+		addOwnPlace(&s.dups.places[d], disposable, hashed, state, size)
+	}
 	own := &b.direct[d]
 	if regular {
 		own.bytes += size
 		own.files++
 	}
-	rec := record{dir: d, size: size}
+	rec := record{dir: d, disposable: disposable, size: size}
 	switch {
 	case kind == string(domain.EntrySymlink) && linkText != nil:
 		rec.raw, rec.size = uint64(keyLink)<<rawShift|b.linkKey(linkText), 0
@@ -782,6 +834,12 @@ func (b *builder) finish() *Snapshot {
 		s.eDir[e], s.eSize[e], raws[e] = r.dir, r.size, r.raw
 		if r.phys != ([3]int64{}) {
 			inodes = append(inodes, inodeRow{r.phys, e})
+		}
+		if r.disposable {
+			if s.dups.disposable == nil {
+				s.dups.disposable = make([]bool, ne)
+			}
+			s.dups.disposable[e] = true
 		}
 	}
 	b.recs = nil
@@ -908,17 +966,25 @@ func (b *builder) finish() *Snapshot {
 // countCopies sets each content key's physical copies (design D8): one per
 // inode group among its occurrences, plus each complete archive file of
 // that content (one per physical identity). arcKeys maps the archives'
-// contents to their keys (-1: no entry or member has it).
+// contents to their keys (-1: no entry or member has it). It also sets
+// their sources (r5c D3): an occurrence counts by its directory's source,
+// which for a member is its archive's, and an archive file by its folder's.
 func (s *Snapshot) countCopies(arcKeys map[int64]int32, groups int32) {
 	dd := s.dups
 	dd.copies = make([]int32, len(s.kKind))
+	dd.srcOf = make([]int32, len(s.kKind))
 	seen := make([]int32, groups) // seen[g] == k+1: group g counted for key k
 	for k := range int32(len(s.kKind)) {
 		if s.kKind[k] != keyContent {
 			continue
 		}
 		n := int32(0)
-		for _, e := range s.occOf(k) {
+		occ := s.occOf(k)
+		src := s.src[s.eDir[occ[0]]]
+		for _, e := range occ {
+			if src != multiSource && s.src[s.eDir[e]] != src {
+				src = multiSource
+			}
 			if g := s.eIno[e]; g >= 0 {
 				if seen[g] == k+1 {
 					continue
@@ -928,14 +994,27 @@ func (s *Snapshot) countCopies(arcKeys map[int64]int32, groups int32) {
 			n++
 		}
 		dd.copies[k] = n
+		dd.srcOf[k] = src
 	}
 	if len(arcKeys) == 0 {
 		return
 	}
 	extra := map[int64]int32{} // content -> archive file copies
+	arcSrc := map[int64]int32{}
 	phys := map[[2]int64]bool{}
 	for _, f := range dd.arcFiles {
-		if f.content == 0 || phys[f.phys] {
+		if f.content == 0 {
+			continue
+		}
+		src := s.src[f.dir]
+		if k := arcKeys[f.content]; k >= 0 {
+			dd.srcOf[k] = sameSource(dd.srcOf[k], src)
+		} else if old, ok := arcSrc[f.content]; ok {
+			arcSrc[f.content] = sameSource(old, src)
+		} else {
+			arcSrc[f.content] = src
+		}
+		if phys[f.phys] {
 			continue
 		}
 		phys[f.phys] = true
@@ -948,6 +1027,7 @@ func (s *Snapshot) countCopies(arcKeys map[int64]int32, groups int32) {
 	}
 	dd.arcExtra = extra
 	dd.arcKeys = arcKeys
+	dd.arcSrc = arcSrc
 }
 
 // addTop inserts key k into directory d's three largest keys (by bytes,
