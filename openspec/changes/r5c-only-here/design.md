@@ -627,3 +627,15 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
     - **"Everything has a copy on another source" did not fit** the 12rem column. It now reads "All also on another source".
     - **The note link's accessible name did not contain its visible text** (WCAG 2.5.3). Its name is now the visible text, and the full-path sentence is its description (`title`).
   - **Remaining limit:** on file rows with a long name, a copy on an unconnected source, and "+N more", the words "Also at" can disappear at 1366 px. The tooltip and the description keep the full sentence.
+- **A17. Relate pass speed on real data** (task 6.2). On a quiet machine the first measurements read 83.4 s for r5b against 139.3 s for this change (+67%). Earlier runs had been taken under load, which hid this.
+  - **Profile, one pass in-process:** writing the new tables (432,799 rows in random key order, 864 commits) took 16 s. Classifying 3.28 million members took 1.8 s of CPU, one member at a time. The rest was unchanged.
+  - **The fix:**
+    - `writeFigures` (`dir_dups` and the three places tables) now writes in key order, in batches of `figureBatch` = 5,000 rows, against D4's 500;
+    - members are classified on all CPUs before they are processed; a tar link member is still classified by its own name and its target's size.
+  - **After the fix, in-process:** the first pass takes 1.04× r5b's time and a second pass 1.06×.
+  - **After the fix, server runs** (4 interleaved pairs, noisy because the startup jobs compete): the first pass takes 0.99× (133.8 s against 135.8 s), and a second pass 1.02×. Peak memory is 2.0–2.34 GB, against 2.36–2.54 GB for r5b.
+  - **No figure changed:** the independent count matched all 157,686 `entry_places`, 256,491 `member_places`, and 18,622 `archive_places` rows on the final build.
+  - **Final build in a browser,** on the copy:
+    - the disk's root and folders open in 0.1–0.25 s;
+    - the 31,163-file folder opens in 0.84–0.86 s with sort or hide, its API page answering in 0.37 s;
+    - the 567,623-member archive opens in 2.8 s.

@@ -245,7 +245,7 @@
   - builds for linux, darwin, and windows on amd64 and arm64.
 
   Fix anything that fails, on its owning slice's terms.
-- [ ] 6.2 Smoke-test the built binary, running as a non-root user, on a copy of the reference server's database:
+- [x] 6.2 Smoke-test the built binary, running as a non-root user, on a copy of the reference server's database:
   - **Baseline:** on one version-8 copy, force `review_state.dirty = 1`, and time the previous binary's pass and its peak memory.
   - **The new pass:** on a second copy, start the new binary. Time the migration and its startup pass; they must stay within 15% of the baseline in time and memory. Record both in the Addendum.
   - **Check the figures:** the external disk's root `places` must equal a throwaway read-only count by D1, D5, and D14, kept out of the repository.
@@ -255,6 +255,6 @@
     - an archive;
     - a Compare link;
     - the panel.
-- [ ] 6.3 Independent reviews of the change. Fix each finding with a test that fails before the fix, and record the findings in the Addendum.
+- [x] 6.3 Independent reviews of the change. Fix each finding with a test that fails before the fix, and record the findings in the Addendum.
 - [ ] 6.4 Open a PR, wait for CI, then deploy to the test server: back up the database and keep the previous binary (design Migration Plan).
 - [ ] 6.5 The owner checks the mode in his browser on his sources and signs off. Record the sign-off in the design Addendum and set ADR 0013 to accepted.
