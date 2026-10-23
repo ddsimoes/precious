@@ -307,7 +307,7 @@ describe('Map Only here mode', () => {
     expect(rowOf('foto.jpg')).toHaveTextContent('+1 more')
 
     const member = within(rowOf('nota.txt')).getByRole('link', {
-      name: 'Also inside Arquivo/backup.tar.gz (docs/nota.txt)',
+      name: 'Also inside Arquivo/backup.tar.gz › docs/nota.txt',
     })
     expect(member).toHaveAttribute('href', '/map/1?places=1&entry=m456')
 
@@ -541,7 +541,7 @@ describe('Map Only here figures and names that read plainly', () => {
     await table()
 
     expect(
-      within(rowOf('nota2.txt')).getByRole('link', { name: 'Also inside Importante!/backup.zip (docs/nota2.txt)' }),
+      within(rowOf('nota2.txt')).getByRole('link', { name: 'Also inside Importante!/backup.zip › docs/nota2.txt' }),
     ).toHaveAttribute('href', '/map/1?places=1&entry=m457')
   })
 
@@ -591,7 +591,7 @@ describe('Map Only here figures and names that read plainly', () => {
     ).toHaveAttribute('href', '/map/63?places=1&entry=64')
   })
 
-  it('keeps qualifiers and the other source whole, and cuts long paths from their start', async () => {
+  it('keeps qualifiers and the other source whole, and lets names give way on a line that never wraps', async () => {
     stubApi(routes())
     renderApp('/map/1?places=1')
     await table()
@@ -602,14 +602,75 @@ describe('Map Only here figures and names that read plainly', () => {
     expect(musicaPlace.getByText('(the other source is not connected)')).toHaveClass('shrink-0')
     const copiadaPlace = within(cellOf('Copiada', 'Where copies are'))
     expect(copiadaPlace.getByText('apart from 3 disposable files')).toHaveClass('shrink-0')
-    // So is the other copy's source, under the name; its path gives way
-    // from the start, as the location line's does.
-    const musica = within(rowOf('musica.mp3'))
-    expect(musica.getByText('on Old disk')).toHaveClass('shrink-0')
-    expect(musica.getByText('Musica/musica.mp3').closest('[dir="rtl"]')).toHaveClass('truncate')
-    const copiada = within(rowOf('Copiada'))
-    expect(copiada.getByText('on Backup disk')).toHaveClass('shrink-0')
-    expect(copiada.getByText('Fotos 2004').closest('[dir="rtl"]')).toHaveClass('truncate')
+    // So is the other copy's source, under the name, and what follows the
+    // note on its line; the name of the other copy gives way, and the
+    // note's link clips what still does not fit, so that nothing draws over
+    // what follows it.
+    for (const [row, path, source] of [
+      ['musica.mp3', 'Musica/musica.mp3', 'on Old disk'],
+      ['Copiada', 'Fotos 2004', 'on Backup disk'],
+    ] as const) {
+      const shown = within(rowOf(row)).getByText(path)
+      expect(shown).toHaveClass('min-w-0', 'truncate')
+      const link = shown.closest('a')
+      expect(link).toHaveClass('flex', 'min-w-0', 'overflow-hidden')
+      expect(within(link!).getByText(source)).toHaveClass('shrink-0')
+      expect(link?.parentElement).toHaveClass('flex', 'min-w-0', 'whitespace-nowrap')
+    }
+    const offline = within(rowOf('musica.mp3')).getByText('(not connected)')
+    expect(offline).toHaveClass('shrink-0')
+    expect(offline.parentElement).toBe(within(rowOf('musica.mp3')).getByText('Musica/musica.mp3').closest('a')?.parentElement)
+  })
+
+  it('shows another copy by its last names, with its whole path in the tooltip and the accessible name', async () => {
+    const funda = file('31', 'funda.jpg', {
+      place: 'this_source',
+      other_copy: otherCopy('41', 'Fotos/2004/Praia/funda.jpg'),
+    })
+    const ponto = file('32', '86160', {
+      place: 'this_source',
+      other_copy: otherCopy('m458', 'Backups/2010/CT00075209.zip!gps/PONTO/86160', {
+        archive_id: '47',
+        archive_path: 'Backups/2010/CT00075209.zip',
+        member_path: 'gps/PONTO/86160',
+      }),
+    })
+    const coberta = placed(folderRow('16', 'Coberta'), {
+      place: 'other_source',
+      places: sums({ other_source: 1 * GiB }),
+      covered_by: {
+        kind: 'inside',
+        other: { id: '323', source_id: 'fotos', path: 'Arquivo/2004/Tudo', path_b64: btoa('Arquivo/2004/Tudo') },
+      },
+    })
+    stubApi(routes({ children: [coberta, funda, ponto] }))
+    renderApp('/map/1?places=1')
+    await table()
+
+    // A loose copy shows its folder's name and its own.
+    const loose = within(rowOf('funda.jpg')).getByRole('link', { name: 'Also at Fotos/2004/Praia/funda.jpg' })
+    expect(loose).toHaveTextContent(/^Also at Praia\/funda\.jpg$/)
+    expect(within(loose).getByText('Praia/funda.jpg')).toHaveAttribute('title', 'Fotos/2004/Praia/funda.jpg')
+
+    // A member copy shows its archive's file name and its own.
+    const member = within(rowOf('86160')).getByRole('link', {
+      name: 'Also inside Backups/2010/CT00075209.zip › gps/PONTO/86160',
+    })
+    expect(member).toHaveTextContent(/^Also inside CT00075209\.zip › 86160$/)
+    expect(within(member).getByText('CT00075209.zip › 86160')).toHaveAttribute(
+      'title',
+      'Backups/2010/CT00075209.zip › gps/PONTO/86160',
+    )
+
+    // The folder holding a folder's content shows its parent's name and its
+    // own; Compare, beside it on the same line, never shrinks.
+    const covering = within(rowOf('Coberta')).getByRole('link', { name: 'Everything in it is also in Arquivo/2004/Tudo' })
+    expect(covering).toHaveTextContent(/^Everything in it is also in 2004\/Tudo$/)
+    expect(within(covering).getByText('2004/Tudo')).toHaveAttribute('title', 'Arquivo/2004/Tudo')
+    const compare = within(rowOf('Coberta')).getByRole('link', { name: 'Compare Coberta with Arquivo/2004/Tudo' })
+    expect(compare).toHaveClass('shrink-0')
+    expect(compare.parentElement).toBe(covering.parentElement)
+    expect(covering).toHaveClass('min-w-0', 'overflow-hidden')
   })
 
   it('says next to the hide option that it hides empty items and system files too', async () => {
@@ -777,7 +838,7 @@ describe('Map Only here column in a narrow card', () => {
 
   const headers = () => screen.getAllByRole('columnheader').map((header) => header.textContent)
 
-  it('gives the place column its own wide track', async () => {
+  it('gives the place column its own track, and the name, which has a second line, the most room', async () => {
     stubApi(routes())
     width = 100 * 16
     renderApp('/map/1?places=1')
@@ -795,7 +856,8 @@ describe('Map Only here column in a narrow card', () => {
       ]),
     )
     const tracks = screen.getAllByRole('row')[0]?.style.gridTemplateColumns.split(/ (?![^(]*\))/)
-    expect(tracks?.[5]).toBe('minmax(12rem, 2fr)')
+    expect(tracks?.[0]).toBe('minmax(13rem, 3fr)')
+    expect(tracks?.[5]).toBe('minmax(12rem, 1fr)')
   })
 
   it('hides Files before the place column', async () => {

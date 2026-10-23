@@ -13,7 +13,7 @@ import {
   type Ref,
   type UIEvent,
 } from 'react'
-import { Trans, useTranslation } from 'react-i18next'
+import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, type To } from 'react-router'
 
 import {
@@ -223,26 +223,99 @@ const emphasisStyles: Record<Emphasis, { tint?: string; rest: string }> = {
   unknown: { rest: `${barBase} before:border-l-2 before:border-dashed before:border-muted-foreground` },
 }
 
-// NotePath is a path on the line under a name. When it does not fit it is
-// cut from its start, as the location line is, so that its file name stays.
-function NotePath({ text }: { text: string }) {
-  return (
-    <span dir="rtl" title={text} className="min-w-0 truncate text-left">
-      <bdi dir="ltr">{text}</bdi>
-    </span>
-  )
+// pathEnd is the end of a path: its last `names` names.
+function pathEnd(path: string, names: number): string {
+  return path.split('/').slice(-names).join('/')
 }
 
-// NoteSource names the source of another copy, whole: it never shrinks.
-function NoteSource({ source }: { source: string }) {
+// NotePath is a path named on the line under a name: shown by its end,
+// which tells the copy apart, and whole in its tooltip and in the note's
+// accessible name.
+interface NotePath {
+  shown: string
+  full: string
+}
+
+type NoteKey =
+  | `map.places.copy.${'at' | 'inside' | 'viaArchive'}${'' | 'On'}`
+  | `map.places.covered.${'same' | 'inside'}${'' | 'On'}`
+
+// noteTag splits a note's sentence around its pieces: <path/>, <on/>, and
+// <archive/>.
+const noteTag = /(<(?:path|on|archive)\/>)/
+
+const stopPropagation = (event: { stopPropagation: () => void }) => event.stopPropagation()
+
+// NoteLink is the link of a note under a name, its sentence laid out piece
+// by piece, which Trans cannot do for the words between the pieces. The
+// names give way first, cut at their end; then the words, cut with an
+// ellipsis; the other copy's source never shrinks. The link clips what
+// still does not fit, so that it never draws over what follows it on the
+// line. Its accessible name says the whole paths.
+function NoteLink({
+  to,
+  i18nKey,
+  path,
+  source,
+  archive = '',
+}: {
+  to: To
+  i18nKey: NoteKey
+  path: NotePath
+  source: string
+  archive?: string
+}) {
   const { t } = useTranslation()
-  return <span className="shrink-0">{t('map.places.copy.on', { source })}</span>
+  const on = t('map.places.copy.on', { source })
+  const parts = t(i18nKey).split(noteTag)
+  const whole: Record<string, string> = { '<path/>': path.full, '<on/>': on, '<archive/>': archive }
+  return (
+    <Link
+      to={to}
+      aria-label={parts.map((part) => whole[part] ?? part).join('')}
+      className="flex min-w-0 gap-1 overflow-hidden hover:underline"
+      onClick={stopPropagation}
+    >
+      {parts.map((part, i) => {
+        switch (part) {
+          case '<path/>':
+            return (
+              <span key={i} title={path.full} className="min-w-0 truncate">
+                {path.shown}
+              </span>
+            )
+          case '<archive/>':
+            return (
+              <span key={i} title={archive} className="min-w-0 truncate">
+                {archive}
+              </span>
+            )
+          case '<on/>':
+            return (
+              <span key={i} className="shrink-0">
+                {on}
+              </span>
+            )
+          default:
+            // The spaces stay in the text, for copying; the gap draws them.
+            return part.trim() === '' ? (
+              part
+            ) : (
+              <span key={i} className="max-w-full shrink-0 truncate">
+                {part}
+              </span>
+            )
+        }
+      })}
+    </Link>
+  )
 }
 
 // PlaceNote names, on the line under the name, another copy of a file or
 // member (other_copy), or the folder or archive holding all of a folder's
 // content (covered_by) with a link to Compare the two (R5c design D9). The
-// paths give way first; the source and the notes after them stay whole.
+// line never wraps: the note's link gives way to what follows it, which
+// stays whole beside it.
 function PlaceNote({ entry, name }: { entry: EntryRow; name: string }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -250,47 +323,45 @@ function PlaceNote({ entry, name }: { entry: EntryRow; name: string }) {
   if (!places) {
     return null
   }
-  const stop = (event: { stopPropagation: () => void }) => event.stopPropagation()
+  const line = 'flex min-w-0 items-baseline gap-1 whitespace-nowrap text-xs text-muted-foreground'
   const copy = entry.other_copy
   if (copy !== undefined && copy !== null) {
     const on = copy.source_id !== entry.source_id ? 'On' : ''
-    // A member copy's path is its archive's, then its own inside it.
-    const path =
+    // A loose copy shows its folder's name and its own; a member copy its
+    // archive's file name and its own, with their whole paths behind.
+    const path: NotePath =
       copy.archive_id === null
-        ? copy.path
-        : t('map.places.copy.member', { archive: copy.archive_path, member: copy.member_path })
-    const components = {
-      path: <NotePath text={path} />,
-      on: <NoteSource source={sourceLabel(copy.source_id)} />,
-    }
-    let sentence
+        ? { shown: pathEnd(copy.path, 2), full: copy.path }
+        : {
+            shown: t('map.places.copy.member', {
+              archive: pathEnd(copy.archive_path, 1),
+              member: pathEnd(copy.member_path, 1),
+            }),
+            full: t('map.places.copy.member', { archive: copy.archive_path, member: copy.member_path }),
+          }
+    let key: NoteKey = `map.places.copy.${copy.archive_id === null ? 'at' : 'inside'}${on}`
+    let archive: string | undefined
     if (copy.via_archive) {
       // The member's own archive has the copy named; it is named by its
       // own name, or else by the name of its copy.
-      const copyPath = copy.archive_id === null ? copy.path : copy.member_path
-      const archive =
+      key = `map.places.copy.viaArchive${on}`
+      archive =
         (entry.archive_id === null ? undefined : archiveName(entry.archive_id)) ??
-        copyPath.slice(copyPath.lastIndexOf('/') + 1)
-      sentence = (
-        <Trans
-          i18nKey={`map.places.copy.viaArchive${on}`}
-          components={{ ...components, archive: <span className="min-w-0 truncate">{archive}</span> }}
-        />
-      )
-    } else {
-      sentence = (
-        <Trans i18nKey={`map.places.copy.${copy.archive_id === null ? 'at' : 'inside'}${on}`} components={components} />
-      )
+        pathEnd(copy.archive_id === null ? copy.path : copy.member_path, 1)
     }
     const extra = [
       ...(copy.offline ? [t('map.places.copy.offline')] : []),
       ...(copy.more > 0 ? [t('map.places.copy.more', { formatted: fmt.count(copy.more) })] : []),
     ].join(' ')
     return (
-      <span className="flex min-w-0 gap-1 text-xs text-muted-foreground">
-        <Link to={{ search: entryLink(copy.ref) }} className="flex min-w-0 gap-1 hover:underline" onClick={stop}>
-          {sentence}
-        </Link>{' '}
+      <span className={line}>
+        <NoteLink
+          to={{ search: entryLink(copy.ref) }}
+          i18nKey={key}
+          path={path}
+          source={sourceLabel(copy.source_id)}
+          archive={archive}
+        />{' '}
         {extra !== '' && <span className="shrink-0">{extra}</span>}
       </span>
     )
@@ -301,21 +372,18 @@ function PlaceNote({ entry, name }: { entry: EntryRow; name: string }) {
   }
   const on = covered.other.source_id !== entry.source_id ? 'On' : ''
   return (
-    <span className="flex min-w-0 gap-2 text-xs text-muted-foreground">
-      <Link to={{ search: entryLink(covered.other.id) }} className="flex min-w-0 gap-1 hover:underline" onClick={stop}>
-        <Trans
-          i18nKey={`map.places.covered.${covered.kind}${on}`}
-          components={{
-            path: <NotePath text={covered.other.path} />,
-            on: <NoteSource source={sourceLabel(covered.other.source_id)} />,
-          }}
-        />
-      </Link>{' '}
+    <span className={line}>
+      <NoteLink
+        to={{ search: entryLink(covered.other.id) }}
+        i18nKey={`map.places.covered.${covered.kind}${on}`}
+        path={{ shown: pathEnd(covered.other.path, 2), full: covered.other.path }}
+        source={sourceLabel(covered.other.source_id)}
+      />{' '}
       <Link
         to={{ pathname: '/compare', search: `?${new URLSearchParams({ left: entry.id, right: covered.other.id })}` }}
         aria-label={t('map.places.covered.compareLabel', { name, path: covered.other.path })}
         className="shrink-0 text-primary underline"
-        onClick={stop}
+        onClick={stopPropagation}
       >
         {t('map.places.covered.compare')}
       </Link>
@@ -345,30 +413,28 @@ function NameCell({ row }: CellProps) {
       </span>
     )
   }
+  // The lines under the name run under Details too, which leaves them the
+  // cell's width but the icon's.
   return (
-    <span className="flex min-w-0 items-center gap-1">
+    <span className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1">
       {entry.kind === 'directory' ? (
-        <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4 shrink-0 fill-amber-400">
+        <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4 fill-amber-400">
           <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.6l1.5 1.5h5.9A1.5 1.5 0 0 1 15 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5z" />
         </svg>
       ) : (
         // An archive Precious read completely opens as a folder.
-        <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4 shrink-0 fill-amber-700">
+        <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4 fill-amber-700">
           <path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5zM7 2v2h2V2zm0 3v2h2V5zm0 3v2h2V8z" />
         </svg>
       )}
-      <span className="grid min-w-0">
-        <Link
-          to={folderLink(entry)}
-          className={cn('truncate font-medium text-primary hover:underline', bold)}
-          onClick={(event) => event.stopPropagation()}
-        >
-          {name}
-        </Link>
-        <LocationLine entry={entry} />
-        <PlaceNote entry={entry} name={name} />
-      </span>
-      <Button asChild variant="ghost" size="sm" className="ml-auto h-6 shrink-0 px-2 text-xs text-muted-foreground">
+      <Link
+        to={folderLink(entry)}
+        className={cn('truncate font-medium text-primary hover:underline', bold)}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {name}
+      </Link>
+      <Button asChild variant="ghost" size="sm" className="h-6 px-2 text-xs text-muted-foreground">
         <Link
           to={{ search: entryLink(entry.id) }}
           aria-label={t('map.showDetails', { name })}
@@ -377,6 +443,10 @@ function NameCell({ row }: CellProps) {
           {t('detail.label')}
         </Link>
       </Button>
+      <span className="col-span-2 col-start-2 grid min-w-0">
+        <LocationLine entry={entry} />
+        <PlaceNote entry={entry} name={name} />
+      </span>
     </span>
   )
 }
@@ -638,19 +708,30 @@ function isColumnId(id: string | undefined): id is ColumnId {
 // then Has copies, then Files; name, size, and type or category always
 // stay. In the Only here mode, Where copies are, which the mode is about,
 // always stays too, and type or category hides last (placesHide), so that
-// every row states its place in words.
-const columnLayout: Record<ColumnId, { track: string; min: number; hide?: number; placesHide?: number }> = {
+// every row states its place in words. The mode's own tracks (places) give
+// the name, which carries the other copy on its second line, the room the
+// place's words and type or category leave.
+interface ColumnTrack {
+  track: string
+  min: number
+}
+const columnLayout: Record<ColumnId, ColumnTrack & { hide?: number; placesHide?: number; places?: ColumnTrack }> = {
   select: { track: '2rem', min: 2 },
-  name: { track: 'minmax(12rem, 1.5fr)', min: 12 },
-  size: { track: '6rem', min: 6 },
-  files: { track: '5rem', min: 5, hide: 5 },
-  kind: { track: 'minmax(9rem, 2fr)', min: 9, placesHide: 6 },
+  name: { track: 'minmax(12rem, 1.5fr)', min: 12, places: { track: 'minmax(13rem, 3fr)', min: 13 } },
+  size: { track: '6rem', min: 6, places: { track: '5.5rem', min: 5.5 } },
+  files: { track: '5rem', min: 5, hide: 5, places: { track: '4.5rem', min: 4.5 } },
+  kind: { track: 'minmax(9rem, 2fr)', min: 9, placesHide: 6, places: { track: 'minmax(7rem, 1fr)', min: 7 } },
   dates: { track: 'minmax(9rem, 1.5fr)', min: 9, hide: 1 },
   duplicated: { track: '6rem', min: 6, hide: 4 },
-  place: { track: 'minmax(12rem, 2fr)', min: 12 },
+  place: { track: 'minmax(12rem, 1fr)', min: 12 },
   triage: { track: '6rem', min: 6, hide: 2 },
   decision: { track: '9rem', min: 9, hide: 3 },
 }
+
+function columnTrack(id: ColumnId, places: boolean): ColumnTrack {
+  return (places ? columnLayout[id].places : undefined) ?? columnLayout[id]
+}
+
 // A row's column gap and side padding (gap-2, px-3), in rem.
 const columnGap = 0.5
 const rowPadding = 1.5
@@ -664,8 +745,8 @@ const columnSorts: Partial<Record<ColumnId, ChildSort>> = {
 }
 
 // rowWidth is the narrowest width, in rem, of a row of the columns ids.
-function rowWidth(ids: ColumnId[]): number {
-  return ids.reduce((sum, id) => sum + columnLayout[id].min, 0) + columnGap * (ids.length - 1) + rowPadding
+function rowWidth(ids: ColumnId[], places: boolean): number {
+  return ids.reduce((sum, id) => sum + columnTrack(id, places).min, 0) + columnGap * (ids.length - 1) + rowPadding
 }
 
 // visibleColumns drops columns in their hide order, that of the Only here
@@ -677,7 +758,7 @@ function visibleColumns(ids: ColumnId[], width: number | null, places: boolean):
   const hideOrder = ids.filter((id) => rank(id) !== undefined).sort((a, b) => (rank(a) ?? 0) - (rank(b) ?? 0))
   let visible = ids
   for (const id of hideOrder) {
-    if (width === null || rowWidth(visible) <= width) {
+    if (width === null || rowWidth(visible, places) <= width) {
       break
     }
     visible = visible.filter((v) => v !== id)
@@ -758,10 +839,10 @@ export function EntryTable({
 
   const table = useTable({ features, columns, data: rows, getRowId: (row) => row.id })
   const tableRows = table.getRowModel().rows
-  const gridColumns = columnIds.map((id) => columnLayout[id].track).join(' ')
+  const gridColumns = columnIds.map((id) => columnTrack(id, places).track).join(' ')
   // Header and rows share one narrowest width, so a table that still does
   // not fit scrolls sideways with its header aligned.
-  const minWidth = `${rowWidth(columnIds)}rem`
+  const minWidth = `${rowWidth(columnIds, places)}rem`
   const scrollHeader = (event: UIEvent<HTMLDivElement>) => {
     if (headerRef.current !== null) {
       headerRef.current.scrollLeft = event.currentTarget.scrollLeft

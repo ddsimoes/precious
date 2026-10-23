@@ -685,8 +685,8 @@ export const en = {
         atOn: 'Also at <path/> <on/>',
         inside: 'Also inside <path/>',
         insideOn: 'Also inside <path/> <on/>',
-        // The path of a member copy: its archive's, then its own inside.
-        member: '{{archive}} ({{member}})',
+        // A member copy: its archive, then the member inside it.
+        member: '{{archive}} › {{member}}',
         viaArchive: 'Inside a copy of <archive/> at <path/>',
         viaArchiveOn: 'Inside a copy of <archive/> at <path/> <on/>',
         on: 'on {{source}}',
