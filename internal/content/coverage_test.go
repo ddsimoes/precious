@@ -205,3 +205,33 @@ func TestCoverageSkipsSourceRemovedMeanwhile(t *testing.T) {
 		t.Errorf("coverage %v; want %v", sortedCov(got), sortedCov(want))
 	}
 }
+
+// The aggregate is the read snapshot's: a change without deltas committed
+// after it, a file marked missing, stays out of the figures until the next
+// plan repairs them (r5d design D1).
+func TestCoverageDriftIsTheSnapshots(t *testing.T) {
+	e := coverageWorld(t)
+	id := e.id("fotos", "b/a.jpg")
+	e.svc.coverageRead = func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.st.Write(ctx, func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE entries SET state = 'missing' WHERE id = ?`, int64(id))
+			return err
+		}); err != nil {
+			t.Errorf("mark b/a.jpg missing: %v", err)
+		}
+	}
+	if _, err := e.svc.plan(context.Background(), &fakeRuntime{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.coverage("fotos"); c.CandidateFiles != 2 || c.CandidateBytes != 14000 || c.UncheckedFiles != 2 ||
+		c.UncheckedBytes != 14000 {
+		t.Errorf("coverage %+v; want the snapshot's two unchecked candidates", c)
+	}
+	e.svc.coverageRead = nil
+	e.plan() // checks the figures against a direct GROUP BY of the rows
+	if c := e.coverage("fotos"); c.CandidateFiles == 2 {
+		t.Errorf("coverage %+v; the next plan did not drop the missing file", c)
+	}
+}
