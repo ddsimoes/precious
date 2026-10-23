@@ -149,19 +149,20 @@ export interface PlaceSums {
 
 // OtherCopy names one copy of a file or member placed this_source or
 // other_source (R5c design D9). ref is an entry ID or a member's "m<id>";
-// archive_id is a member's archive. via_archive marks a member's copy named
-// through its archive's coverage (D6); more is the number of other copies
-// beyond the two the row and this copy make.
-export interface OtherCopy {
+// archive_id is a member's archive, and then archive_path and member_path
+// split its path into the archive's display path and its path inside the
+// archive, which no '!' in path can tell apart. via_archive marks a
+// member's copy named through its archive's coverage (D6); more is the
+// number of other copies beyond the two the row and this copy make.
+export type OtherCopy = {
   ref: string
   source_id: string
   path: string
   path_b64: string
-  archive_id: string | null
   offline: boolean
   via_archive: boolean
   more: number
-}
+} & ({ archive_id: null } | { archive_id: string; archive_path: string; member_path: string })
 
 // CoveredBy is the folder or archive that holds the most of a folder's or
 // complete archive's content (R5c design D9).
@@ -227,8 +228,8 @@ export interface EntryRow {
   // not connected; disposable is set for disposable files. places are the
   // sums of a folder, complete archive (its split), or member folder, and
   // null otherwise. member_places are a complete archive's unpacked member
-  // sums, on the entry of the entry and treemap responses only. other_copy
-  // and covered_by come on children rows only.
+  // sums, on the entry of the entry response only. other_copy and
+  // covered_by come on children rows only.
   place?: Place | null
   place_offline?: boolean
   disposable?: boolean

@@ -146,6 +146,14 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
   const parent = ancestors.at(-1)
   const archiveName = ancestors.find((a) => a.id === entry.archive_id)?.name ?? entry.archive_id ?? ''
   const duplication = folder ? duplicationOf(entry) : null
+  // Where copies are (R5c design D8), only in the Map's Only here mode: a
+  // folder's figures, or a complete archive's members' unpacked sizes
+  // (D5). A missing or quarantined entry has no place.
+  const placesShown = entry.place !== undefined && entry.place !== null && (folder || listed)
+  // The checked share every claim of no other copy carries (I7) is stated
+  // once, under the first section that makes one.
+  const copiesCoverage = placesShown ? null : detail.coverage
+  const relationsCoverage = placesShown || detail.content !== null ? null : detail.coverage
   const date = (time: string | null) => (time === null ? t('detail.unknownDate') : fmt.dateTime(time))
 
   const byKind = [...(stats?.by_kind ?? [])]
@@ -312,14 +320,11 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
         quarantined === null &&
         entry.state !== 'missing' && <DatesSection key={entry.id} entry={entry} />}
 
-      {/* Where copies are (R5c design D8), only in the Map's Only here
-          mode: a folder's figures, or a complete archive's members'
-          unpacked sizes (D5). A missing or quarantined entry has no place. */}
-      {entry.place !== undefined && entry.place !== null && (folder || listed) && (
+      {placesShown && (
         <Section title={t('detail.places.title')}>
           <FolderPlaces
-            sums={(listed ? entry.member_places : entry.places) ?? null}
-            unpacked={listed}
+            entry={entry}
+            listed={listed}
             updating={detail.places_updating === true}
             coverage={detail.coverage}
           />
@@ -327,7 +332,7 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       )}
       {detail.content !== null && (
         <Section title={t('detail.copies')}>
-          <CopiesSection entry={entry} content={detail.content} coverage={detail.coverage} />
+          <CopiesSection entry={entry} content={detail.content} coverage={copiesCoverage} />
         </Section>
       )}
       {detail.content === null && filePlaced(entry) && (
@@ -347,7 +352,7 @@ function DetailBody({ detail }: { detail: EntryDetail }) {
       )}
       {drillable && (
         <Section title={t('detail.relations')}>
-          <RelationsSection entry={entry} relations={detail.relations} coverage={detail.coverage} />
+          <RelationsSection entry={entry} relations={detail.relations} coverage={relationsCoverage} />
         </Section>
       )}
 

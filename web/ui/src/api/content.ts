@@ -26,6 +26,14 @@ export function checkedShare(coverage: Coverage): number {
   return coverage.candidate.bytes === 0 ? 1 : coverage.checked.bytes / coverage.candidate.bytes
 }
 
+// claimedShare is the checked share as a claim states it (R5c design D8):
+// at most 0.99 while some candidate bytes are not checked, so that a share
+// not yet whole never reads 100%.
+export function claimedShare(coverage: Coverage): number {
+  const share = checkedShare(coverage)
+  return share < 1 ? Math.min(share, 0.99) : 1
+}
+
 // Copy is CopyJSON: one copy of a content. ref is an entry ID, or "m<id>"
 // for a member of an archive, whose archive_id is then set. decision is the
 // copy's own decision, null when it follows its folder (always for a
