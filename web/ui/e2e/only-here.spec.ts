@@ -180,7 +180,7 @@ test('the mode stays on through drilling and a reload', async () => {
     for (const path of photos.from) {
       const row = rowOf(table, basename(path))
       await expect(await placeCell(table, row), path).toHaveText(en.map.places.file.other_source)
-      const named = fill(en.map.places.copy.atOn, { path, source: corpusSource.label })
+      const named = noteName(en.map.places.copy.atOn, path, corpusSource.label)
       await expect(row.getByRole('link', { name: named, exact: true }), path).toBeVisible()
       if (path === again.from) {
         await expect(row, path).toContainText(fill(en.map.places.copy.more, { formatted: '1' }))
@@ -232,7 +232,7 @@ test('inside an archive, members show their places and the totals their unpacked
   const inside = page.getByRole('table', { name: 'Contents of ferias' })
   const filmRow = rowOf(inside, 'video.mp4')
   await expect(await placeCell(inside, filmRow)).toHaveText(fill(en.map.places.file.this_source, { formatted: '2' }))
-  await expect(filmRow.getByRole('link', { name: fill(en.map.places.copy.at, { path: video }), exact: true })).toBeVisible()
+  await expect(filmRow.getByRole('link', { name: noteName(en.map.places.copy.at, video), exact: true })).toBeVisible()
 })
 
 test('hiding what is safe elsewhere lists only the folder with an only copy, and drilling keeps it hidden', async () => {
@@ -299,10 +299,13 @@ test('a copy on the same source: the row names one of the other two and says the
   const row = rowOf(table, 'DSC00104.JPG')
   await expect(await placeCell(table, row)).toHaveText(fill(en.map.places.file.this_source, { formatted: '3' }))
   await expect(row).toContainText(fill(en.map.places.copy.more, { formatted: '1' }))
-  const note = row.getByRole('link', { name: /^Also at / })
-  const noteText = (await note.textContent()) ?? ''
-  const named = others.find((p) => noteText === fill(en.map.places.copy.at, { path: p }))
-  expect(named, 'the row names one of the other copies').toBeDefined()
+  // The row names one of the two, by its accessible name.
+  await expect(row.getByRole('link', { name: /^Also at / })).toBeVisible()
+  const notes = others.map((p) => row.getByRole('link', { name: noteName(en.map.places.copy.at, p), exact: true }))
+  const shown = await Promise.all(notes.map((n) => n.count()))
+  expect(shown.toSorted(), 'the row names exactly one of the other copies').toEqual([0, 1])
+  const named = others[shown.indexOf(1)]
+  const note = notes[shown.indexOf(1)] ?? row
 
   // The link opens the copy it names.
   await note.click()
@@ -327,7 +330,7 @@ test('a copy inside an archive: the row says it is also inside the tar.gz, namin
   const row = rowOf(table, 'contato.php')
   await expect(await placeCell(table, row)).toHaveText(fill(en.map.places.file.this_source, { formatted: '2' }))
   const note = row.getByRole('link', {
-    name: fill(en.map.places.copy.inside, { archive, member: 'contato.php' }),
+    name: noteName(en.map.places.copy.inside, fill(en.map.places.copy.member, { archive, member: 'contato.php' })),
     exact: true,
   })
   await expect(note).toBeVisible()
@@ -345,7 +348,7 @@ test('a folder copied whole names the folder it equals, and its Compare link ope
   const row = rowOf(table, folder.to)
   await expect(
     row.getByRole('link', {
-      name: fill(en.map.places.covered.sameOn, { path: folder.from, source: corpusSource.label }),
+      name: noteName(en.map.places.covered.sameOn, folder.from, corpusSource.label),
       exact: true,
     }),
   ).toBeVisible()
@@ -442,6 +445,12 @@ async function placeCell(table: Locator, row: Locator): Promise<Locator> {
 
 function basename(path: string): string {
   return path.split('/').at(-1) ?? ''
+}
+
+// noteName is the accessible name of a note naming another copy or folder:
+// template's <path/> is path, and its <on/> names source.
+function noteName(template: string, path: string, source = ''): string {
+  return template.replace('<path/>', path).replace('<on/>', fill(en.map.places.copy.on, { source }))
 }
 
 // fill puts values into a catalog template's {{name}} placeholders.
