@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"precious/internal/domain"
+	"precious/internal/fsaccess"
 	"precious/internal/index/indextest"
 	"precious/internal/jobs"
 	"precious/internal/store/storetest"
@@ -15,7 +16,8 @@ import (
 // R5c task 2.1, design D13: entry_places equals a direct computation on the
 // seeded corpus beside a second source, "copies", that holds copies of
 // every third corpus file, a byte-identical copy of one corpus zip, and a
-// copy of another corpus zip as a plain file, which covers its members.
+// copy of another corpus zip as a plain file, which covers its members,
+// and a complete zip hard-linked to a name that is never listed.
 // Plain SQL places every file and member by D1: its content state, and for
 // a hashed one its physical copies (a hard-link set, the members of one
 // archive identity, and a tar link with its target count once) and their
@@ -60,12 +62,22 @@ func TestEntryPlacesEqualADirectComputation(t *testing.T) {
 		digests["copia/"+path] = sum
 		nodes = append(nodes, indextest.Node{Path: "copia/" + path, Size: *e.Size})
 	}
+	const linkedZip, linkedDat = "copia/hl/bkp.zip", "copia/hl/bkp.dat"
+	for _, p := range []string{linkedZip, linkedDat} {
+		nodes = append(nodes, indextest.Node{Path: p, Lstat: &fsaccess.EntryInfo{Kind: domain.EntryFile, Size: 250,
+			ModTime: indextest.DefaultNow, Dev: 1, Ino: 9, Nlink: 2}})
+	}
 	copiesSeed := indextest.Seed(t, st, indextest.Tree{Source: "copies", CreateSource: true, MountPoint: "/mnt/copies",
 		Nodes: nodes})
 	corpusSeed.SeedContent(st, gt)
 	for path, sum := range digests {
 		copiesSeed.SetContent(st, path, indextest.Content{State: domain.ContentHashed, SHA256: sum})
 	}
+	for _, p := range []string{linkedZip, linkedDat} {
+		copiesSeed.SetContent(st, p, indextest.Content{State: domain.ContentHashed, SHA256: digest("hard-linked bkp")})
+	}
+	copiesSeed.SeedArchive(st, linkedZip, indextest.Archive{Format: domain.ArchiveZip, Members: []indextest.Member{
+		{Path: "u.txt", Size: 100, Content: indextest.Content{State: domain.ContentHashed, SHA256: digest("hard-linked u")}}}})
 	// The zip's copy lists the same members in the same states.
 	var members []indextest.Member
 	err := scanAll(ctx, st.Reader(), `SELECT m.path, m.kind, m.size, COALESCE(m.link_text, X''), COALESCE(m.state, ''),
@@ -295,6 +307,10 @@ func TestEntryPlacesEqualADirectComputation(t *testing.T) {
 		if g := got[id]; g.OtherSource.Files != 1 || g.OnlyHereBytes() != 0 || g.Unchecked != (domain.PlaceAmount{}) {
 			t.Errorf("zip %d: %+v, want wholly other_source", id, g)
 		}
+	}
+	// The hard-linked pair is one copy: both names stay the only copy.
+	if g := got[int64(copiesSeed.ID("copia/hl"))]; g != only(2, 500) {
+		t.Errorf("copia/hl: %+v, want %+v", g, only(2, 500))
 	}
 
 	// A second pass with nothing changed writes no entry_places row

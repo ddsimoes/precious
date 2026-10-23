@@ -525,8 +525,7 @@ var treemapRestSQL = `SELECT count(*), ifnull(sum(e.total_bytes), 0) FROM entrie
 // sort of children), and the count and bytes of the others. Missing
 // children are left out of both. A complete archive and a member folder
 // lay out their members (R2 design D16). With places=1 every row carries
-// its place, and the entry its member_places (r5c design Interfaces); the
-// treemap is never filtered (D10).
+// its place (r5c design Interfaces); the treemap is never filtered (D10).
 func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
 	var places bool
 	ref, err := pathRef(r)
@@ -584,7 +583,6 @@ func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
 		}
 		body := treemapBody{Entry: rowJSON(&entry[0]), Items: placedJSON(items, pl[1:], false), Other: other}
 		body.Entry.rowPlaces = pl[0].json(false)
-		body.Entry.memberPlacesJSON = &memberPlacesJSON{}
 		return body, nil
 	})
 }
@@ -594,9 +592,8 @@ func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
 // places when the level has its archive's coverage.
 func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treemapBody, error) {
 	var (
-		self    search.Row
-		selfPl  *placed
-		members *domain.PlaceSums
+		self   search.Row
+		selfPl *placed
 	)
 	switch {
 	case l.leaf != nil:
@@ -625,9 +622,6 @@ func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treem
 				return treemapBody{}, err
 			}
 			selfPl = pl[0]
-			if members, err = memberPlaces(ctx, tx, h.pol, l.cover); err != nil {
-				return treemapBody{}, err
-			}
 		}
 	}
 	ms, err := l.members(ctx, tx, h.pol)
@@ -638,7 +632,6 @@ func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treem
 	body := treemapBody{Entry: rowJSON(&self), Items: make([]entryRow, 0, min(len(ms), treemapItems))}
 	if selfPl != nil {
 		body.Entry.rowPlaces = selfPl.json(false)
-		body.Entry.memberPlacesJSON = &memberPlacesJSON{MemberPlaces: sumsJSON(members)}
 	}
 	for i := range ms {
 		if i < treemapItems {

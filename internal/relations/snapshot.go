@@ -938,7 +938,20 @@ func (b *builder) finish() *Snapshot {
 	byKey = nil
 
 	if s.dups != nil {
-		s.countCopies(arcKeys, groups)
+		// The content keys' hard-linked file names, by physical identity:
+		// an archive file sharing one is already counted through it.
+		var linked map[[3]int64]bool // (phys[0], phys[1], key)
+		if len(arcKeys) > 0 {
+			for _, r := range inodes {
+				if r.phys[0] > 0 && r.phys[2] == 0 {
+					if linked == nil {
+						linked = map[[3]int64]bool{}
+					}
+					linked[[3]int64{r.phys[0], r.phys[1], int64(s.eKey[r.e])}] = true
+				}
+			}
+		}
+		s.countCopies(arcKeys, linked, groups)
 	}
 
 	// Each folder's three largest shared keys (keys found elsewhere too).
@@ -965,11 +978,13 @@ func (b *builder) finish() *Snapshot {
 
 // countCopies sets each content key's physical copies (design D8): one per
 // inode group among its occurrences, plus each complete archive file of
-// that content (one per physical identity). arcKeys maps the archives'
-// contents to their keys (-1: no entry or member has it). It also sets
-// their sources (r5c D3): an occurrence counts by its directory's source,
-// which for a member is its archive's, and an archive file by its folder's.
-func (s *Snapshot) countCopies(arcKeys map[int64]int32, groups int32) {
+// that content (one per physical identity) that is not a hard link of one
+// of those occurrences (linked holds their (device, ino, key)). arcKeys
+// maps the archives' contents to their keys (-1: no entry or member has
+// it). It also sets their sources (r5c D3): an occurrence counts by its
+// directory's source, which for a member is its archive's, and an archive
+// file by its folder's.
+func (s *Snapshot) countCopies(arcKeys map[int64]int32, linked map[[3]int64]bool, groups int32) {
 	dd := s.dups
 	dd.copies = make([]int32, len(s.kKind))
 	dd.srcOf = make([]int32, len(s.kKind))
@@ -1007,14 +1022,15 @@ func (s *Snapshot) countCopies(arcKeys map[int64]int32, groups int32) {
 			continue
 		}
 		src := s.src[f.dir]
-		if k := arcKeys[f.content]; k >= 0 {
+		k := arcKeys[f.content]
+		if k >= 0 {
 			dd.srcOf[k] = sameSource(dd.srcOf[k], src)
 		} else if old, ok := arcSrc[f.content]; ok {
 			arcSrc[f.content] = sameSource(old, src)
 		} else {
 			arcSrc[f.content] = src
 		}
-		if phys[f.phys] {
+		if phys[f.phys] || k >= 0 && linked[[3]int64{f.phys[0], f.phys[1], int64(k)}] {
 			continue
 		}
 		phys[f.phys] = true

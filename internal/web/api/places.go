@@ -534,6 +534,7 @@ func fillCopies(ctx context.Context, tx *sql.Tx, rows []search.Row, pl []*placed
 			if pc.ArchiveID != nil {
 				s := pc.ArchiveID.String()
 				p.copy.ArchiveID = &s
+				p.copy.ArchivePath, p.copy.MemberPath = &pc.ArchivePath, &pc.MemberPath
 			}
 		}
 	}

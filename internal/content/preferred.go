@@ -13,10 +13,14 @@ import (
 // PreferredCopy is the one other copy D9 names for a file or member, with
 // More, its content's physical copies (D1, the named one and the ref's own
 // included) minus 2, at least 0. Copy.HardLink is always false, and the
-// decision fields are not read (empty).
+// decision fields are not read (empty). For a member copy, ArchivePath and
+// MemberPath split Copy.Path, which a '!' in either makes ambiguous: the
+// archive entry's display path and the member's display path inside it.
+// Both are empty for an entry copy.
 type PreferredCopy struct {
 	Copy
-	More int
+	More                    int
+	ArchivePath, MemberPath string
 }
 
 // PreferredCopies returns D9's copy for each ref of want (an entry file, or
@@ -102,16 +106,18 @@ func PreferredCopies(ctx context.Context, q store.Queryer, want map[domain.Ref]d
 			return nil, fmt.Errorf("content: preferred copies: %w", err)
 		}
 		c := Copy{SourceID: domain.SourceID(src), PathB64: path, Offline: offline, Path: domain.DisplayName(path)}
+		p := PreferredCopy{More: max(n-2, 0)}
 		if member {
 			a := domain.EntryID(archiveID.Int64)
 			c.Ref = domain.Ref{Entry: a, Member: domain.MemberID(id)}
 			c.ArchiveID = &a
 			c.PathB64 = append(append(path, '!'), mpath...)
-			c.Path += "!" + domain.MemberDisplayName(mpath, zip)
+			p.ArchivePath, p.MemberPath = c.Path, domain.MemberDisplayName(mpath, zip)
+			c.Path += "!" + p.MemberPath
 		} else {
 			c.Ref = domain.Ref{Entry: domain.EntryID(id)}
 		}
-		p := PreferredCopy{Copy: c, More: max(n-2, 0)}
+		p.Copy = c
 		for _, ref := range refsOf[key{member: rmember, id: rid}] {
 			out[ref] = p
 		}
