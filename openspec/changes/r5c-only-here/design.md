@@ -113,7 +113,7 @@ The figures are computed only on the final snapshot, never the provisional one.
   - one per entry folder (`s.arc[d] < 0`);
   - one per complete archive, keyed by the archive's entry ID (`s.arcDir[s.arc[d]] == d`).
 
-  Member folders get no row: their `s.id` values are member IDs.
+  Member folders do not get `entry_places` rows: their `s.id` values are member IDs. Since A15 they get `member_places` rows, and each complete archive gets an `archive_places` row (D6).
 - **Writing:** `writeEntryPlaces` diffs against the stored rows and upserts or deletes the changed ones in batches of `insertBatch`. It shares one generic diff writer with `writeDirDups`.
 
 Rejected:
@@ -145,7 +145,7 @@ Rejected:
 - **Placing an archive by its own bytes**: a backup archive beside its unpacked folder would read as the only copy of content that is on the source twice.
 - **Counting unpacked member bytes in the parent**: folder figures would no longer add up to `total_bytes`.
 
-### D6. Members are placed on read (§11.2, archives in the Map)
+### D6. Member files are placed on read; member folders are stored (§11.2, archives in the Map; revised in A15)
 
 **A member file's place** is `search.MemberPlaceSQL`, D2's member variant.
 - Its copies are found as `memberCopySQL` finds them, except that the members of archive names in the member's own archive's hard-link set do not count (D1).
@@ -155,10 +155,11 @@ Rejected:
 - A member placed `this_source` or `other_source` only through that coverage names the archive's preferred copy ("inside a copy of X.zip at …", `via_archive`) and takes the archive's mark (D11).
 - A member with copies of its own names its own copy and keeps its own mark.
 
-**Member folders** take their sums in `memberSubtree`/`fillFolder`, beside their duplicated figures.
+**Member folders and whole archives** read stored unpacked sums from the same relate pass: `member_places`, keyed by member, and `archive_places`, keyed by the archive's entry. The pass computes them with the archive's coverage applied. Member files are placed live, but only for the rows shown, or for the whole level when sorting by `only_here` or hiding.
 
 Rejected:
-- **Storing member places**: there are 3.58 million members on the reference server.
+- **Storing the place of every member**: there are 3.58 million members on the reference server.
+- **Folder sums of members computed on read** (the first plan): opening a 567,623-member archive in the mode took about 25 s on the reference copy (A15).
 
 ### D7. The mode lives in the Map's address (§11.2; owner's choice "A")
 
@@ -428,6 +429,9 @@ CREATE TABLE entry_places (
   disposable_files   INTEGER NOT NULL CHECK (disposable_files >= 0),   disposable_bytes   INTEGER NOT NULL CHECK (disposable_bytes >= 0)
 );
 UPDATE review_state SET dirty = 1 WHERE id = 1;
+-- Since A15: the unpacked sums of member folders and of whole complete archives.
+CREATE TABLE member_places (member_id INTEGER PRIMARY KEY REFERENCES archive_members(id) ON DELETE CASCADE, /* the same 12 columns and CHECKs */ …);
+CREATE TABLE archive_places (entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE, /* the same 12 columns and CHECKs */ …);
 ```
 
 ### Read API
@@ -598,3 +602,20 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
   - the six builds pass.
 
   Once, with every slow package running at the same time, `TestReviewPagesStayFastAt2MillionEntries` (`internal/review`, which this change does not touch) read a cards p95 of 1.53 s against 1 s. Run alone, it passes both on this branch and on the previous release (55.5 s and 56.6 s), so this is load, not a regression.
+- **A14. Empty disposable files** (task 6.2): an empty file has no place and is in no sum, the disposable sum included, because D4 adds only files of size > 0.
+- **A15. Smoke test on a copy of the reference database** (task 6.2; non-root, sources offline on the test machine):
+  - **Relate pass on the copy:**
+
+    |Build|Time|Peak RSS|
+    |---|---|---|
+    |previous release (r5b)|133.5–135.9 s|2.39 GB|
+    |this change|about 146 s (144.5–146.6 s, same window)|2.08–2.35 GB|
+
+    That is about +9% in time, within the 15% gate. The first pass writes 157,686 `entry_places`, 256,491 `member_places`, and 18,622 `archive_places` rows; a second pass writes none.
+  - **Independent count:** a throwaway program reimplemented D1, D3, D5, and D14 in plain SQL and Go. It matched all 157,686 stored `entry_places` rows.
+    - It switched rules off to check what this database tests: tar link groups, archive coverage, and disposable members are exercised; hard-link sets are not.
+    - The external disk's root reads 228 GB only copy (152,808 files), 253 GB only on that disk (966,917 files), 5.8 GB on another source (23,121 files), and 12.8 MB disposable.
+  - **Found and fixed:**
+    - **Opening the largest archive (567,623 members) in the mode took about 25 s.** The children, treemap, and entry calls took 12.2, 11.4, and 12.2 s, against 6.3, 6.9, and 0.014 s without places. Member folder and whole-archive sums are now stored (D6 revised). With places, the calls now take 3.8, 3.8, and 0.014 s. The rest is the older walk for the "Has copies" figures, which R5b already had.
+    - **The line under a folder's name overlapped its Compare link,** and archive copies read as "…160)". The line now cannot overlap. It shows the archive's and the member's file names, with the full paths in the tooltip and the accessible name. In the mode, the name column gets more room.
+  - **Slow gate in `relations`:** on this busy machine, the fixture's median is 6.34 s with the change and 6.15 s without it, measured interleaved, so the change adds about 3%. Both are above the 4.90 s recorded earlier on a quieter machine, so the gate is judged against the interleaved runs.
