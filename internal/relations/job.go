@@ -1,14 +1,19 @@
 package relations
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 
 	"precious/internal/clock"
 	"precious/internal/config"
+	"precious/internal/domain"
 	"precious/internal/jobs"
 	"precious/internal/store"
 )
@@ -18,7 +23,8 @@ import (
 //  2. loads the snapshot of every source in one read transaction;
 //  3. relates it and writes generation g+1 of relations in batches, each
 //     row inserted only while its entries and members exist;
-//  4. upserts dir_dups in place, writing only the rows that changed;
+//  4. upserts dir_dups and the places tables (entry_places, archive_places,
+//     member_places) in place, writing only the rows that changed;
 //  5. calls the after hook with g+1 (the review lists write their rows);
 //  6. flips review_state.gen to g+1 in one transaction, so readers never
 //     see two generations, and reads dirty: a refresh requested during the
@@ -28,9 +34,13 @@ import (
 //     the job ends is left to the follow-up job RequestRefresh enqueues
 //     (design Addendum G1).
 
-// Batch sizes: rows per write transaction.
+// Batch sizes: rows per write transaction. A figure table's rows are one
+// short upsert each, in key order (writeFigures): a batch of figureBatch
+// holds the writer for about 50 ms, and a first fill of the places tables
+// commits ten times less often than with insertBatch.
 const (
 	insertBatch = 500
+	figureBatch = 5000
 	deleteBatch = 5000
 	pruneBatch  = 5000
 )
@@ -46,14 +56,15 @@ const (
 
 // Handler runs the relate job.
 type Handler struct {
-	st    *store.Store
-	clk   clock.Clock
-	cfg   config.Duplicates
-	after func(ctx context.Context, gen int64) error
+	st       *store.Store
+	clk      clock.Clock
+	cfg      config.Duplicates
+	after    func(ctx context.Context, gen int64) error
+	classify classifier
 
 	// stage, when set (tests), is called at each step of a pass: "begin",
-	// "loaded", "written" (relations and dir_dups of the new generation),
-	// "flipped".
+	// "loaded", "written" (relations, dir_dups, and the places tables of the
+	// new generation), "flipped".
 	stage func(ctx context.Context, name string, gen int64)
 }
 
@@ -71,6 +82,14 @@ func NewHandler(st *store.Store, clk clock.Clock, cfg config.Duplicates, after f
 
 // Register installs the relate job in pool "relate" of capacity 1.
 func (h *Handler) Register(r *jobs.Runner) { r.RegisterPool(KindRelate, h, relatePool, 1) }
+
+// SetClassifier gives the relate pass the member classification of D14
+// (wired in cmd/precious/serve.go with the server's policy); without it no
+// member is disposable. f runs on several goroutines at once. Call it
+// before the runner starts.
+func (h *Handler) SetClassifier(f func(name []byte, size int64) (domain.Category, domain.FileKind, domain.Triage)) {
+	h.classify = f
+}
 
 // Startup enqueues the relate job when the relations are dirty (design D5:
 // a refresh that a stopped server never ran, or a new database).
@@ -162,7 +181,7 @@ func (h *Handler) pass(ctx context.Context, rt jobs.Runtime) (again bool, err er
 	var s *Snapshot
 	err = h.st.Read(ctx, func(tx *sql.Tx) error {
 		var err error
-		s, err = LoadSnapshot(ctx, tx)
+		s, err = LoadSnapshot(ctx, tx, h.classify)
 		return err
 	})
 	if err != nil {
@@ -184,6 +203,9 @@ func (h *Handler) pass(ctx context.Context, rt jobs.Runtime) (again bool, err er
 	}
 	rels = nil
 	if err := h.writeDirDups(ctx, rt, s.dirDups()); err != nil {
+		return false, err
+	}
+	if err := h.writePlaces(ctx, rt, s.placeRows()); err != nil {
 		return false, err
 	}
 	s = nil
@@ -347,35 +369,67 @@ func (s *Snapshot) dirDups() map[int64]DirDups {
 	return out
 }
 
+// figureTable is a table of figures per entry or member that each pass
+// keeps in step with its snapshot (dir_dups and the places tables): a key
+// column into the owner table and int64 columns.
+type figureTable[T comparable] struct {
+	name   string
+	key    string // the key column
+	owner  string // the table the key's IDs are rows of
+	cols   []string
+	fields func(v *T) []*int64 // v's columns, in the order of cols
+}
+
+var dirDupsTable = figureTable[DirDups]{
+	name:  "dir_dups",
+	key:   "entry_id",
+	owner: "entries",
+	cols:  []string{"candidate_bytes", "checked_bytes", "duplicated_bytes", "duplicated_files"},
+	fields: func(d *DirDups) []*int64 {
+		return []*int64{&d.CandidateBytes, &d.CheckedBytes, &d.DuplicatedBytes, &d.DuplicatedFiles}
+	},
+}
+
 // writeDirDups upserts the rows of want that differ from the stored ones,
 // each only while its folder exists, and deletes the rows of folders no
 // longer in the snapshot.
 func (h *Handler) writeDirDups(ctx context.Context, rt jobs.Runtime, want map[int64]DirDups) error {
-	have := make(map[int64]DirDups, len(want))
+	return writeFigures(ctx, h, rt, dirDupsTable, want)
+}
+
+// writeFigures upserts the rows of want that differ from the rows of table
+// t, each only while its entry or member exists, and deletes the rows of
+// keys not in want, figureBatch changes per transaction.
+func writeFigures[T comparable](ctx context.Context, h *Handler, rt jobs.Runtime, t figureTable[T], want map[int64]T) error {
+	have := make(map[int64]T, len(want))
 	err := h.st.Read(ctx, func(tx *sql.Tx) error {
-		return scanAll(ctx, tx, `SELECT entry_id, candidate_bytes, checked_bytes, duplicated_bytes, duplicated_files FROM dir_dups`,
-			nil, func(r *sql.Rows) error {
-				var id int64
-				var d DirDups
-				if err := r.Scan(&id, &d.CandidateBytes, &d.CheckedBytes, &d.DuplicatedBytes, &d.DuplicatedFiles); err != nil {
+		var id int64
+		var v T
+		dest := []any{&id}
+		for _, p := range t.fields(&v) {
+			dest = append(dest, p)
+		}
+		return scanAll(ctx, tx, `SELECT `+t.key+`, `+strings.Join(t.cols, ", ")+` FROM `+t.name, nil,
+			func(r *sql.Rows) error {
+				if err := r.Scan(dest...); err != nil {
 					return err
 				}
-				have[id] = d
+				have[id] = v
 				return nil
 			})
 	})
 	if err != nil {
-		return fmt.Errorf("relations: read dir_dups: %w", err)
+		return fmt.Errorf("relations: read %s: %w", t.name, err)
 	}
 	type change struct {
 		id   int64
-		d    DirDups
+		v    T
 		gone bool
 	}
 	var changes []change
-	for id, d := range want {
-		if old, ok := have[id]; !ok || old != d {
-			changes = append(changes, change{id: id, d: d})
+	for id, v := range want {
+		if old, ok := have[id]; !ok || old != v {
+			changes = append(changes, change{id: id, v: v})
 		}
 	}
 	for id := range have {
@@ -383,34 +437,49 @@ func (h *Handler) writeDirDups(ctx context.Context, rt jobs.Runtime, want map[in
 			changes = append(changes, change{id: id, gone: true})
 		}
 	}
-	for i := 0; i < len(changes); i += insertBatch {
-		batch := changes[i:min(i+insertBatch, len(changes))]
+	if len(changes) == 0 {
+		return nil
+	}
+	// In key order, so each batch touches a few neighbouring pages of the
+	// table and of its owner's: in map order, a first fill (every row new)
+	// touches a page per row and takes about three times as long.
+	slices.SortFunc(changes, func(x, y change) int { return cmp.Compare(x.id, y.id) })
+	params, set := make([]string, len(t.cols)), make([]string, len(t.cols))
+	for i, c := range t.cols {
+		params[i] = "?" + strconv.Itoa(i+2)
+		set[i] = c + " = excluded." + c
+	}
+	upsert := `INSERT INTO ` + t.name + ` (` + t.key + `, ` + strings.Join(t.cols, ", ") + `)
+		SELECT ?1, ` + strings.Join(params, ", ") + ` WHERE EXISTS (SELECT 1 FROM ` + t.owner + ` WHERE id = ?1)
+		ON CONFLICT (` + t.key + `) DO UPDATE SET ` + strings.Join(set, ", ")
+	args := make([]any, 1+len(t.cols))
+	for i := 0; i < len(changes); i += figureBatch {
+		batch := changes[i:min(i+figureBatch, len(changes))]
 		err := h.st.Write(ctx, func(tx *sql.Tx) error {
-			up, err := tx.PrepareContext(ctx, `INSERT INTO dir_dups (entry_id, candidate_bytes, checked_bytes, duplicated_bytes, duplicated_files)
-				SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM entries WHERE id = ?1)
-				ON CONFLICT (entry_id) DO UPDATE SET candidate_bytes = excluded.candidate_bytes,
-					checked_bytes = excluded.checked_bytes, duplicated_bytes = excluded.duplicated_bytes,
-					duplicated_files = excluded.duplicated_files`)
+			up, err := tx.PrepareContext(ctx, upsert)
 			if err != nil {
 				return err
 			}
 			defer up.Close()
 			for _, c := range batch {
 				if c.gone {
-					if _, err := tx.ExecContext(ctx, `DELETE FROM dir_dups WHERE entry_id = ?`, c.id); err != nil {
+					if _, err := tx.ExecContext(ctx, `DELETE FROM `+t.name+` WHERE `+t.key+` = ?`, c.id); err != nil {
 						return err
 					}
 					continue
 				}
-				if _, err := up.ExecContext(ctx, c.id, c.d.CandidateBytes, c.d.CheckedBytes, c.d.DuplicatedBytes,
-					c.d.DuplicatedFiles); err != nil {
+				args[0] = c.id
+				for j, p := range t.fields(&c.v) {
+					args[j+1] = *p
+				}
+				if _, err := up.ExecContext(ctx, args...); err != nil {
 					return err
 				}
 			}
 			return nil
 		})
 		if err != nil {
-			return fmt.Errorf("relations: write dir_dups: %w", err)
+			return fmt.Errorf("relations: write %s: %w", t.name, err)
 		}
 		if err := rt.Yield(ctx); err != nil {
 			return err

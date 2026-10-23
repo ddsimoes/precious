@@ -126,6 +126,14 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, d serveDeps
 	relate := relations.NewHandler(st, d.Clock, cfg.Duplicates, func(ctx context.Context, gen int64) error {
 		return review.Refresh(ctx, st, gen)
 	})
+	// The places' folder sums classify archive members by name and size
+	// (r5c design D14): the file kind from the name, the category and
+	// triage from the file rules.
+	relate.SetClassifier(func(name []byte, size int64) (domain.Category, domain.FileKind, domain.Triage) {
+		kind := pol.FileKind(name)
+		res := pol.ClassifyFile(rules.FileFacts{Name: name, Kind: kind, Size: size})
+		return res.Category, kind, res.Triage
+	})
 	relate.Register(runner)
 	// Media dates (r5 design D2–D11): derived in the zone [dates] time_zone
 	// resolves to; organize's date plans re-derive their targets with it.

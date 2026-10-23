@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,6 +56,195 @@ type entryRow struct {
 	DuplicatedBytes *int64               `json:"duplicated_bytes"`
 	ArchiveState    *string              `json:"archive_state"`
 	ArchiveID       *string              `json:"archive_id"`
+	// The r5c place fields (r5c design Interfaces), sent only with
+	// places=1: nil leaves every one of them out.
+	*rowPlaces
+}
+
+// rowPlaces is the place fields of an EntryRow (r5c design D1, D5, D9,
+// D11, D14, Interfaces). member_places goes on the entry of the entry
+// response only, other_copy and covered_by on children rows only: each pair
+// is left out where its pointer is nil.
+type rowPlaces struct {
+	Place        *domain.Place  `json:"place"`
+	PlaceOffline bool           `json:"place_offline"`
+	Disposable   bool           `json:"disposable"`
+	Places       *placeSumsJSON `json:"places"`
+	*memberPlacesJSON
+	*rowCopyJSON
+}
+
+// memberPlacesJSON is a complete archive's unpacked member sums with its
+// own coverage applied (D5, D6); null for anything else.
+type memberPlacesJSON struct {
+	MemberPlaces *placeSumsJSON `json:"member_places"`
+}
+
+// rowCopyJSON is what names a row's other copy (D9).
+type rowCopyJSON struct {
+	OtherCopy *otherCopyJSON `json:"other_copy"`
+	CoveredBy *coveredByJSON `json:"covered_by"`
+}
+
+// placeSumsJSON is domain.PlaceSums as JSON.
+type placeSumsJSON struct {
+	OnlyCopy    amount `json:"only_copy"`
+	ThisSource  amount `json:"this_source"`
+	OtherSource amount `json:"other_source"`
+	Unchecked   amount `json:"unchecked"`
+	Unreadable  amount `json:"unreadable"`
+	Disposable  amount `json:"disposable"`
+}
+
+// sumsJSON is p as JSON, nil for nil.
+func sumsJSON(p *domain.PlaceSums) *placeSumsJSON {
+	if p == nil {
+		return nil
+	}
+	a := func(x domain.PlaceAmount) amount { return amount{Files: x.Files, Bytes: x.Bytes} }
+	return &placeSumsJSON{OnlyCopy: a(p.OnlyCopy), ThisSource: a(p.ThisSource), OtherSource: a(p.OtherSource),
+		Unchecked: a(p.Unchecked), Unreadable: a(p.Unreadable), Disposable: a(p.Disposable)}
+}
+
+// otherCopyJSON is the one copy D9 names for a file or member placed
+// this_source or other_source. ViaArchive marks the copy of a member's
+// archive, named because the member is placed through the archive's own
+// coverage (D6); More is the content's physical copies minus 2. A member
+// copy also carries its archive entry's display path and its own path
+// inside the archive, which a '!' in either keeps Path from telling apart;
+// both are left out for an entry copy.
+type otherCopyJSON struct {
+	Ref         string          `json:"ref"`
+	SourceID    domain.SourceID `json:"source_id"`
+	Path        string          `json:"path"`
+	PathB64     []byte          `json:"path_b64"`
+	ArchiveID   *string         `json:"archive_id"`
+	ArchivePath *string         `json:"archive_path,omitempty"`
+	MemberPath  *string         `json:"member_path,omitempty"`
+	Offline     bool            `json:"offline"`
+	ViaArchive  bool            `json:"via_archive"`
+	More        int             `json:"more"`
+}
+
+// coveredByJSON is the relation D9 names for a folder, complete archive,
+// or member folder: its kind, and the other side.
+type coveredByJSON struct {
+	Kind  string   `json:"kind"`
+	Other sideJSON `json:"other"`
+}
+
+// sideJSON names a relation's side: an entry, or a member folder ("m<id>",
+// its path the archive's, '!', and its path inside the archive).
+type sideJSON struct {
+	ID       string          `json:"id"`
+	SourceID domain.SourceID `json:"source_id"`
+	Path     string          `json:"path"`
+	PathB64  []byte          `json:"path_b64"`
+}
+
+// placeFacts are what a folder's or complete archive's completeness reads
+// (D1): its state, partial, and mount_boundary, and the unreadable folders
+// and mount boundaries below it (dir_stats; 0 for an archive).
+type placeFacts struct {
+	State                        string
+	Partial, MountBoundary       bool
+	UnreadableBelow, MountsBelow int64
+}
+
+// complete reports whether a folder or complete archive was read
+// completely (D1): not unreadable, partial, or a mount boundary itself,
+// with no unreadable folder or mount boundary below it. This is the only
+// place that decides it; domain.PlaceSums.Place takes the answer.
+func complete(f placeFacts) bool {
+	return f.State != "unreadable" && !f.Partial && !f.MountBoundary && f.UnreadableBelow == 0 && f.MountsBelow == 0
+}
+
+// placed is a row's place (D1, D2, D5, D6, D11, D14): what rowPlaces
+// shows, and D10's sort key and hide test.
+type placed struct {
+	// place is "" for null: a missing or quarantined entry.
+	place      domain.Place
+	offline    bool
+	disposable bool
+	// level is set for a folder, a complete archive, and a member folder:
+	// a row that sums its files, and that covered_by may name.
+	level bool
+	// sums are a level's figures: stored for a folder or complete archive
+	// (nil while not computed), unpacked for a member folder.
+	sums *domain.PlaceSums
+	// size is a file's or member's size, its key.
+	size int64
+	// via is set for a member placed through its archive's coverage (D6).
+	via bool
+	// copy and covered are D9's names, read for children rows.
+	copy    *otherCopyJSON
+	covered *coveredByJSON
+}
+
+// key is D10's only_here key: the bytes only on this source, and the
+// bytes not checked or unreadable. A level reads its sums, and
+// math.MaxInt64 while not computed; a file its size when it is placed
+// only_copy or this_source (first key) or unchecked or unreadable (second
+// key) and is not disposable; null is 0.
+func (p *placed) key() (n, u int64) {
+	switch {
+	case p.place == "":
+		return 0, 0
+	case p.place == domain.PlaceNotComputed:
+		return math.MaxInt64, 0
+	case p.level:
+		if p.sums == nil {
+			return 0, 0
+		}
+		return p.sums.OnlyHereBytes(), p.sums.Unchecked.Bytes + p.sums.Unreadable.Bytes
+	case p.disposable:
+		return 0, 0
+	}
+	switch p.place {
+	case domain.PlaceOnlyCopy, domain.PlaceThisSource:
+		return p.size, 0
+	case domain.PlaceUnchecked, domain.PlaceUnreadable:
+		return 0, p.size
+	}
+	return 0, 0
+}
+
+// kept reports whether hide=other_source keeps the row (D10): placed
+// only_copy, this_source, unchecked, unreadable, or not_computed, and not a
+// disposable file.
+func (p *placed) kept() bool {
+	if p.disposable {
+		return false
+	}
+	switch p.place {
+	case domain.PlaceOnlyCopy, domain.PlaceThisSource, domain.PlaceUnchecked, domain.PlaceUnreadable,
+		domain.PlaceNotComputed:
+		return true
+	}
+	return false
+}
+
+// json is p's fields, with other_copy and covered_by when copies is set.
+func (p *placed) json(copies bool) *rowPlaces {
+	out := &rowPlaces{PlaceOffline: p.offline, Disposable: p.disposable, Places: sumsJSON(p.sums)}
+	if p.place != "" {
+		place := p.place
+		out.Place = &place
+	}
+	if copies {
+		out.rowCopyJSON = &rowCopyJSON{OtherCopy: p.copy, CoveredBy: p.covered}
+	}
+	return out
+}
+
+// placedJSON returns the EntryRows of rows with their places pl, with
+// other_copy and covered_by when copies is set.
+func placedJSON(rows []search.Row, pl []*placed, copies bool) []entryRow {
+	out := rowsJSON(rows)
+	for i := range out {
+		out[i].rowPlaces = pl[i].json(copies)
+	}
+	return out
 }
 
 // noTags is the tag_ids of an entry without own tags: [] rather than null.

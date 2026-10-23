@@ -277,12 +277,17 @@ func distinctSample(g []copyRow, r *copyRow) bool {
 // states, enqueues the hashing of other online sources whose rows became
 // pending, and recomputes coverage. It reports whether it changed any
 // state.
+//
+// It never yields its slot while it holds planMu: the job given the slot
+// could be another hashing job, which would wait for planMu while this one
+// waits for the slot. The rows are created before taking it, yielding
+// between batches; deciding and writing the states holds it to the end.
 func (s *Service) plan(ctx context.Context, rt jobs.Runtime, self domain.SourceID) (bool, error) {
-	s.planMu.Lock()
-	defer s.planMu.Unlock()
 	if err := s.insertRows(ctx, rt); err != nil {
 		return false, err
 	}
+	s.planMu.Lock()
+	defer s.planMu.Unlock()
 	var changes []change
 	err := s.st.Read(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, groupQuery("", "", ` ORDER BY 1`))
@@ -335,7 +340,7 @@ func (s *Service) plan(ctx context.Context, rt jobs.Runtime, self domain.SourceI
 		if last {
 			break
 		}
-		if err := rt.Yield(ctx); err != nil {
+		if err := ctx.Err(); err != nil {
 			return false, err
 		}
 	}
@@ -344,7 +349,8 @@ func (s *Service) plan(ctx context.Context, rt jobs.Runtime, self domain.SourceI
 
 // insertRows creates a pending file_content row for every present
 // non-empty file without one, planSpan entry IDs per transaction. A file in
-// a quarantine is never enrolled (r4 design D2).
+// a quarantine is never enrolled (r4 design D2). Two jobs may run it at
+// once: each insert skips the rows that exist when it commits.
 func (s *Service) insertRows(ctx context.Context, rt jobs.Runtime) error {
 	var top int64
 	if err := s.st.Reader().QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM entries`).Scan(&top); err != nil {

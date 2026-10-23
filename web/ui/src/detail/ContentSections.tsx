@@ -17,6 +17,8 @@ import {
 import type { EntryRow } from '@/api/entries'
 import { CoverageClaim } from '@/components/CoverageFigures'
 import { Button } from '@/components/ui/button'
+import { FilePlace } from '@/detail/PlacesSection'
+import { filePlaced } from '@/detail/places'
 import { useEntryLink } from '@/detail/useEntryLink'
 import { useFormat } from '@/lib/format'
 import { useSourceLabel } from '@/lib/sourceParams'
@@ -36,6 +38,8 @@ const formatNames: Record<ArchiveFormat, string> = {
   bzip2: 'BZ2',
 }
 
+// CopiesSection lists a file's other copies. coverage is null when a
+// section above already states the checked share.
 export function CopiesSection({
   entry,
   content,
@@ -43,7 +47,7 @@ export function CopiesSection({
 }: {
   entry: EntryRow
   content: EntryContent
-  coverage: Coverage
+  coverage: Coverage | null
 }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -60,12 +64,17 @@ export function CopiesSection({
   const others = listed.filter((copy) => copy.ref !== entry.id)
   const otherCount = entry.copies === null ? others.length : Math.max(0, entry.copies - 1)
   const { state } = content
+  // A file states its place above its copies (R5c design D8); a complete
+  // archive is placed by its members, which its own section shows.
+  const placed = filePlaced(entry)
 
   // A claim that there is no other copy is made only when hashing proved it
-  // (R2 design D8); otherwise the panel says why it cannot tell.
+  // (R2 design D8); otherwise the panel says why it cannot tell. A place
+  // sentence above (R5c) already says that a file not checked yet or not
+  // readable has no known copies; a changed file still says why.
   let body
   if (state === 'pending' || state === 'changed' || state === 'unreadable') {
-    body = <p className="text-sm">{t(`detail.notClaimed.${state}`)}</p>
+    body = placed && state !== 'changed' ? null : <p className="text-sm">{t(`detail.notClaimed.${state}`)}</p>
   } else if (otherCount === 0) {
     body = <p className="text-sm font-medium">{t(`detail.claim.${state}`)}</p>
   } else {
@@ -92,8 +101,9 @@ export function CopiesSection({
   }
   return (
     <>
+      {placed && <FilePlace entry={entry} others={others} otherCount={otherCount} />}
       {body}
-      <CoverageClaim coverage={coverage} />
+      {coverage !== null && <CoverageClaim coverage={coverage} />}
     </>
   )
 }
@@ -124,6 +134,8 @@ function CopyList({ copies }: { copies: Copy[] }) {
   )
 }
 
+// RelationsSection lists a folder's or archive's related folders. coverage
+// is null when a section above already states the checked share.
 export function RelationsSection({
   entry,
   relations,
@@ -131,7 +143,7 @@ export function RelationsSection({
 }: {
   entry: EntryRow
   relations: Relation[]
-  coverage: Coverage
+  coverage: Coverage | null
 }) {
   const { t } = useTranslation()
   const fmt = useFormat()
@@ -141,7 +153,7 @@ export function RelationsSection({
     return (
       <>
         <p className="text-sm">{t('detail.noRelations')}</p>
-        <CoverageClaim coverage={coverage} />
+        {coverage !== null && <CoverageClaim coverage={coverage} />}
       </>
     )
   }
@@ -183,7 +195,7 @@ export function RelationsSection({
           </li>
         ))}
       </ul>
-      <CoverageClaim coverage={coverage} />
+      {coverage !== null && <CoverageClaim coverage={coverage} />}
     </>
   )
 }

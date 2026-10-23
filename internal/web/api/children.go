@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -24,19 +26,25 @@ const (
 	treemapItems = 300
 )
 
-// childOrder is a validated children order. Each sort key has its index
-// (parent_id, key, id), so a page is one range of that index read in order
-// (design D11). kind limits the children to one kind: "" for every child,
-// or domain.EntryDirectory for folders only (r3 design D16).
+// sortOnlyHere is the children sort by the bytes only on this source (r5c
+// design D10); it needs places=1.
+const sortOnlyHere = "only_here"
+
+// childOrder is a validated children order. Each sort key but only_here
+// has its index (parent_id, key, id), so a page is one range of that index
+// read in order (design D11). kind limits the children to one kind: "" for
+// every child, or domain.EntryDirectory for folders only (r3 design D16).
+// hide keeps only the rows with something to keep here (r5c design D10).
 type childOrder struct {
-	sort string // a search.Sort* key
-	col  string // its column
+	sort string // a search.Sort* key, or sortOnlyHere
+	col  string // its column; "" for only_here
 	desc bool
 	kind domain.EntryKind
+	hide bool
 }
 
-// parseChildOrder reads sort (bytes, files, newest, or name; default bytes)
-// and order (desc or asc; default desc, asc for name).
+// parseChildOrder reads sort (bytes, files, newest, name, or only_here;
+// default bytes) and order (desc or asc; default desc, asc for name).
 func parseChildOrder(sort, order string) (childOrder, error) {
 	var o childOrder
 	switch sort {
@@ -48,6 +56,8 @@ func parseChildOrder(sort, order string) (childOrder, error) {
 		o.sort, o.col = search.SortNewest, "e.newest_ns"
 	case search.SortName:
 		o.sort, o.col = search.SortName, "e.name"
+	case sortOnlyHere:
+		o.sort = sortOnlyHere
 	default:
 		return childOrder{}, domain.Errorf(domain.CodeInvalidRequest, "unknown sort %q", sort)
 	}
@@ -80,11 +90,17 @@ func (o childOrder) order() string {
 	return search.OrderAsc
 }
 
+// byPlace reports whether the order needs every child's place before its
+// first row: sort=only_here, or hide (r5c design D10).
+func (o childOrder) byPlace() bool { return o.sort == sortOnlyHere || o.hide }
+
 // childCursor is the continuation token of a children page: base64url of
 // this JSON, holding the order, the kind filter, and the last row's sort key
 // and ID (an entry ID, or a member ID inside an archive). N is the key of a
 // numeric sort, nil for a folder with no newest time (NULL); B is the name;
-// K is the kind filter, empty for every child.
+// K is the kind filter, empty for every child. For only_here, N is the
+// first key (math.MaxInt64 for a row not computed yet) and U the second;
+// H is set with hide (r5c design D10).
 type childCursor struct {
 	Sort  string `json:"s"`
 	Order string `json:"o"`
@@ -92,34 +108,102 @@ type childCursor struct {
 	N     *int64 `json:"n,omitempty"`
 	B     []byte `json:"b,omitempty"`
 	ID    int64  `json:"i"`
+	U     *int64 `json:"u,omitempty"`
+	H     bool   `json:"h,omitempty"`
 }
 
-// cursorAfter is the cursor continuing after r.
-func (o childOrder) cursorAfter(r *search.Row) string {
-	c := childCursor{Sort: o.sort, Order: o.order(), Kind: string(o.kind), ID: int64(r.ID)}
+// orderKey is a row's position in an order: its sort key (n, nil for no
+// newest time; or b, the name), only_here's second key u, and its ID (an
+// entry's, or a member's).
+type orderKey struct {
+	n  *int64
+	b  []byte
+	u  int64
+	id int64
+}
+
+// keyOf is the position of row r, with its place p for only_here.
+func (o childOrder) keyOf(r *search.Row, p *placed) orderKey {
+	k := orderKey{id: int64(r.ID)}
 	if r.Member != 0 {
-		c.ID = int64(r.Member)
+		k.id = int64(r.Member)
 	}
 	switch o.sort {
 	case search.SortBytes:
-		c.N = &r.TotalBytes
+		n := r.TotalBytes
+		k.n = &n
 	case search.SortFiles:
-		c.N = &r.TotalFiles
+		n := r.TotalFiles
+		k.n = &n
 	case search.SortNewest:
 		if !r.Newest.IsZero() {
 			n := r.Newest.UnixNano()
-			c.N = &n
+			k.n = &n
 		}
 	case search.SortName:
-		c.B = r.Name
+		k.b = r.Name
+	case sortOnlyHere:
+		n, u := p.key()
+		k.n, k.u = &n, u
+	}
+	return k
+}
+
+// cmpKeys compares two positions ascending: by the key (no newest time
+// first, as SQLite sorts NULL), only_here's second key, then the ID.
+func (o childOrder) cmpKeys(a, b orderKey) int {
+	var c int
+	switch {
+	case o.sort == search.SortName:
+		c = bytes.Compare(a.b, b.b)
+	case a.n == nil || b.n == nil:
+		c = cmp.Compare(boolInt(a.n != nil), boolInt(b.n != nil))
+	default:
+		c = cmp.Compare(*a.n, *b.n)
+	}
+	return cmp.Or(c, cmp.Compare(a.u, b.u), cmp.Compare(a.id, b.id))
+}
+
+// cmpDir compares two positions in the order's direction.
+func (o childOrder) cmpDir(a, b orderKey) int {
+	if o.desc {
+		return o.cmpKeys(b, a)
+	}
+	return o.cmpKeys(a, b)
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// cursorAt is the cursor continuing after position k.
+func (o childOrder) cursorAt(k orderKey) string {
+	c := childCursor{Sort: o.sort, Order: o.order(), Kind: string(o.kind), N: k.n, B: k.b, ID: k.id, H: o.hide}
+	if o.sort == sortOnlyHere {
+		c.U = &k.u
 	}
 	// The fields are plain values, so Marshal cannot fail.
 	b, _ := json.Marshal(c)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// parseCursor reads a cursor made by cursorAfter for the same order and kind
-// filter.
+// cursorAfter is the cursor continuing after r.
+func (o childOrder) cursorAfter(r *search.Row) string { return o.cursorAt(o.keyOf(r, nil)) }
+
+// key is the position a cursor continues after.
+func (c *childCursor) key() orderKey {
+	k := orderKey{n: c.N, b: c.B, id: c.ID}
+	if c.U != nil {
+		k.u = *c.U
+	}
+	return k
+}
+
+// parseCursor reads a cursor made by cursorAt for the same order, kind
+// filter, and hide.
 func (o childOrder) parseCursor(token string) (*childCursor, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
@@ -129,17 +213,19 @@ func (o childOrder) parseCursor(token string) (*childCursor, error) {
 	if err := json.Unmarshal(raw, &c); err != nil || c.ID <= 0 {
 		return nil, domain.Errorf(domain.CodeInvalidRequest, "malformed cursor")
 	}
-	ok := c.Sort == o.sort && c.Order == o.order() && c.Kind == string(o.kind)
+	ok := c.Sort == o.sort && c.Order == o.order() && c.Kind == string(o.kind) && c.H == o.hide
 	switch o.sort {
 	case search.SortName:
-		ok = ok && c.N == nil
+		ok = ok && c.N == nil && c.U == nil
 	case search.SortNewest:
-		ok = ok && c.B == nil
+		ok = ok && c.B == nil && c.U == nil
+	case sortOnlyHere:
+		ok = ok && c.B == nil && c.N != nil && c.U != nil
 	default:
-		ok = ok && c.B == nil && c.N != nil
+		ok = ok && c.B == nil && c.N != nil && c.U == nil
 	}
 	if !ok {
-		return nil, domain.Errorf(domain.CodeInvalidRequest, "the cursor belongs to another sort order or kind")
+		return nil, domain.Errorf(domain.CodeInvalidRequest, "the cursor belongs to another sort order, kind, or filter")
 	}
 	return &c, nil
 }
@@ -232,6 +318,11 @@ type childrenBody struct {
 // invalid_request. A file has no children, except a complete archive, whose
 // top members are its children; a member folder's children are its members
 // (R2 design D16), sorted in memory, which one archive bounds.
+//
+// With places=1 each row carries its place, other_copy, and covered_by (r5c
+// design Interfaces); hide=other_source and sort=only_here need places=1,
+// and are evaluated over every child of the level before the first row
+// (D10).
 func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var (
@@ -239,13 +330,23 @@ func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 		o      childOrder
 		after  *childCursor
 		limit  int
+		places bool
 	)
-	err := checkParams(q, "sort", "order", "cursor", "limit", "kind")
+	err := checkParams(q, "sort", "order", "cursor", "limit", "kind", "places", "hide")
 	if err == nil {
 		parent, err = pathRef(r)
 	}
 	if err == nil {
+		places, err = parsePlaces(q.Get("places"))
+	}
+	if err == nil {
 		o, err = parseChildOrder(q.Get("sort"), q.Get("order"))
+	}
+	if err == nil && o.sort == sortOnlyHere && !places {
+		err = domain.Errorf(domain.CodeInvalidRequest, "sort=only_here needs places=1")
+	}
+	if err == nil {
+		o.hide, err = parseHide(q.Get("hide"), places)
 	}
 	if err == nil {
 		o.kind, err = parseChildKind(q.Get("kind"))
@@ -265,23 +366,38 @@ func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 	}
 	limit = min(limit, childrenMaxLimit)
 	h.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		l, err := resolveLevel(ctx, tx, h.pol, parent)
+		l, err := resolveLevel(ctx, tx, h.pol, parent, places)
 		if err != nil {
 			return nil, err
 		}
 		var (
 			items []search.Row
+			pl    []*placed
 			next  string
 		)
-		if l.entry != 0 {
+		switch {
+		case l.entry != 0 && o.byPlace():
+			items, pl, next, err = childPlacePage(ctx, tx, l.entry, o, after, limit)
+		case l.entry != 0:
 			items, next, err = childPage(ctx, tx, l.entry, o, after, limit)
-		} else {
-			items, next, err = h.memberPage(ctx, tx, l, o, after, limit)
+			if err == nil && places {
+				pl, err = rowsPlaced(ctx, tx, items)
+			}
+		default:
+			items, pl, next, err = h.memberPage(ctx, tx, l, o, after, limit)
 		}
 		if err != nil {
 			return nil, err
 		}
-		body := childrenBody{Items: rowsJSON(items)}
+		body := childrenBody{}
+		if places {
+			if err := fillCopies(ctx, tx, items, pl, l.cover); err != nil {
+				return nil, err
+			}
+			body.Items = placedJSON(items, pl, true)
+		} else {
+			body.Items = rowsJSON(items)
+		}
 		if next != "" {
 			body.NextCursor = &next
 		}
@@ -290,32 +406,67 @@ func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 }
 
 // memberPage reads up to limit members of an archive level after the
-// cursor, and the cursor of the next page ("" on the last).
-func (h *handler) memberPage(ctx context.Context, tx *sql.Tx, l level, o childOrder, after *childCursor, limit int) ([]search.Row, string, error) {
+// cursor, with their places when the level has its archive's coverage
+// (nil otherwise), and the cursor of the next page ("" on the last). Hide
+// and every sort run in memory, which one archive bounds. Only an order by
+// place places every member of the level; any other places the page's.
+func (h *handler) memberPage(ctx context.Context, tx *sql.Tx, l level, o childOrder, after *childCursor,
+	limit int) ([]search.Row, []*placed, string, error) {
 	ms, err := l.members(ctx, tx, h.pol)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
-	if o.kind != "" {
-		ms = slices.DeleteFunc(ms, func(m member) bool { return m.row.Kind != o.kind })
+	if o.byPlace() {
+		if err := l.place(ctx, tx, h.pol, memberPtrs(ms)); err != nil {
+			return nil, nil, "", err
+		}
 	}
-	o.sortMembers(ms)
-	items := make([]search.Row, 0, min(limit+1, len(ms)))
+	ms = slices.DeleteFunc(ms, func(m member) bool {
+		return o.kind != "" && m.row.Kind != o.kind || o.hide && !m.pl.kept()
+	})
+	keys := make([]orderKey, len(ms))
 	for i := range ms {
-		if after != nil && !o.afterCursor(&ms[i].row, after) {
+		keys[i] = o.keyOf(&ms[i].row, ms[i].pl)
+	}
+	idx := make([]int, len(ms))
+	for i := range idx {
+		idx[i] = i
+	}
+	slices.SortFunc(idx, func(a, b int) int { return o.cmpDir(keys[a], keys[b]) })
+	var at orderKey
+	if after != nil {
+		at = after.key()
+	}
+	page := make([]*member, 0, min(limit, len(ms)))
+	var (
+		next string
+		last orderKey
+	)
+	for _, i := range idx {
+		if after != nil && o.cmpDir(keys[i], at) <= 0 {
 			continue
 		}
-		items = append(items, ms[i].row)
-		if len(items) > limit {
+		if len(page) == limit {
+			next = o.cursorAt(last)
 			break
 		}
+		page = append(page, &ms[i])
+		last = keys[i]
 	}
-	var next string
-	if len(items) > limit {
-		items = items[:limit]
-		next = o.cursorAfter(&items[limit-1])
+	if !o.byPlace() {
+		if err := l.place(ctx, tx, h.pol, page); err != nil {
+			return nil, nil, "", err
+		}
 	}
-	return items, next, nil
+	items := make([]search.Row, len(page))
+	var pl []*placed
+	for i, m := range page {
+		items[i] = m.row
+		if l.cover != nil {
+			pl = append(pl, m.pl)
+		}
+	}
+	return items, pl, next, nil
 }
 
 // childPage reads up to limit children of parent after the cursor, with
@@ -392,18 +543,23 @@ var treemapRestSQL = `SELECT count(*), ifnull(sum(e.total_bytes), 0) FROM entrie
 // 300 largest children by total bytes (ties by descending ID, as the bytes
 // sort of children), and the count and bytes of the others. Missing
 // children are left out of both. A complete archive and a member folder
-// lay out their members (R2 design D16).
+// lay out their members (R2 design D16). With places=1 every row carries
+// its place (r5c design Interfaces); the treemap is never filtered (D10).
 func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
+	var places bool
 	ref, err := pathRef(r)
 	if err == nil {
-		err = checkParams(r.URL.Query())
+		err = checkParams(r.URL.Query(), "places")
+	}
+	if err == nil {
+		places, err = parsePlaces(r.URL.Query().Get("places"))
 	}
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	h.serve(w, r, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		l, err := resolveLevel(ctx, tx, h.pol, ref)
+		l, err := resolveLevel(ctx, tx, h.pol, ref, places)
 		if err != nil {
 			return nil, err
 		}
@@ -437,22 +593,36 @@ func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
 		if err := search.LoadTags(ctx, tx, items); err != nil {
 			return nil, err
 		}
-		return treemapBody{Entry: rowJSON(&entry[0]), Items: rowsJSON(items), Other: other}, nil
+		if !places {
+			return treemapBody{Entry: rowJSON(&entry[0]), Items: rowsJSON(items), Other: other}, nil
+		}
+		pl, err := rowsPlaced(ctx, tx, append(entry, items...))
+		if err != nil {
+			return nil, err
+		}
+		body := treemapBody{Entry: rowJSON(&entry[0]), Items: placedJSON(items, pl[1:], false), Other: other}
+		body.Entry.rowPlaces = pl[0].json(false)
+		return body, nil
 	})
 }
 
 // memberTreemap is the treemap of an archive level: the archive's or the
-// member folder's row, its largest members, and the others.
+// member folder's row, its largest members, and the others, with the
+// places of the row and of the members laid out when the level has its
+// archive's coverage.
 func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treemapBody, error) {
-	var self search.Row
+	var (
+		self   search.Row
+		selfPl *placed
+	)
 	switch {
 	case l.leaf != nil:
-		self = l.leaf.row
+		self, selfPl = l.leaf.row, l.leaf.pl
 	case l.folder != nil:
 		if _, err := fillFolder(ctx, tx, h.pol, l.folder); err != nil {
 			return treemapBody{}, err
 		}
-		self = l.folder.row
+		self, selfPl = l.folder.row, l.folder.pl
 	default:
 		rows, err := appendRows(ctx, tx, make([]search.Row, 0, 1),
 			`SELECT `+search.Columns+` FROM `+search.From+` WHERE e.id = ?`, []any{int64(l.archive)})
@@ -463,16 +633,32 @@ func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treem
 			return treemapBody{}, err
 		}
 		self = rows[0]
+		if l.cover != nil {
+			pl, err := rowsPlaced(ctx, tx, rows)
+			if err != nil {
+				return treemapBody{}, err
+			}
+			selfPl = pl[0]
+		}
 	}
 	ms, err := l.members(ctx, tx, h.pol)
 	if err != nil {
 		return treemapBody{}, err
 	}
 	childOrder{sort: search.SortBytes, desc: true}.sortMembers(ms)
+	if err := l.place(ctx, tx, h.pol, memberPtrs(ms[:min(len(ms), treemapItems)])); err != nil {
+		return treemapBody{}, err
+	}
 	body := treemapBody{Entry: rowJSON(&self), Items: make([]entryRow, 0, min(len(ms), treemapItems))}
+	if selfPl != nil {
+		body.Entry.rowPlaces = selfPl.json(false)
+	}
 	for i := range ms {
 		if i < treemapItems {
 			body.Items = append(body.Items, rowJSON(&ms[i].row))
+			if l.cover != nil {
+				body.Items[i].rowPlaces = ms[i].pl.json(false)
+			}
 			continue
 		}
 		body.Other.Count++

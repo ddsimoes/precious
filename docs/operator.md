@@ -369,6 +369,16 @@ R5 adds media dates: the date each photo and video was taken, your corrections o
 
 To roll back, stop Precious, reinstall the R4 binary, [restore](#restoring) the backup, and start it. The R4 binary refuses the migrated database (`database has version 8, binary supports up to 7`) and leaves it unmodified. Date corrections, and any change made after the upgrade (including file dates set and files organized by date, which stay as they are on the disks), are lost from the index with it; the next rescan sees the files where they are now.
 
+### Upgrading from R5b
+
+R5c adds the Map's "Only here" mode: for each file, folder, and archive, how much of it exists only there and how much has a copy on another source. Its migration `0009_places` adds three empty tables, the stored figures of each folder, complete archive, and folder inside a complete archive, and marks the relations for recomputation. Entries, decisions, tags, overrides, digests, archive listings, media dates, actions, and quarantines stay as they were, and no rescan is needed.
+
+1. **Back up first** with the R5b binary still running: `precious backup`. The migration is one-way.
+2. **Check the configuration** with the new binary; an R5b configuration stays valid.
+3. **Replace and restart.** The migration applies at startup, in one transaction, and only adds the tables. Startup then runs one relations pass, which fills the folder and archive figures; like any relations pass, it takes longer the larger the index. Until it ends, the mode places file rows at once, and folders, complete archives, and the folders inside them show that their figures are not computed yet.
+
+To roll back, stop Precious, reinstall the R5b binary, [restore](#restoring) the backup, and start it. The R5b binary refuses the migrated database (`database has version 9, binary supports up to 8`) and leaves it unmodified, so the backup is the only way back. Decisions, tags, and overrides set after the upgrade are lost with it, and so is any change made after the upgrade; the next rescan sees the files where they are now.
+
 ### Moving from curator to precious
 
 Precious replaces the earlier `curator` release; the two share no data. Moving over is a fresh installation:
@@ -957,6 +967,29 @@ Every folder carries:
 
 Its **percent duplicated** is its duplicated bytes over its total bytes; a file is 0% or 100%. The interface names it **Has copies** (ADR 0010): it counts every copy, the one you would keep included, so it is not the space you could free. That space is on [Opportunities](#opportunities), whose duplicates card counts the redundant bytes. The Map colors folders by it in five bands (0%, under 25%, under 50%, under 75%, and 75% or more), and as **not checked** while its checked bytes are below its candidate bytes, because the figure can still grow. A file that could not be read never gets checked, so it does not keep its folders "not checked"; Home still counts it under **Could not be read**. An archive counts in its folder at its packed size, by its own file, never by its members.
 
+### Where copies are
+
+Every file outside the quarantine has a **place**, relative to its own source; a file inside an opened archive belongs to the archive's source:
+
+| Place | Meaning |
+|---|---|
+| Only copy | No other copy exists anywhere: no other file has its size, its samples differ from every file of its size, or it was read and no other file has its digest. |
+| Only on this source | It has copies, and all of them are on its own source. |
+| Copy on another source | At least one copy is on another source, connected or not. |
+| Not checked yet | Hashing has not read it yet, or it changed since it was read. |
+| Could not be read | Hashing could not read it. |
+
+Copies count as in [Duplicate groups](#duplicate-groups): hard links to one file are one copy, and so are a tar hard link and its target, and the members of two hard-linked names of one archive. An opened archive's own file is a copy of the same content. Offline sources count; the quarantine does not. On a filesystem that does not record file identity, each name of a hard-linked file counts as a copy. Two sources whose filesystems use the same device number never share hard links, which can correct a folder's **Has copies** after the update.
+
+The `relate` job (see [When relations are recomputed](#when-relations-are-recomputed)) stores, for every folder, opened archive, and folder inside an opened archive, its files and bytes in each place, and its **disposable** files apart: files whose category is disposable (or, without a category, system files such as `Thumbs.db` and `desktop.ini`), unless the rules suggest review, as for recovered file chunks. Disposable files never decide where a folder stands. Files inside opened archives are classified by their names and sizes with the same rules.
+
+- **A folder** adds up every file below it. An unreadable folder or a mount point below it adds nothing.
+- **An opened archive** counts at its packed size, split among the places in proportion to its members' unpacked bytes, with at least 1 byte for each place that holds any. When the archive file itself has a copy on another source, every member counts as having one; when its copy is on its own source, its members that are only copies count as only on this source. An archive whose members hold no bytes counts by its own file, and a disposable archive counts whole as disposable.
+- **Inside an opened archive,** each folder adds up the files below it at their unpacked sizes, with the archive file's own copies applied as above; so does the archive as a whole, for its details panel. A file inside an archive is placed when it is shown, never stored.
+- **Other archives** (not opened) count as plain files.
+
+The figures follow the index at each run, so they can lag the files by up to `duplicates.refresh_interval` plus the run itself. A change of category reaches them at the next run.
+
 ### Compare
 
 Compare takes two folders, opened archives, or folders inside an archive, and lists their files in five groups:
@@ -1134,9 +1167,9 @@ The interface reads the index through a small JSON API under `/api`. The same en
 | Endpoint | Answers |
 |---|---|
 | `GET /api/home`, `GET /api/home?source=ID` | The figures of Home for every source, or for one: totals, bytes and files by family, by file kind, and by year, the decision totals, whether the figures are partial, and the scans in progress. The decision totals are `undecided`, `keep`, `discard`, and `later`, each `{"bytes","files"}` over the present files outside the quarantine, and `quarantine`, the bytes and files of every quarantine folder chosen, kept apart from the other four and from the totals. |
-| `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). |
-| `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable); with `kind=directory`, only its folders, archives left out. |
-| `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. |
+| `GET /api/entries/{id}` | One entry with the folders above it, its classification with the explanation of each rule, its own and effective decision and tags with where they come from, and, for a folder, its counts, its breakdowns by kind and by year, and its notable entries inside (`stats.inside`). With `places=1`, also the entry's [place](#places-in-the-read-api) and `places_updating`. |
+| `GET /api/entries/{id}/children` | A folder's items, one page at a time, in every state (present, missing, unreadable); with `kind=directory`, only its folders, archives left out. With `places=1`, each row's [place](#places-in-the-read-api), and `hide=other_source` and `sort=only_here` may be used. |
+| `GET /api/entries/{id}/treemap` | A folder's 300 largest items by bytes, and the count and bytes of the rest as one `other` area. Missing items take no space, so they appear in neither. With `places=1`, each row's [place](#places-in-the-read-api); the treemap is never filtered. |
 | `GET /api/search?…` | One page of search results; with `count=only`, the match count instead. See [Search parameters](#search-parameters). |
 | `GET /api/tags` | Every tag with the number of entries carrying it as their own. |
 | `GET /api/entries/{id}/content`, `GET /api/entries/{id}/text` | A file's content, and its text decoded. See [Viewer safety](#viewer-safety). |
@@ -1156,10 +1189,23 @@ Errors use the usual envelope, `{"error":{"code","message"}}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | An unknown or repeated parameter, a bad value (such as `sort=color`, `limit=0`, or a `kind` other than `directory`), or a cursor the server did not give for this order and `kind`. |
+| 400 | `invalid_request` | An unknown or repeated parameter, a bad value (such as `sort=color`, `limit=0`, a `kind` other than `directory`, a `places` other than `1`, or a `hide` other than `other_source`), `hide` or `sort=only_here` without `places=1`, or a cursor the server did not give for this order, `kind`, and `hide`. |
 | 404 | `not_found` | An entry, source, or folder (`within`) that does not exist, or an ID that is not a valid one. |
 | 409 | `invalid_entry_state` | The content or text of a folder, of a missing file, or of a file that changed on disk since the last scan. |
 | 409 | `source_offline` | The content or text of a file whose source is not online. |
+
+#### Places in the read API
+
+With `places=1`, `GET /api/entries/{id}`, its `children`, and its `treemap` add to every row where the copies of its content are (see [Where copies are](#where-copies-are)). Without it, nothing in their answers changes.
+
+- `place`: `only_copy`, `this_source`, `other_source`, `unchecked`, `unreadable`, `none` (an empty file, a link, a special file, or a folder with nothing in a place), `not_computed` (a folder, opened archive, or folder inside one that the `relate` job has not computed yet), or `null` for a missing entry. A file, and a file inside an opened archive, is placed as it is now. A folder, opened archive, or folder inside one reads its stored figures: the first place, in the order only copy, only on this source, not checked yet, could not be read, copy on another source, that holds a file other than a disposable one. A folder that could not be read completely (it is unreadable, partly read, or a mount point, or holds an unreadable folder or a mount point) reads `unreadable` where it would read `other_source` or `none`.
+- `place_offline`: `true` for a file placed `other_source` whose copies on other sources are all on sources that are not connected.
+- `disposable`: `true` for a disposable file (see [Where copies are](#where-copies-are)).
+- `places`: a folder's or opened archive's files and bytes in each place, `{"only_copy","this_source","other_source","unchecked","unreadable","disposable"}`, each `{"files","bytes"}`; `null` for a plain file and while not computed. An opened archive counts at its packed size here, as its folder adds it; a folder inside an archive counts its members' unpacked sizes.
+- On children rows only: `other_copy`, one other copy of a file placed `this_source` or `other_source`: `{"ref","source_id","path","path_b64","archive_id","offline","via_archive","more"}`, a copy on another source for `other_source` (connected sources first), one on the same source for `this_source` (loose files first), where `more` is the number of copies beyond the file and this one. A copy inside an archive (`archive_id` set) also has `archive_path`, the archive's path, and `member_path`, its path inside the archive, since a `!` in either makes `path` ambiguous; a loose copy has neither. A file inside an archive placed only because the archive file itself has a copy names the archive's copy, with `via_archive` `true`, and takes its `place_offline`. `covered_by`, for a folder, opened archive, or folder inside one: the relation with the most bytes in common of kind `same`, or `inside` when this one is inside the other, as `{"kind","other":{"id","source_id","path","path_b64"}}`; `null` when there is none.
+- On the entry of `GET /api/entries/{id}` only: `member_places`, an opened archive's members' unpacked sizes by place, with the archive file's own copies applied, as the `relate` job stored them; `null` for anything else and while not computed. The treemap's entry does not carry it. The entry answer also carries `places_updating`, `true` while the `relate` job is due or running, when folder figures may still change.
+
+`sort=only_here` sorts children by the bytes only on this source (only copies and copies on the same source, without disposable files), then by the bytes not checked yet or unreadable, largest first unless `order=asc`. A folder or opened archive not computed yet sorts first; a missing entry counts as holding nothing, so it sorts last. `hide=other_source` leaves out the rows with nothing to keep here: those placed `other_source` or `none`, disposable files, and missing entries. Both need `places=1`, place every item of the folder on each request, and page with cursors of their own.
 
 ### Search parameters
 
@@ -1789,11 +1835,23 @@ The Map answers "where is my space?" for one folder at a time. The Map link open
 - **The table** lists every item of the folder with its name, size, file count (for folders, everything inside), type or category, the range of modification dates, whether it has copies (**Has copies**, see [Opportunities and Compare](#opportunities-and-compare)), the suggestion of the rules, and the decision. Under each folder's size, a thin bar shows its composition in the family colors; when at least 1% of a folder's bytes belongs to another family, the category also gives the main family's share, such as "Personal media · 98% personal" (see [What a folder is made of](#what-a-folder-is-made-of)). A decision followed from a folder above reads like "Keep (inherited)". Click a column title (Name, Size, Files, Changed) to sort by it, and click it again to reverse the order. Scrolling down loads more rows; a Load more button does the same. In a narrow window the table hides the Changed column first, then Suggestion, Decision, Has copies, and Files, and scrolls sideways inside its frame if it still does not fit.
 - **The two follow each other:** pointing at a row outlines its area, and pointing at an area highlights its row.
 - **Clicking a folder's area or its name** opens that folder in both. Clicking a file's area or any row opens the [detail panel](#the-detail-panel) for it.
-- **Color by** paints the areas by category family, file type, age (time since the last change), decision, whether they have copies, or tag (choose the tag next to it). By family, each area takes the family holding most of its bytes, so a photo no rule recognized is still Personal and valuable. The legend names each color.
+- **Color by** paints the areas by category family, file type, age (time since the last change), decision, whether they have copies, where their copies are, or tag (choose the tag next to it). By family, each area takes the family holding most of its bytes, so a photo no rule recognized is still Personal and valuable. The legend names each color.
 - **Search in this folder** opens Search limited to the folder.
 - **The keyboard** works in the table, as in the review lists: the up and down arrows move the selected row and open its details, scrolling the table; Enter opens the selected folder, or shows the selected file in the viewer; Escape closes the details. With no row selected, the down arrow selects the first row and the up arrow the last. The keys do nothing while you type in a field, inside a dialog, or in the detail panel, which handles its own keys.
 
-The address keeps the folder, the order, the coloring, and the open details, so it can be bookmarked or reloaded.
+**Only here** switches the Map to where copies are: whether each item also exists somewhere else. The treemap is then colored by place, and the **Where copies are** column replaces Has copies. Each row says its place in words:
+
+- **Only copy,** highlighted with its name in bold: nothing else holds this content, on any source.
+- **Copies only on this source,** highlighted more lightly, such as "3 copies, all on this source": losing this disk loses them all.
+- **Copy on another source,** dimmed. A copy on a source that is not connected still counts, and the row says "(the other source is not connected)".
+- **Not checked yet, Could not be read, and Not computed yet** carry a dashed mark: Precious cannot tell yet.
+- **Empty files, links, and disposable files** (see [Categories and families](#categories-and-families)) are muted; a disposable file adds "· disposable".
+
+A folder or archive names its first place, such as "2 GiB only copy", over a bar of its bytes by place; an archive is placed by what is inside it. Under a file's name, "Also at …" names one other copy, links to it, and says how many more there are; a long path is cut from its start, so that the file's name and the other source stay readable. A folder whose whole content is also in another folder names it, with a **Compare** link. The line above the table totals the open folder by place, an archive's in unpacked sizes. A folder that could not be read says "Could not be read", or "Partly unreadable" when it was read in part, is a mount point, or holds something that could not be read; it is never called empty. Until hashing has checked everything on all sources, the line says how much was checked, since an only copy may still turn out to have one; the share reads 99% at most until everything is checked, as in the detail panel. Folder figures follow hashing and scans when relations are recomputed (see [When relations are recomputed](#when-relations-are-recomputed)); meanwhile the line says "Updating…".
+
+Click **Where copies are** to sort by the size kept only on this source, largest first, with folders not computed yet before all. **Hide what has a copy on another source** leaves what still needs keeping here: only copies, copies only on this source, and what is not known yet. Empty and missing items and disposable files are hidden too, as the hint beside it says; the treemap still shows everything. On a narrow screen, the **Where copies are** column stays and **Type or category** hides instead.
+
+The address keeps the folder, the order, the coloring, Only here and its hiding, and the open details, so it can be bookmarked or reloaded.
 
 ### Search
 
@@ -1831,6 +1889,7 @@ Clicking an item on the Map or in Search opens its details beside the screen, or
 - **A preview of a file,** without choosing Open: a photo scaled to the panel (click it to see it full size), a video or audio player, a PDF, or the first 40 lines of a text, source, or Markdown file. Other types offer the download. A file changed on disk since the last scan, or on a disk that is not connected, says so instead.
 - **For a folder, its size by category** (its composition) and **Inside this folder**, the notable entries below it with their category and size, each opening its own details. See [What a folder is made of](#what-a-folder-is-made-of).
 - **Size by file type and by year** for a folder.
+- **Where copies are,** in the Map's Only here mode (see [Map](#map)). A folder lists its files and bytes that are the only copy, that have copies only on this source, that have a copy on another source, that are not checked yet, and that could not be read; its disposable files get a line of their own, wherever their copies are; and the share of the content checked on all sources follows. Precious works these figures out in the background after scans and hashing, so the panel says when they are not computed yet or are being updated. A folder that could not be read says so in its row's words, never that it holds nothing. For an archive Precious read completely, the figures are the unpacked sizes of the items inside, and the panel says so; a line then gives the split its row shows in its folder, its size on disk by place, such as "In its folder, its 40 MiB on disk count as: 30 MiB only copy, 10 MiB with a copy on another source." A file says where its copies are in one sentence above its list of copies: the only copy, other copies all on this source, a copy on another source (noting when that source is not connected), not checked yet, or could not be read. An item inside an archive with no copy of its own says when the archive itself has one. A missing item, or one in quarantine, shows no place. Outside the mode, and in Search, the panel leaves this out.
 - **Classification:** the category, family, and suggestion, the traits, and one sentence per rule explaining why. A file no rule recognized reads "Not classified" and says which family its type counts under. When discard was held back because the folder holds your own material, the panel says so and lists the files that caused it, each a link to its details. See [Reading the explanations](#reading-the-explanations). **Change category** sets your own category or goes back to the rules, and, for a folder, **Review as one item** offers As the rules say, Yes, and No. A value you set reads **set by you**, with what the rules would set beside it, and after a change the panel notes that the figures of the folders above update when the scan ends. See [Your own category and groups](#your-own-category-and-groups).
 - **Decision:** the item's own decision ("None: follows its folder" when it has none) and the one in force, with where it comes from: set on this item, inherited from a named folder (a link), or undecided because no folder above has a decision. The buttons Follow folder, Undecided, Keep, Discard, and Later set this item's own decision, even when it is kept; Follow folder removes it. See [Decisions](#decisions).
 - **Tags:** the item's own tags, each with a button to remove it, and the tags it inherits, each naming the folder it comes from. An inherited tag can be removed only at that folder. Add an existing tag from the list, or type a new name and choose **Create and add**; a name that already exists, in any letter case, is refused with a message.
