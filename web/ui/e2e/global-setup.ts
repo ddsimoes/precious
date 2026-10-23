@@ -1,28 +1,30 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdirSync, openSync, writeFileSync } from 'node:fs'
+import { mkdirSync, openSync, readdirSync, writeFileSync } from 'node:fs'
 import { chmod, copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
-import { adminPassword, bulkFiles, bulkFolders } from './env'
+import { adminPassword, bulkFiles, bulkFolders, copiesFixture } from './env'
 
 const uiDir = fileURLToPath(new URL('..', import.meta.url))
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url))
 
 // globalSetup builds the UI and the binary that embeds it, writes the
-// regression corpus and a bulk folder (large enough for a scan's progress to
-// be seen) into a temporary disk folder, configures a state directory there,
-// sets the administrator password through the real interactive command, and
-// starts `precious serve`. The returned function stops the server and
-// removes everything; the server's log is kept as test-results/serve.log.
+// regression corpus, a bulk folder (large enough for a scan's progress to
+// be seen), and the copies folder of the Only here tests into a temporary
+// disk folder, configures a state directory there, sets the administrator
+// password through the real interactive command, and starts `precious
+// serve`. The returned function stops the server and removes everything;
+// the server's log is kept as test-results/serve.log.
 export default async function globalSetup(): Promise<() => Promise<void>> {
   // Canonical, as the server resolves the allowed roots and shows sources.
   const tmp = await realpath(await mkdtemp(join(tmpdir(), 'precious-e2e-')))
   const corpus = join(tmp, 'disk', 'corpus')
+  const copies = join(tmp, 'disk', 'copies')
   let server: ChildProcess | undefined
 
   const teardown = async () => {
@@ -44,6 +46,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     run('go', ['build', '-o', binary, './cmd/precious'], repoRoot)
     run('go', ['run', './tools/gencorpus', '-out', corpus], repoRoot)
     writeBulk(join(tmp, 'disk', 'bulk'))
+    await writeCopies(corpus, copies)
 
     const port = await freePort()
     const origin = `http://127.0.0.1:${port}`
@@ -76,6 +79,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     process.env.PRECIOUS_E2E_ORIGIN = origin
     process.env.PRECIOUS_E2E_TRUTH = join(tmp, 'disk', 'ground_truth.json')
     process.env.PRECIOUS_E2E_CORPUS = corpus
+    process.env.PRECIOUS_E2E_COPIES = copies
   } catch (error) {
     await teardown()
     throw error
@@ -97,6 +101,28 @@ function writeBulk(dir: string) {
       writeFileSync(join(folder, `file${f}.dat`), data)
     }
   }
+}
+
+// writeCopies writes copiesFixture into dir from the corpus: the photo
+// folder's files byte for byte, the photos, the first photo again, and the
+// file of its own.
+async function writeCopies(corpus: string, dir: string) {
+  const { folder, photos, again, own } = copiesFixture
+  await mkdir(join(dir, folder.to), { recursive: true })
+  for (const entry of readdirSync(join(corpus, folder.from), { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      throw new Error(`${folder.from}/${entry.name} is not a file: the copy of the folder would differ`)
+    }
+    await copyFile(join(corpus, folder.from, entry.name), join(dir, folder.to, entry.name))
+  }
+  await mkdir(join(dir, photos.to))
+  for (const path of photos.from) {
+    await copyFile(join(corpus, path), join(dir, photos.to, basename(path)))
+  }
+  await mkdir(join(dir, again.to))
+  await copyFile(join(corpus, again.from), join(dir, again.to, basename(again.from)))
+  await mkdir(join(dir, own.folder))
+  await writeFile(join(dir, own.folder, own.name), own.text)
 }
 
 // setPassword runs `precious admin set-password`, which reads the password
