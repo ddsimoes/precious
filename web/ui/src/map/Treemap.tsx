@@ -165,21 +165,28 @@ export function Treemap({
         className="h-[60vh] min-h-64 w-full overflow-hidden rounded-lg border bg-card"
       />
       <ul aria-label={t('map.treemapAreas')} className="sr-only">
-        {data.items.map((row) => (
-          <li key={row.id}>
-            <Button
-              variant="ghost"
-              onFocus={() => onHover(row.id)}
-              onBlur={() => onHover(null)}
-              onClick={() => (isDrillable(row) ? onDrill(row.id) : onSelect(row.id))}
-            >
-              {isDrillable(row)
-                ? t('map.openFolder', { name: row.name })
-                : t('map.showDetails', { name: row.name })}{' '}
-              ({fmt.bytes(row.total_bytes)})
-            </Button>
-          </li>
-        ))}
+        {data.items.map((row) => {
+          // Colored by place, each area also says its place in words.
+          const place =
+            colorMode !== 'places' || row.place === undefined || row.place === null
+              ? null
+              : t(`map.place.${row.disposable === true ? 'disposable' : row.place}`)
+          return (
+            <li key={row.id}>
+              <Button
+                variant="ghost"
+                onFocus={() => onHover(row.id)}
+                onBlur={() => onHover(null)}
+                onClick={() => (isDrillable(row) ? onDrill(row.id) : onSelect(row.id))}
+              >
+                {isDrillable(row)
+                  ? t('map.openFolder', { name: row.name })
+                  : t('map.showDetails', { name: row.name })}{' '}
+                ({place === null ? fmt.bytes(row.total_bytes) : `${fmt.bytes(row.total_bytes)}, ${place}`})
+              </Button>
+            </li>
+          )
+        })}
         {data.other.count > 0 && (
           <li>
             <Button variant="ghost" onClick={onOther}>
