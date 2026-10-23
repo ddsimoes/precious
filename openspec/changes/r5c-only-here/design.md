@@ -463,12 +463,13 @@ Each of the following returns 400 `invalid_request`:
   } | null,
   // children rows only:
   "other_copy": {"ref": "123" | "m456", "source_id": "…", "path": "…", "path_b64": "…",
-                 "archive_id": "789" | null, "offline": false, "via_archive": false, "more": 2} | null,
+                 "archive_id": "789" | null, "archive_path": "…", "member_path": "…",  // the two paths only with archive_id
+                 "offline": false, "via_archive": false, "more": 2} | null,
   "covered_by": {"kind": "same" | "inside", "other": {"id": "321", "source_id": "…", "path": "…", "path_b64": "…"}} | null
 }
 ```
 
-For a complete archive, `GET /api/entries/{id}?places=1` and the treemap's `entry` both carry two figures:
+For a complete archive, `GET /api/entries/{id}?places=1` carries two figures on its entry row (the treemap's `entry` carries only `places`; review R1):
 - `places`, the D5 split, as its row in its parent shows it;
 - `member_places`, the unpacked member sums with the coverage applied. The Map's totals line and the panel read this one when the archive is open or selected.
 
@@ -540,7 +541,7 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
   - **Inputs:** only the member bytes are read; file counts and `Disposable` are ignored, and the result's `Disposable` is zero. Negative inputs count as 0.
   - **Overflow:** totals above 64 bits are scaled down before `Div64`.
   - **No member bytes:** gives the empty split, and the caller places the archive by `own`.
-- **A2. `member_places` sits on the entry row** (task 1.3): `detail.entry.member_places`, and the treemap's `entry`. `places_updating` sits at the top of the entry response. The query keys without options are unchanged, so invalidating them also refreshes the place variants.
+- **A2. `member_places` sits on the entry row** (task 1.3): `detail.entry.member_places`. Since review R1, the treemap's `entry` no longer carries it. `places_updating` sits at the top of the entry response. The query keys without options are unchanged, so invalidating them also refreshes the place variants.
 - **A3. The upgrade note** (task 1.1) gives no time for the first relate pass; 6.2 measures it.
 - **A4. The relate pass** (task 2.1):
   - **Classifier:** `LoadSnapshot` takes the classifier as a third parameter; its only caller is the pass.
