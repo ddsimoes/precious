@@ -13,17 +13,19 @@ import (
 	"precious/internal/store/storetest"
 )
 
-// R5c task 2.1, design D13: entry_places equals a direct computation on the
-// seeded corpus beside a second source, "copies", that holds copies of
-// every third corpus file, a byte-identical copy of one corpus zip, and a
-// copy of another corpus zip as a plain file, which covers its members,
-// and a complete zip hard-linked to a name that is never listed.
+// R5c task 2.1, design D13: entry_places, archive_places, and member_places
+// equal a direct computation on the seeded corpus beside a second source,
+// "copies", that holds copies of every third corpus file, a byte-identical
+// copy of one corpus zip, and a copy of another corpus zip as a plain file,
+// which covers its members, and a complete zip hard-linked to a name that
+// is never listed.
 // Plain SQL places every file and member by D1: its content state, and for
 // a hashed one its physical copies (a hard-link set, the members of one
 // archive identity, and a tar link with its target count once) and their
-// sources. Go then sums the places per folder, member classification by
-// the default rules (D14), and splits each complete archive by D5. An
-// unchanged index then writes no entry_places row.
+// sources. Go then sums the places per folder and per member folder,
+// member classification by the default rules (D14), applies each complete
+// archive's own coverage to its unpacked sums, and splits it by D5. An
+// unchanged index then writes no row of these tables.
 func TestEntryPlacesEqualADirectComputation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -229,6 +231,7 @@ func TestEntryPlacesEqualADirectComputation(t *testing.T) {
 		t.Fatal(err)
 	}
 	completes := 0
+	wantArchives, wantMembers := map[int64]domain.PlaceSums{}, map[int64]domain.PlaceSums{}
 	for _, f := range files {
 		disposable := domain.IsDisposable(domain.Category(f.category), domain.FileKind(f.kind), domain.Triage(f.triage))
 		own := place(f.state, f.cid, f.src)
@@ -239,45 +242,74 @@ func TestEntryPlacesEqualADirectComputation(t *testing.T) {
 			continue
 		}
 		completes++
-		var row domain.PlaceSums
-		if disposable {
-			row.Disposable = pa(1, f.size)
-		} else {
-			// The members' sums, then the archive file's own coverage.
-			var m domain.PlaceSums
-			err := scanAll(ctx, q, `SELECT m.name, COALESCE(t.size, m.size), COALESCE(t.state, m.state),
-					COALESCE(t.content_id, m.content_id, 0)
-				FROM archive_members m LEFT JOIN archive_members t ON t.id = m.link_member
-				WHERE m.archive_id = ? AND m.kind = 'file' AND COALESCE(t.size, m.size) > 0`, []any{f.id},
-				func(r *sql.Rows) error {
-					var name []byte
-					var size, cid int64
-					var state string
-					if err := r.Scan(&name, &size, &state, &cid); err != nil {
-						return err
-					}
-					add(&m, place(state, cid, f.src), domain.IsDisposable(classify(name, size)), size)
-					return nil
-				})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if f.state == string(domain.ContentHashed) {
-				switch own {
-				case domain.PlaceOtherSource:
-					m = domain.PlaceSums{OtherSource: pa(
-						m.OnlyCopy.Files+m.ThisSource.Files+m.OtherSource.Files+m.Unchecked.Files+m.Unreadable.Files,
-						m.OnlyCopy.Bytes+m.ThisSource.Bytes+m.OtherSource.Bytes+m.Unchecked.Bytes+m.Unreadable.Bytes)}
-				case domain.PlaceThisSource:
-					m.ThisSource = pa(m.ThisSource.Files+m.OnlyCopy.Files, m.ThisSource.Bytes+m.OnlyCopy.Bytes)
-					m.OnlyCopy = domain.PlaceAmount{}
+		// The members' sums, whole and per member folder (each member adds
+		// to every folder above it), then the archive file's own coverage.
+		var m domain.PlaceSums
+		folderOf := map[int64]int64{} // member folder -> its parent folder, 0 at the top
+		err := scanAll(ctx, q, `SELECT id, COALESCE(parent_id, 0) FROM archive_members
+			WHERE archive_id = ? AND kind = 'directory'`, []any{f.id}, func(r *sql.Rows) error {
+			var id, p int64
+			err := r.Scan(&id, &p)
+			folderOf[id] = p
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		folders := map[int64]*domain.PlaceSums{}
+		for id := range folderOf {
+			folders[id] = &domain.PlaceSums{}
+		}
+		err = scanAll(ctx, q, `SELECT m.name, COALESCE(m.parent_id, 0), COALESCE(t.size, m.size), COALESCE(t.state, m.state),
+				COALESCE(t.content_id, m.content_id, 0)
+			FROM archive_members m LEFT JOIN archive_members t ON t.id = m.link_member
+			WHERE m.archive_id = ? AND m.kind = 'file' AND COALESCE(t.size, m.size) > 0`, []any{f.id},
+			func(r *sql.Rows) error {
+				var name []byte
+				var dir, size, cid int64
+				var state string
+				if err := r.Scan(&name, &dir, &size, &state, &cid); err != nil {
+					return err
 				}
+				pl, disp := place(state, cid, f.src), domain.IsDisposable(classify(name, size))
+				add(&m, pl, disp, size)
+				for ; dir != 0; dir = folderOf[dir] {
+					add(folders[dir], pl, disp, size)
+				}
+				return nil
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cover := func(m domain.PlaceSums) domain.PlaceSums {
+			if f.state != string(domain.ContentHashed) {
+				return m
 			}
-			if m.OnlyCopy.Bytes+m.ThisSource.Bytes+m.OtherSource.Bytes+m.Unchecked.Bytes+m.Unreadable.Bytes > 0 {
-				row = domain.SplitArchive(f.size, m)
-			} else {
-				add(&row, own, false, f.size)
+			switch own {
+			case domain.PlaceOtherSource:
+				m = domain.PlaceSums{OtherSource: pa(
+					m.OnlyCopy.Files+m.ThisSource.Files+m.OtherSource.Files+m.Unchecked.Files+m.Unreadable.Files,
+					m.OnlyCopy.Bytes+m.ThisSource.Bytes+m.OtherSource.Bytes+m.Unchecked.Bytes+m.Unreadable.Bytes),
+					Disposable: m.Disposable}
+			case domain.PlaceThisSource:
+				m.ThisSource = pa(m.ThisSource.Files+m.OnlyCopy.Files, m.ThisSource.Bytes+m.OnlyCopy.Bytes)
+				m.OnlyCopy = domain.PlaceAmount{}
 			}
+			return m
+		}
+		m = cover(m)
+		wantArchives[f.id] = m
+		for id, p := range folders {
+			wantMembers[id] = cover(*p)
+		}
+		var row domain.PlaceSums
+		switch {
+		case disposable:
+			row.Disposable = pa(1, f.size)
+		case m.OnlyCopy.Bytes+m.ThisSource.Bytes+m.OtherSource.Bytes+m.Unchecked.Bytes+m.Unreadable.Bytes > 0:
+			row = domain.SplitArchive(f.size, m)
+		default:
+			add(&row, own, false, f.size)
 		}
 		want[f.id] = &row
 		up(f.dir, row)
@@ -290,6 +322,35 @@ func TestEntryPlacesEqualADirectComputation(t *testing.T) {
 		if g, ok := got[id]; !ok || g != *w {
 			t.Errorf("entry %d: entry_places %+v (stored %v), want %+v", id, g, ok, *w)
 		}
+	}
+	// archive_places and member_places: one row per complete archive and
+	// per member folder, its unpacked members under the coverage.
+	for _, c := range []struct {
+		table string
+		got   map[int64]domain.PlaceSums
+		want  map[int64]domain.PlaceSums
+	}{
+		{"archive_places", storedRows(t, st, archivePlacesTable), wantArchives},
+		{"member_places", storedRows(t, st, memberPlacesTable), wantMembers},
+	} {
+		if len(c.got) != len(c.want) {
+			t.Errorf("%d %s rows, want %d", len(c.got), c.table, len(c.want))
+		}
+		for id, w := range c.want {
+			if g, ok := c.got[id]; !ok || g != w {
+				t.Errorf("%s %d: %+v (stored %v), want %+v", c.table, id, g, ok, w)
+			}
+		}
+	}
+	// Not vacuous: member folders, some covered by a copy of their archive.
+	covered := 0
+	for _, p := range wantMembers {
+		if p.OtherSource.Files > 0 && p.OnlyCopy.Files == 0 {
+			covered++
+		}
+	}
+	if len(wantMembers) < 4 || covered == 0 {
+		t.Errorf("%d member folders, %d wholly elsewhere", len(wantMembers), covered)
 	}
 	// The figures are not vacuous: both sources, copies on each side, and
 	// both copies of the zip wholly elsewhere.
@@ -313,14 +374,16 @@ func TestEntryPlacesEqualADirectComputation(t *testing.T) {
 		t.Errorf("copia/hl: %+v, want %+v", g, only(2, 500))
 	}
 
-	// A second pass with nothing changed writes no entry_places row
+	// A second pass with nothing changed writes no row of any places table
 	// (temporary triggers on the single writer connection count them).
-	for _, stmt := range []string{
-		`CREATE TEMP TABLE ep_writes (n INTEGER)`,
-		`CREATE TEMP TRIGGER ep_ins AFTER INSERT ON main.entry_places BEGIN INSERT INTO ep_writes VALUES (1); END`,
-		`CREATE TEMP TRIGGER ep_upd AFTER UPDATE ON main.entry_places BEGIN INSERT INTO ep_writes VALUES (1); END`,
-		`CREATE TEMP TRIGGER ep_del AFTER DELETE ON main.entry_places BEGIN INSERT INTO ep_writes VALUES (1); END`,
-	} {
+	stmts := []string{`CREATE TEMP TABLE ep_writes (n INTEGER)`}
+	for _, table := range []string{"entry_places", "archive_places", "member_places"} {
+		for _, op := range []string{"INSERT", "UPDATE", "DELETE"} {
+			stmts = append(stmts, `CREATE TEMP TRIGGER `+table+`_`+op+` AFTER `+op+` ON main.`+table+`
+				BEGIN INSERT INTO ep_writes VALUES (1); END`)
+		}
+	}
+	for _, stmt := range stmts {
 		if _, err := st.Writer().Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
@@ -333,6 +396,6 @@ func TestEntryPlacesEqualADirectComputation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if writes != 0 {
-		t.Errorf("an unchanged index wrote %d entry_places rows", writes)
+		t.Errorf("an unchanged index wrote %d places rows", writes)
 	}
 }

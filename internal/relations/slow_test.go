@@ -348,7 +348,9 @@ func TestRelateAtScale(t *testing.T) {
 	}
 
 	// R5c task 2.1: t05's places, each of its files with a copy (in t04,
-	// and some on big2), and one row per folder and complete archive.
+	// and some on big2), one entry_places row per folder and complete
+	// archive, one archive_places row per complete archive, and one
+	// member_places row per member folder.
 	places := storedPlaces(t, st)
 	if p := places[int64(t05.Entry)]; p.OnlyCopy.Files != 0 || p.OtherSource.Files == 0 ||
 		p.ThisSource.Files+p.OtherSource.Files != bigMids*(bigLeaves+1)*bigFiles {
@@ -357,6 +359,14 @@ func TestRelateAtScale(t *testing.T) {
 	if n := count(t, st, `SELECT (SELECT count(*) FROM entries WHERE kind = 'directory')
 		+ (SELECT count(*) FROM archives WHERE state = 'complete')`); int64(len(places)) != n {
 		t.Errorf("%d entry_places rows, want %d", len(places), n)
+	}
+	if got, want := count(t, st, `SELECT count(*) FROM archive_places`),
+		count(t, st, `SELECT count(*) FROM archives WHERE state = 'complete'`); got != want {
+		t.Errorf("%d archive_places rows, want %d", got, want)
+	}
+	if got, want := count(t, st, `SELECT count(*) FROM member_places`),
+		count(t, st, `SELECT count(*) FROM archive_members WHERE kind = 'directory'`); got != want || got == 0 {
+		t.Errorf("%d member_places rows, want %d", got, want)
 	}
 
 	// Compare two 100,000-file sides.
@@ -374,18 +384,16 @@ func TestRelateAtScale(t *testing.T) {
 		t.Errorf("compare took %v, target 2 s", took)
 	}
 
-	// A second pass over the unchanged index writes no dir_dups or
-	// entry_places row (temporary triggers on the single writer
-	// connection count them).
-	for _, stmt := range []string{
-		`CREATE TEMP TABLE big_writes (n INTEGER)`,
-		`CREATE TEMP TRIGGER big_ep_ins AFTER INSERT ON main.entry_places BEGIN INSERT INTO big_writes VALUES (1); END`,
-		`CREATE TEMP TRIGGER big_ep_upd AFTER UPDATE ON main.entry_places BEGIN INSERT INTO big_writes VALUES (1); END`,
-		`CREATE TEMP TRIGGER big_ep_del AFTER DELETE ON main.entry_places BEGIN INSERT INTO big_writes VALUES (1); END`,
-		`CREATE TEMP TRIGGER big_dd_ins AFTER INSERT ON main.dir_dups BEGIN INSERT INTO big_writes VALUES (1); END`,
-		`CREATE TEMP TRIGGER big_dd_upd AFTER UPDATE ON main.dir_dups BEGIN INSERT INTO big_writes VALUES (1); END`,
-		`CREATE TEMP TRIGGER big_dd_del AFTER DELETE ON main.dir_dups BEGIN INSERT INTO big_writes VALUES (1); END`,
-	} {
+	// A second pass over the unchanged index writes no dir_dups or places
+	// row (temporary triggers on the single writer connection count them).
+	stmts := []string{`CREATE TEMP TABLE big_writes (n INTEGER)`}
+	for _, table := range []string{"dir_dups", "entry_places", "archive_places", "member_places"} {
+		for _, op := range []string{"INSERT", "UPDATE", "DELETE"} {
+			stmts = append(stmts, `CREATE TEMP TRIGGER big_`+table+`_`+op+` AFTER `+op+` ON main.`+table+`
+				BEGIN INSERT INTO big_writes VALUES (1); END`)
+		}
+	}
+	for _, stmt := range stmts {
 		if _, err := st.Writer().Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
@@ -398,7 +406,7 @@ func TestRelateAtScale(t *testing.T) {
 		t.Fatal(err)
 	}
 	if writes != 0 {
-		t.Errorf("a second pass over the unchanged index wrote %d dir_dups and entry_places rows", writes)
+		t.Errorf("a second pass over the unchanged index wrote %d dir_dups and places rows", writes)
 	}
 }
 

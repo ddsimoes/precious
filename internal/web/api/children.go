@@ -408,12 +408,18 @@ func (h *handler) children(w http.ResponseWriter, r *http.Request) {
 // memberPage reads up to limit members of an archive level after the
 // cursor, with their places when the level has its archive's coverage
 // (nil otherwise), and the cursor of the next page ("" on the last). Hide
-// and every sort run in memory, which one archive bounds.
+// and every sort run in memory, which one archive bounds. Only an order by
+// place places every member of the level; any other places the page's.
 func (h *handler) memberPage(ctx context.Context, tx *sql.Tx, l level, o childOrder, after *childCursor,
 	limit int) ([]search.Row, []*placed, string, error) {
 	ms, err := l.members(ctx, tx, h.pol)
 	if err != nil {
 		return nil, nil, "", err
+	}
+	if o.byPlace() {
+		if err := l.place(ctx, tx, h.pol, memberPtrs(ms)); err != nil {
+			return nil, nil, "", err
+		}
 	}
 	ms = slices.DeleteFunc(ms, func(m member) bool {
 		return o.kind != "" && m.row.Kind != o.kind || o.hide && !m.pl.kept()
@@ -431,23 +437,36 @@ func (h *handler) memberPage(ctx context.Context, tx *sql.Tx, l level, o childOr
 	if after != nil {
 		at = after.key()
 	}
-	items := make([]search.Row, 0, min(limit+1, len(ms)))
-	var pl []*placed
-	var last orderKey
+	page := make([]*member, 0, min(limit, len(ms)))
+	var (
+		next string
+		last orderKey
+	)
 	for _, i := range idx {
 		if after != nil && o.cmpDir(keys[i], at) <= 0 {
 			continue
 		}
-		if len(items) == limit {
-			return items, pl, o.cursorAt(last), nil
+		if len(page) == limit {
+			next = o.cursorAt(last)
+			break
 		}
-		items = append(items, ms[i].row)
-		if l.cover != nil {
-			pl = append(pl, ms[i].pl)
-		}
+		page = append(page, &ms[i])
 		last = keys[i]
 	}
-	return items, pl, "", nil
+	if !o.byPlace() {
+		if err := l.place(ctx, tx, h.pol, page); err != nil {
+			return nil, nil, "", err
+		}
+	}
+	items := make([]search.Row, len(page))
+	var pl []*placed
+	for i, m := range page {
+		items[i] = m.row
+		if l.cover != nil {
+			pl = append(pl, m.pl)
+		}
+	}
+	return items, pl, next, nil
 }
 
 // childPage reads up to limit children of parent after the cursor, with
@@ -588,8 +607,9 @@ func (h *handler) treemap(w http.ResponseWriter, r *http.Request) {
 }
 
 // memberTreemap is the treemap of an archive level: the archive's or the
-// member folder's row, its largest members, and the others, with their
-// places when the level has its archive's coverage.
+// member folder's row, its largest members, and the others, with the
+// places of the row and of the members laid out when the level has its
+// archive's coverage.
 func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treemapBody, error) {
 	var (
 		self   search.Row
@@ -599,13 +619,10 @@ func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treem
 	case l.leaf != nil:
 		self, selfPl = l.leaf.row, l.leaf.pl
 	case l.folder != nil:
-		if _, err := fillFolder(ctx, tx, h.pol, l.folder, l.cover); err != nil {
+		if _, err := fillFolder(ctx, tx, h.pol, l.folder); err != nil {
 			return treemapBody{}, err
 		}
-		self = l.folder.row
-		if l.cover != nil {
-			selfPl = l.cover.placedOf(l.folder, h.pol)
-		}
+		self, selfPl = l.folder.row, l.folder.pl
 	default:
 		rows, err := appendRows(ctx, tx, make([]search.Row, 0, 1),
 			`SELECT `+search.Columns+` FROM `+search.From+` WHERE e.id = ?`, []any{int64(l.archive)})
@@ -629,6 +646,9 @@ func (h *handler) memberTreemap(ctx context.Context, tx *sql.Tx, l level) (treem
 		return treemapBody{}, err
 	}
 	childOrder{sort: search.SortBytes, desc: true}.sortMembers(ms)
+	if err := l.place(ctx, tx, h.pol, memberPtrs(ms[:min(len(ms), treemapItems)])); err != nil {
+		return treemapBody{}, err
+	}
 	body := treemapBody{Entry: rowJSON(&self), Items: make([]entryRow, 0, min(len(ms), treemapItems))}
 	if selfPl != nil {
 		body.Entry.rowPlaces = selfPl.json(false)

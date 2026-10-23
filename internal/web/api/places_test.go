@@ -629,6 +629,28 @@ func TestMemberPlaces(t *testing.T) {
 	if tm := w.treemap(photos.ID); tm.Entry.Places == nil || tm.Entry.place() != "other_source" || len(tm.Items) != 3 {
 		t.Errorf("treemap of photos: %+v", tm.Entry)
 	}
+
+	// Until a relate pass stores them, a member folder reads not_computed,
+	// hide keeps it, and the archive's member_places is null; its files are
+	// still placed live.
+	w.exec(t, `DELETE FROM member_places WHERE member_id = ?`, strings.TrimPrefix(photos.ID, "m"))
+	w.exec(t, `DELETE FROM archive_places WHERE entry_id = ?`, backup)
+	rows, _ = w.children(backup, "", 100)
+	if r := byName(rows)["photos"]; r.place() != "not_computed" || r.Places != nil {
+		t.Errorf("photos without a row: %s, places %+v", r.place(), r.Places)
+	}
+	if r := byName(rows)["own.jpg"]; r.place() != "other_source" {
+		t.Errorf("own.jpg without its folder rows: %s", r.place())
+	}
+	if hidden, _ := w.children(backup, "hide=other_source", 100); len(hidden) != 1 || hidden[0].Name != "photos" {
+		t.Errorf("hide keeps %+v, want photos alone", hidden)
+	}
+	if d := w.detail(photos.ID); d.Entry.place() != "not_computed" {
+		t.Errorf("entry of photos without a row: %s", d.Entry.place())
+	}
+	if d := w.detail(backup); d.Entry.MemberPlaces != nil {
+		t.Errorf("backup.zip without its row: member_places %+v", d.Entry.MemberPlaces)
+	}
 }
 
 // r5c task 3.1, design D11, D14: the not-connected mark follows the copy's
@@ -750,7 +772,10 @@ func threeSourceWorld(t *testing.T) *pworld {
 
 // r5c task 3.1: on the seeded three-source world after a relate pass, for
 // every folder, its child files' live places plus its child folders' and
-// archives' stored places sum to its own stored places.
+// archives' stored places sum to its own stored places; inside every
+// complete archive and member folder, its member files' live places plus
+// its member folders' stored places sum to the archive's stored
+// member_places and the member folder's stored places.
 func TestFolderPlacesAgreeWithTheirChildren(t *testing.T) {
 	t.Parallel()
 	w := threeSourceWorld(t)
@@ -771,13 +796,12 @@ func TestFolderPlacesAgreeWithTheirChildren(t *testing.T) {
 	if len(folders) < 8 {
 		t.Fatalf("only %d folders", len(folders))
 	}
-	for _, f := range folders {
-		d := w.detail(f)
-		if d.Entry.Places == nil {
-			t.Fatalf("folder %s has no places", d.Entry.Path)
-		}
+	// agree checks the level ref, whose stored places are stored, against
+	// its children, and returns them.
+	agree := func(ref, name string, stored psums) []prow {
+		t.Helper()
 		var sum psums
-		kids, _ := w.children(f, "", 1000)
+		kids, _ := w.children(ref, "", 1000)
 		for _, k := range kids {
 			switch {
 			case k.Places != nil:
@@ -792,14 +816,14 @@ func TestFolderPlacesAgreeWithTheirChildren(t *testing.T) {
 				a.Bytes += k.Size
 			}
 		}
-		if sum != *d.Entry.Places {
-			t.Errorf("folder %q: children sum to %+v, stored %+v", d.Entry.Path, sum, *d.Entry.Places)
+		if sum != stored {
+			t.Errorf("%q: children sum to %+v, stored %+v", name, sum, stored)
 		}
 		// The set-based sort and hide place every child as its row reads.
 		for _, order := range []string{"desc", "asc"} {
-			sorted, _ := w.children(f, "sort=only_here&order="+order, 1000)
+			sorted, _ := w.children(ref, "sort=only_here&order="+order, 1000)
 			if len(sorted) != len(kids) {
-				t.Errorf("folder %q: %d rows sorted, %d listed", d.Entry.Path, len(sorted), len(kids))
+				t.Errorf("%q: %d rows sorted, %d listed", name, len(sorted), len(kids))
 			}
 			checkOnlyHereOrder(t, sorted, order == "desc")
 		}
@@ -809,15 +833,52 @@ func TestFolderPlacesAgreeWithTheirChildren(t *testing.T) {
 				want = append(want, k.ID)
 			}
 		}
-		hidden, _ := w.children(f, "hide=other_source", 1000)
+		hidden, _ := w.children(ref, "hide=other_source", 1000)
 		for _, k := range hidden {
 			got = append(got, k.ID)
 		}
 		slices.Sort(want)
 		slices.Sort(got)
 		if !slices.Equal(got, want) {
-			t.Errorf("folder %q: hide keeps %v, its rows %v", d.Entry.Path, got, want)
+			t.Errorf("%q: hide keeps %v, its rows %v", name, got, want)
 		}
+		return kids
+	}
+	for _, f := range folders {
+		d := w.detail(f)
+		if d.Entry.Places == nil {
+			t.Fatalf("folder %s has no places", d.Entry.Path)
+		}
+		agree(f, d.Entry.Path, *d.Entry.Places)
+	}
+	// Member folders, at any depth, as their rows and entries read them.
+	var inside func(ref, name string, stored psums) int
+	inside = func(ref, name string, stored psums) int {
+		n := 0
+		for _, k := range agree(ref, name, stored) {
+			if k.Kind != "directory" {
+				continue
+			}
+			if k.Places == nil {
+				t.Fatalf("member folder %s has no places", k.Path)
+			}
+			if d := w.detail(k.ID); d.Entry.Places == nil || *d.Entry.Places != *k.Places {
+				t.Errorf("member folder %s: entry places %+v, row %+v", k.Path, d.Entry.Places, *k.Places)
+			}
+			n += 1 + inside(k.ID, k.Path, *k.Places)
+		}
+		return n
+	}
+	memberFolders := 0
+	for _, arc := range []string{"home/docs/backup.zip", "home/docs/solo.zip"} {
+		d := w.detail(w.id(arc))
+		if d.Entry.MemberPlaces == nil {
+			t.Fatalf("%s has no member_places", arc)
+		}
+		memberFolders += inside(w.id(arc), arc, *d.Entry.MemberPlaces)
+	}
+	if memberFolders == 0 {
+		t.Errorf("no member folder checked")
 	}
 	// The world holds every place.
 	root := w.detail(w.id("home"))

@@ -270,8 +270,9 @@ func (h *handler) readMember(ctx context.Context, tx *sql.Tx, id domain.MemberID
 }
 
 // entryPlaces sets the place of entry id on its row e, and its
-// member_places: a complete archive's unpacked member sums under its own
-// coverage, null for anything else.
+// member_places: a complete archive's stored unpacked member sums under its
+// own coverage (null until the relate pass stores them), null for anything
+// else.
 func (h *handler) entryPlaces(ctx context.Context, tx *sql.Tx, id domain.EntryID, e *entryRow) error {
 	pl, err := placesOf(ctx, tx, []domain.EntryID{id})
 	if err != nil {
@@ -284,11 +285,7 @@ func (h *handler) entryPlaces(ctx context.Context, tx *sql.Tx, id domain.EntryID
 	e.rowPlaces = p.json(false)
 	e.memberPlacesJSON = &memberPlacesJSON{}
 	if p.level && e.Kind == domain.EntryFile {
-		c, err := coverOf(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		sums, err := memberPlaces(ctx, tx, h.pol, c)
+		sums, err := archivePlaces(ctx, tx, id)
 		if err != nil {
 			return err
 		}
