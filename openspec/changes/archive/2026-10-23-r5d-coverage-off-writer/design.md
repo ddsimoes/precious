@@ -98,3 +98,4 @@ Deploy over r5c with no migration: back up the database, keep the previous binar
     - **Result:** 551 requests, the worst 2.08 s, and one over 2 s.
     - **Before:** on r5c, the same request timed out at 30 s (r5c A20), and sign-in failed for minutes.
     - **The gate:** it is missed by 0.08 s on that single request, which is not the minute-long stall this change removes. It is recorded, not chased.
+- **A4. Owner sign-off** (task 2.4), 2026-10-23: the owner checked the test server and accepted ("A").

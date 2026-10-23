@@ -16,4 +16,4 @@
 - [x] 2.1 Full verification: gofmt, `go vet ./...`, `go test -race ./...`, `npm test`, `npm run e2e`, `scripts/e2e-docker.sh`, and the six builds.
 - [x] 2.2 An independent review. Fix each finding with a test that fails first.
 - [x] 2.3 Open a PR and wait for CI. Deploy to the test server: back up the database and keep the previous binary. Restart, then measure sign-in latency every second for 10 minutes while the startup hashing jobs plan. No request may take over 2 s. Record the result in the Addendum.
-- [ ] 2.4 The owner signs off. Record it in the Addendum.
+- [x] 2.4 The owner signs off. Record it in the Addendum.
