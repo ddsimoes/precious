@@ -239,8 +239,8 @@ describe('Map Only here mode', () => {
     const expected: [string, string, string | null][] = [
       ['Unico', '2 GiB only copy', 'strong'],
       ['Mesma', '1 GiB only on this source', 'light'],
-      ['Copiada', 'Everything has a copy on another source, apart from 3 disposable files', 'muted'],
-      ['Dentro', 'Everything has a copy on another source', 'muted'],
+      ['Copiada', 'All also on another source, apart from 3 disposable files', 'muted'],
+      ['Dentro', 'All also on another source', 'muted'],
       ['Pendentes', 'Not checked yet', 'unknown'],
       ['Parcial', 'Partly unreadable', 'unknown'],
       ['Fechada', 'Could not be read', 'unknown'],
@@ -306,9 +306,8 @@ describe('Map Only here mode', () => {
     expect(fotoCopy).toHaveAttribute('href', '/map/1?places=1&entry=40')
     expect(rowOf('foto.jpg')).toHaveTextContent('+1 more')
 
-    const member = within(rowOf('nota.txt')).getByRole('link', {
-      name: 'Also inside Arquivo/backup.tar.gz › docs/nota.txt',
-    })
+    const member = within(rowOf('nota.txt')).getByRole('link', { name: 'Also inside backup.tar.gz › nota.txt' })
+    expect(member).toHaveAccessibleDescription('Also inside Arquivo/backup.tar.gz › docs/nota.txt')
     expect(member).toHaveAttribute('href', '/map/1?places=1&entry=m456')
 
     // A copy on another source names the source.
@@ -342,7 +341,7 @@ describe('Map Only here mode', () => {
     await table()
 
     const copiadaRow = within(rowOf('Copiada'))
-    expect(copiadaRow.getByRole('link', { name: 'Same content as Fotos 2004 on Backup disk' })).toHaveAttribute(
+    expect(copiadaRow.getByRole('link', { name: 'Same as Fotos 2004 on Backup disk' })).toHaveAttribute(
       'href',
       '/map/1?places=1&entry=321',
     )
@@ -351,7 +350,7 @@ describe('Map Only here mode', () => {
       '/compare?left=7&right=321',
     )
     const dentroRow = within(rowOf('Dentro'))
-    expect(dentroRow.getByRole('link', { name: 'Everything in it is also in Tudo' })).toBeInTheDocument()
+    expect(dentroRow.getByRole('link', { name: 'All of it is in Tudo' })).toBeInTheDocument()
     expect(dentroRow.getByRole('link', { name: 'Compare Dentro with Tudo' })).toHaveAttribute(
       'href',
       '/compare?left=8&right=322',
@@ -540,9 +539,9 @@ describe('Map Only here figures and names that read plainly', () => {
     renderApp('/map/1?places=1')
     await table()
 
-    expect(
-      within(rowOf('nota2.txt')).getByRole('link', { name: 'Also inside Importante!/backup.zip › docs/nota2.txt' }),
-    ).toHaveAttribute('href', '/map/1?places=1&entry=m457')
+    const member = within(rowOf('nota2.txt')).getByRole('link', { name: 'Also inside backup.zip › nota2.txt' })
+    expect(member).toHaveAccessibleDescription('Also inside Importante!/backup.zip › docs/nota2.txt')
+    expect(member).toHaveAttribute('href', '/map/1?places=1&entry=m457')
   })
 
   it('names a member’s own archive by its name when its path has a !', async () => {
@@ -591,38 +590,73 @@ describe('Map Only here figures and names that read plainly', () => {
     ).toHaveAttribute('href', '/map/63?places=1&entry=64')
   })
 
-  it('keeps qualifiers and the other source whole, and lets names give way on a line that never wraps', async () => {
+  it('keeps qualifiers whole or cut with the whole sentence as the title, never silently', async () => {
+    const desktop = file('33', 'desktop.ini', {
+      place: 'other_source',
+      place_offline: true,
+      disposable: true,
+      other_copy: otherCopy('51', 'Windows/desktop.ini', { source_id: 'old-disk', offline: true }),
+    })
+    stubApi(routes({ children: [copiada, desktop] }))
+    renderApp('/map/1?places=1')
+    await table()
+
+    // The words after a place's sentence give way with an ellipsis, under
+    // a title that holds the whole sentence.
+    for (const [row, words, extra] of [
+      ['desktop.ini', 'Copy on another source', '(the other source is not connected) · disposable'],
+      ['Copiada', 'All also on another source,', 'apart from 3 disposable files'],
+    ] as const) {
+      const cell = within(cellOf(row, 'Where copies are'))
+      expect(cell.getByText(extra)).toHaveClass('min-w-0', 'max-w-full', 'truncate')
+      expect(cell.getByTitle(`${words} ${extra}`)).toContainElement(cell.getByText(extra))
+    }
+  })
+
+  it('lets the sentence words under a name give way first, keeps the end of each name, and the source whole', async () => {
     stubApi(routes())
     renderApp('/map/1?places=1')
     await table()
 
-    // A place's qualifier is a span of its own that does not shrink.
-    const musicaPlace = within(cellOf('musica.mp3', 'Where copies are'))
-    expect(musicaPlace.getByText('Copy on another source')).toBeInTheDocument()
-    expect(musicaPlace.getByText('(the other source is not connected)')).toHaveClass('shrink-0')
-    const copiadaPlace = within(cellOf('Copiada', 'Where copies are'))
-    expect(copiadaPlace.getByText('apart from 3 disposable files')).toHaveClass('shrink-0')
-    // So is the other copy's source, under the name, and what follows the
-    // note on its line; the name of the other copy gives way, and the
-    // note's link clips what still does not fit, so that nothing draws over
-    // what follows it.
-    for (const [row, path, source] of [
-      ['musica.mp3', 'Musica/musica.mp3', 'on Old disk'],
-      ['Copiada', 'Fotos 2004', 'on Backup disk'],
+    for (const [row, words, path, source, long] of [
+      ['musica.mp3', 'Also at', 'Musica/musica.mp3', 'on Old disk', true],
+      ['Copiada', 'Same as', 'Fotos 2004', 'on Backup disk', false],
     ] as const) {
-      const shown = within(rowOf(row)).getByText(path)
-      expect(shown).toHaveClass('min-w-0', 'truncate')
-      const link = shown.closest('a')
-      expect(link).toHaveClass('flex', 'min-w-0', 'overflow-hidden')
-      expect(within(link!).getByText(source)).toHaveClass('shrink-0')
-      expect(link?.parentElement).toHaveClass('flex', 'min-w-0', 'whitespace-nowrap')
+      const link = within(rowOf(row)).getByRole('link', { name: `${words} ${path} ${source}` })
+      // The words shrink first, and far more than the name, down to nothing.
+      const sentence = within(link).getByText(words)
+      expect(sentence).toHaveClass('min-w-0', 'shrink-[1000000]', 'truncate')
+      // A long name is cut from its start, so its end stays, and never below
+      // about ten characters; a name as short as that is never cut.
+      const name = within(link).getByText(path).closest('[dir="rtl"]')
+      expect(name).toHaveClass('truncate')
+      if (long) {
+        expect(name).toHaveClass('min-w-[min(100%,10ch)]')
+        expect(name).not.toHaveClass('shrink-0')
+      } else {
+        expect(name).toHaveClass('shrink-0')
+      }
+      expect(within(link).getByText(source)).toHaveClass('shrink-0')
+      // The link never gets narrower than the name's kept end and the
+      // source, and clips what still does not fit, on a line that never
+      // wraps, so that it never draws over what follows it.
+      const kept = Math.min(path.length, 10) + source.length
+      expect(link.style.minWidth).toMatch(new RegExp(`^min\\(100%, .*\\b${kept}ch\\b`))
+      expect(link).toHaveClass('flex', 'shrink-[1000000]', 'overflow-hidden')
+      expect(link.parentElement).toHaveClass('flex', 'min-w-0', 'whitespace-nowrap')
     }
+    // What follows the link gives way only after it, with an ellipsis and
+    // a title.
     const offline = within(rowOf('musica.mp3')).getByText('(not connected)')
-    expect(offline).toHaveClass('shrink-0')
-    expect(offline.parentElement).toBe(within(rowOf('musica.mp3')).getByText('Musica/musica.mp3').closest('a')?.parentElement)
+    expect(offline).toHaveClass('min-w-0', 'truncate')
+    expect(offline).not.toHaveClass('shrink-[1000000]')
+    expect(offline).toHaveAttribute('title', '(not connected)')
+    expect(offline.parentElement).toBe(
+      within(rowOf('musica.mp3')).getByRole('link', { name: /^Also at / }).parentElement,
+    )
   })
 
-  it('shows another copy by its last names, with its whole path in the tooltip and the accessible name', async () => {
+  it('names another copy by the words it shows, and describes it by its whole path', async () => {
     const funda = file('31', 'funda.jpg', {
       place: 'this_source',
       other_copy: otherCopy('41', 'Fotos/2004/Praia/funda.jpg'),
@@ -647,30 +681,25 @@ describe('Map Only here figures and names that read plainly', () => {
     renderApp('/map/1?places=1')
     await table()
 
-    // A loose copy shows its folder's name and its own.
-    const loose = within(rowOf('funda.jpg')).getByRole('link', { name: 'Also at Fotos/2004/Praia/funda.jpg' })
-    expect(loose).toHaveTextContent(/^Also at Praia\/funda\.jpg$/)
-    expect(within(loose).getByText('Praia/funda.jpg')).toHaveAttribute('title', 'Fotos/2004/Praia/funda.jpg')
+    // A loose copy shows its folder's name and its own; a member copy its
+    // archive's file name and its own; a covering folder its parent's name
+    // and its own. The whole sentence is the description and the tooltip.
+    for (const [row, shown, whole] of [
+      ['funda.jpg', 'Also at Praia/funda.jpg', 'Also at Fotos/2004/Praia/funda.jpg'],
+      ['86160', 'Also inside CT00075209.zip › 86160', 'Also inside Backups/2010/CT00075209.zip › gps/PONTO/86160'],
+      ['Coberta', 'All of it is in 2004/Tudo', 'All of it is in Arquivo/2004/Tudo'],
+    ] as const) {
+      const link = within(rowOf(row)).getByRole('link', { name: new RegExp(`^${shown.split(' ')[0]} `) })
+      expect(link).toHaveAccessibleName(shown)
+      expect(link).toHaveAccessibleDescription(whole)
+      expect(link).toHaveAttribute('title', whole)
+    }
 
-    // A member copy shows its archive's file name and its own.
-    const member = within(rowOf('86160')).getByRole('link', {
-      name: 'Also inside Backups/2010/CT00075209.zip › gps/PONTO/86160',
-    })
-    expect(member).toHaveTextContent(/^Also inside CT00075209\.zip › 86160$/)
-    expect(within(member).getByText('CT00075209.zip › 86160')).toHaveAttribute(
-      'title',
-      'Backups/2010/CT00075209.zip › gps/PONTO/86160',
-    )
-
-    // The folder holding a folder's content shows its parent's name and its
-    // own; Compare, beside it on the same line, never shrinks.
-    const covering = within(rowOf('Coberta')).getByRole('link', { name: 'Everything in it is also in Arquivo/2004/Tudo' })
-    expect(covering).toHaveTextContent(/^Everything in it is also in 2004\/Tudo$/)
-    expect(within(covering).getByText('2004/Tudo')).toHaveAttribute('title', 'Arquivo/2004/Tudo')
+    // Compare, beside the note on the same line, never shrinks.
+    const covering = within(rowOf('Coberta')).getByRole('link', { name: 'All of it is in 2004/Tudo' })
     const compare = within(rowOf('Coberta')).getByRole('link', { name: 'Compare Coberta with Arquivo/2004/Tudo' })
     expect(compare).toHaveClass('shrink-0')
     expect(compare.parentElement).toBe(covering.parentElement)
-    expect(covering).toHaveClass('min-w-0', 'overflow-hidden')
   })
 
   it('says next to the hide option that it hides empty items and system files too', async () => {
