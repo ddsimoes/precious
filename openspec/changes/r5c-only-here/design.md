@@ -188,13 +188,13 @@ Rejected:
 
 In the mode, the `duplicated` column gives way to a `place` column. The row class follows the place.
 
-**Width.** The `place` column has its own track, `minmax(12rem, 2fr)`, and is the last column to hide. A row's named copy (D9) goes on a second line under the name.
+**Width.** In the mode, the `place` column has the track `minmax(12rem, 1fr)` and never hides. The name column gets `minmax(13rem, 3fr)`, and Type or category hides before the place. A row's named copy (D9) goes on a second line under the name, showing file names; the full paths are in its description (A15, A16).
 
 | Place | Row | File text | Folder or archive text |
 |---|---|---|---|
 | `only_copy` | accent tint, left bar, bold name | "Only copy" | "{{bytes}} only copy" + bar |
 | `this_source` | lighter tint, left bar | "{{n}} copies, all on this source", where n is `other_copy.more + 2` (D9) | "{{bytes}} only on this source" + bar |
-| `other_source` | muted | "Copy on another source" | "Everything has a copy on another source", plus "apart from {{n}} disposable files" when it holds some + bar |
+| `other_source` | muted | "Copy on another source" | "All also on another source", plus "apart from {{n}} disposable files" when it holds some + bar (A16) |
 | `unchecked` | dashed left bar | "Not checked yet" | "Not checked yet" + bar |
 | `unreadable` | dashed left bar | "Could not be read" | "Partly unreadable" (partial or mount boundary), "Could not be read" (unreadable) + bar |
 | `none` | muted | "Empty", or "No content (link)" | "Only disposable files", or "Nothing with content" |
@@ -579,7 +579,7 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
   - **Back end:** a complete archive hard-linked to a name that is not a complete archive counted as two copies in the relate pass (the stored figures said `this_source`, the live rows `only_copy`). `dir_dups` had the same overcount since R2. `countCopies` now skips the extra archive copy when its identity is already an entry's.
   - **Front end:**
     - an unreadable folder or mount point read as "Nothing with content" in the totals and the panel (I7); it now reads "Could not be read" or "Partly unreadable";
-    - qualifiers and "on <source>" were cut off in narrow columns; they are now their own spans, and paths are cut from the left;
+    - qualifiers and "on <source>" were cut off in narrow columns; they are now their own spans (A15 and A16 reworked how the line shrinks);
     - an opened archive showed "Not computed yet" beside live member figures;
     - member copies were split at the first `!`; `other_copy` now carries `archive_path` and `member_path`;
     - the Map and the panel rounded the checked share differently, and the panel showed it twice; one helper now does it;
@@ -617,5 +617,13 @@ With `places=1`, the entry response also carries `places_updating` (boolean). It
     - The external disk's root reads 228 GB only copy (152,808 files), 253 GB only on that disk (966,917 files), 5.8 GB on another source (23,121 files), and 12.8 MB disposable.
   - **Found and fixed:**
     - **Opening the largest archive (567,623 members) in the mode took about 25 s.** The children, treemap, and entry calls took 12.2, 11.4, and 12.2 s, against 6.3, 6.9, and 0.014 s without places. Member folder and whole-archive sums are now stored (D6 revised). With places, the calls now take 3.8, 3.8, and 0.014 s. The rest is the older walk for the "Has copies" figures, which R5b already had.
-    - **The line under a folder's name overlapped its Compare link,** and archive copies read as "…160)". The line now cannot overlap. It shows the archive's and the member's file names, with the full paths in the tooltip and the accessible name. In the mode, the name column gets more room.
+    - **The line under a folder's name overlapped its Compare link,** and archive copies read as "…160)". The line now cannot overlap. It shows the archive's and the member's file names, and the full paths are in the link's description (A16). In the mode, the name column gets more room.
   - **Slow gate in `relations`:** on this busy machine, the fixture's median is 6.34 s with the change and 6.15 s without it, measured interleaved, so the change adds about 3%. Both are above the 4.90 s recorded earlier on a quieter machine, so the gate is judged against the interleaved runs.
+- **A16. Code review, round R2** (task 6.3), of the fixes since R1. Each finding was fixed with a test that failed before the fix.
+  - **Back end:** the folders inside an archive whose entry is missing or unreadable read "Not computed yet" forever. They now have no place, like the files inside it.
+  - **Front end:**
+    - **The line under a folder's name dropped the other folder's path.** The words now give way first and keep the last ~10 characters of names; "on <source>" never shrinks. The sentences are shorter: "Same as <path/>" and "All of it is in <path/>".
+    - **Extra words in the place column were cut with no hint.** They now end with an ellipsis, and the whole sentence is the tooltip.
+    - **"Everything has a copy on another source" did not fit** the 12rem column. It now reads "All also on another source".
+    - **The note link's accessible name did not contain its visible text** (WCAG 2.5.3). Its name is now the visible text, and the full-path sentence is its description (`title`).
+  - **Remaining limit:** on file rows with a long name, a copy on an unconnected source, and "+N more", the words "Also at" can disappear at 1366 px. The tooltip and the description keep the full sentence.

@@ -661,12 +661,12 @@ describe('Map Only here figures and names that read plainly', () => {
       place: 'this_source',
       other_copy: otherCopy('41', 'Fotos/2004/Praia/funda.jpg'),
     })
-    const ponto = file('32', '86160', {
+    const ponto = file('32', '00412', {
       place: 'this_source',
-      other_copy: otherCopy('m458', 'Backups/2010/CT00075209.zip!gps/PONTO/86160', {
+      other_copy: otherCopy('m458', 'Backups/2010/levantamento.zip!gps/pontos/00412', {
         archive_id: '47',
-        archive_path: 'Backups/2010/CT00075209.zip',
-        member_path: 'gps/PONTO/86160',
+        archive_path: 'Backups/2010/levantamento.zip',
+        member_path: 'gps/pontos/00412',
       }),
     })
     const coberta = placed(folderRow('16', 'Coberta'), {
@@ -686,7 +686,7 @@ describe('Map Only here figures and names that read plainly', () => {
     // and its own. The whole sentence is the description and the tooltip.
     for (const [row, shown, whole] of [
       ['funda.jpg', 'Also at Praia/funda.jpg', 'Also at Fotos/2004/Praia/funda.jpg'],
-      ['86160', 'Also inside CT00075209.zip › 86160', 'Also inside Backups/2010/CT00075209.zip › gps/PONTO/86160'],
+      ['00412', 'Also inside levantamento.zip › 00412', 'Also inside Backups/2010/levantamento.zip › gps/pontos/00412'],
       ['Coberta', 'All of it is in 2004/Tudo', 'All of it is in Arquivo/2004/Tudo'],
     ] as const) {
       const link = within(rowOf(row)).getByRole('link', { name: new RegExp(`^${shown.split(' ')[0]} `) })
