@@ -2,7 +2,10 @@ package relations
 
 import (
 	"context"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"precious/internal/domain"
 	"precious/internal/jobs"
@@ -150,17 +153,48 @@ func (b *builder) disposableColumn() string {
 	return disposableE
 }
 
-// placeMember adds a non-empty file member of archive a, named name with
-// size bytes, to its folder's own place sums (addOwnPlace), and reports
-// whether D14 counts it apart. Only a final snapshot has place sums, and
-// without a classifier no member is disposable.
-func (b *builder) placeMember(a *archiveRow, folder int32, name []byte, size int64, state domain.ContentState, keyed bool) bool {
+// placeMember adds a non-empty file member of archive a, member row's name
+// with size bytes (a hard link's are its target's), to its folder's own
+// place sums (addOwnPlace), and reports whether D14 counts it apart. Only
+// a final snapshot has place sums, and without a classifier no member is
+// disposable.
+func (b *builder) placeMember(a *archiveRow, folder, row int32, size int64, state domain.ContentState, keyed bool) bool {
 	if a.places == nil {
 		return false
 	}
-	disposable := b.classify != nil && domain.IsDisposable(b.classify(name, size))
+	m := &a.members[row]
+	disposable := false
+	switch {
+	case b.classify == nil:
+	case a.classified != nil && m.kind == domain.MemberFile && m.size == size:
+		disposable = a.classified[row]
+	default:
+		disposable = domain.IsDisposable(b.classify(m.name, size))
+	}
 	addOwnPlace(&a.places[folder], disposable, keyed, state, size)
 	return disposable
+}
+
+// classifyMembers sets each archive's classified flags (D14), spread over
+// the CPUs: run one by one, the file rules on millions of members add about
+// 15% to the snapshot's load.
+func (b *builder) classifyMembers() {
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(b.arcs)) {
+		wg.Go(func() {
+			for i := int(next.Add(1) - 1); i < len(b.arcs); i = int(next.Add(1) - 1) {
+				a := &b.arcs[i]
+				a.classified = make([]bool, len(a.members))
+				for j := range a.members {
+					if m := &a.members[j]; m.kind == domain.MemberFile && m.size > 0 {
+						a.classified[j] = domain.IsDisposable(b.classify(m.name, m.size))
+					}
+				}
+			}
+		})
+	}
+	wg.Wait()
 }
 
 // keyPlace is the place of a hashed file or member with content key k on
