@@ -1,8 +1,9 @@
+//go:build slow
+
 package api
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,33 +26,17 @@ var checkedAt = regexp.MustCompile(`"checked_at":"[^"]*"`)
 // from a build whose answers without places=1 are meant to change.
 const goldenFile = "testdata/places_golden.txt"
 
-// goldenSample sets the corpus listings TestWithoutPlacesNoResponseChanges
-// compares: one in goldenSample, and every search. Under the race detector
-// each request costs about 20 ms, so the slow test
-// TestWithoutPlacesNoCorpusResponseChanges compares every listing (about
-// 3,500 requests).
-const goldenSample = 20
-
 // r5c task 3.1, design D10 and Interfaces: without places=1 no response
-// changes. Children pages (each sort and order, small pages followed
-// through their cursors), treemaps, and entries of the corpus entries and
-// archive members, and a set of searches, answer byte for byte what the
-// previous build answered: one listing in goldenSample here, every one with
-// -tags slow.
-func TestWithoutPlacesNoResponseChanges(t *testing.T) {
-	t.Parallel()
-	if os.Getenv("PRECIOUS_UPDATE_GOLDEN") != "" {
-		t.Skip("the golden file is written by the slow test")
-	}
-	checkGolden(t, goldenSample)
-}
-
-// checkGolden compares one corpus listing in every with goldenFile; with
-// every 1 and PRECIOUS_UPDATE_GOLDEN set, it rewrites the file instead.
-func checkGolden(t *testing.T, every int) {
+// changes. Every children page (each sort and order, small pages followed
+// through their cursors), treemap, and entry of the corpus entries and
+// archive members, and a set of searches (about 3,500 requests, 20 ms each
+// under the race detector), answer byte for byte what the previous build
+// answered. With PRECIOUS_UPDATE_GOLDEN set, it rewrites the golden file
+// instead.
+func TestWithoutPlacesNoCorpusResponseChanges(t *testing.T) {
 	w := newContentWorld(t)
-	got := goldenResponses(t, w, every)
-	if every == 1 && os.Getenv("PRECIOUS_UPDATE_GOLDEN") != "" {
+	got := goldenResponses(t, w)
+	if os.Getenv("PRECIOUS_UPDATE_GOLDEN") != "" {
 		if err := os.MkdirAll("testdata", 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -85,14 +70,11 @@ func checkGolden(t *testing.T, every int) {
 			}
 		}
 	}
-	if every == 1 && len(got) != len(order) {
+	if len(got) != len(order) {
 		t.Errorf("%d responses, %d recorded", len(got), len(order))
 	}
 	if diffs > 0 {
 		t.Fatalf("%d of %d responses differ", diffs, len(got))
-	}
-	if len(got) < len(order)/every/2 {
-		t.Fatalf("only %d responses compared", len(got))
 	}
 }
 
@@ -104,12 +86,11 @@ func cutLast(s, sep string) (before, after string, found bool) {
 	return s, "", false
 }
 
-// goldenResponses requests the corpus listings, treemaps, and entries (all
-// of them, or one in every), and a set of searches, and returns one "request
-// sha256" line per request, in request order. A page after the first is
-// named by its listing and number: its cursor is in the body of the page
-// before it.
-func goldenResponses(t *testing.T, w *contentWorld, every int) []string {
+// goldenResponses requests every corpus listing, treemap, and entry, and a
+// set of searches, and returns one "request sha256" line per request, in
+// request order. A page after the first is named by its listing and
+// number: its cursor is in the body of the page before it.
+func goldenResponses(t *testing.T, w *contentWorld) []string {
 	t.Helper()
 	// pages follows a listing through its cursors; an entry or a treemap
 	// is one page.
@@ -210,10 +191,7 @@ func goldenResponses(t *testing.T, w *contentWorld, every int) []string {
 		listings = append(listings, "/api/search?"+q+"&limit=50")
 	}
 	var out []string
-	for i, l := range listings {
-		if i%every != 0 && !strings.HasPrefix(l, "/api/search") {
-			continue
-		}
+	for _, l := range listings {
 		lines, err := pages(l)
 		if err != nil {
 			t.Fatal(err)
@@ -221,16 +199,4 @@ func goldenResponses(t *testing.T, w *contentWorld, every int) []string {
 		out = append(out, lines...)
 	}
 	return out
-}
-
-// bodyOf requests target and returns its raw body, failing on any status
-// but 200.
-func (e *env) bodyOf(t *testing.T, target string) []byte {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	e.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET %s: status %d; body %s", target, rec.Code, rec.Body)
-	}
-	return bytes.Clone(rec.Body.Bytes())
 }

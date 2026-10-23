@@ -183,11 +183,3 @@ func TestPlacesPagesStayFastAt2MillionEntries(t *testing.T) {
 	d = e.timed(t, "/api/entries/"+arcRef+"?places=1", &det)
 	t.Logf("recorded: %d-member archive entry with member_places: %s", members, d.Round(time.Millisecond))
 }
-
-// r5c task 3.1, design D10 and Interfaces: without places=1 no response
-// changes, compared on every corpus listing, treemap, and entry (about
-// 3,500 requests; TestWithoutPlacesNoResponseChanges compares a share).
-// With PRECIOUS_UPDATE_GOLDEN set, it rewrites the golden file instead.
-func TestWithoutPlacesNoCorpusResponseChanges(t *testing.T) {
-	checkGolden(t, 1)
-}

@@ -387,13 +387,13 @@ func TestHideKeepsWhatNeedsKeeping(t *testing.T) {
 	kept := []string{"fresh", "mine", "new.jpg", "only.jpg", "pending.jpg", "same.jpg", "unreadable.jpg"}
 	for _, sort := range []string{"bytes", "name", "files", "newest", "only_here"} {
 		for _, order := range []string{"desc", "asc"} {
-			rows, pages := w.children(mix, "hide=other_source&sort="+sort+"&order="+order, 2)
+			rows, pages := w.children(mix, "hide=other_source&sort="+sort+"&order="+order, 3)
 			var names []string
 			for _, r := range rows {
 				names = append(names, r.Name)
 			}
 			slices.Sort(names)
-			if !slices.Equal(names, kept) || pages != 4 {
+			if !slices.Equal(names, kept) || pages != 3 {
 				t.Errorf("hide, sort %s %s: %v in %d pages", sort, order, names, pages)
 			}
 		}
@@ -688,9 +688,8 @@ func threeSourceWorld(t *testing.T) *pworld {
 	w.file("b:copies/a.jpg", 100, "a")
 	w.file("off:old/note.txt", 33, "note")
 	w.file("off:old/backup.zip", 150, "backup")
+	w.missing = []string{"home/fotos/gone.jpg"}
 	w.seed()
-	w.exec(t, `UPDATE entries SET state = 'missing' WHERE id = ?`, w.seeded["disk"].ID("home/fotos/gone.jpg"))
-	w.relate()
 	return w
 }
 

@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
@@ -23,12 +27,14 @@ import (
 // path is on "disk"), seeds it with indextest (entries, content rows, and
 // complete archives), and runs one relate pass with the policy's member
 // classifier, as serve wires it (r5c design D13). Sources named in offline
-// are created offline.
+// are created offline; the entries in missing ("source:path") are marked
+// missing before the pass.
 type pworld struct {
 	*env
 	t        *testing.T
 	files    []pf
 	archives []parc
+	missing  []string
 	offline  map[domain.SourceID]bool
 	seeded   map[domain.SourceID]*indextest.Seeded
 	arcs     map[string]*indextest.SeededArchive
@@ -159,11 +165,37 @@ func (w *pworld) seed() {
 		w.seeded[src] = indextest.Seed(w.t, w.st, indextest.Tree{Source: src, CreateSource: true,
 			MountPoint: mount, Nodes: nodes[src]})
 	}
+	// Rows without identity (unique_size, pending) are written in one
+	// transaction; the read states through SetContent, which copies the
+	// entry's identity.
+	type plainRow struct {
+		id    domain.EntryID
+		state domain.ContentState
+	}
+	var plain []plainRow
 	for _, f := range all {
-		if c, ok := f.contentState(); ok {
-			src, path := pwhere(f.path)
-			w.seeded[src].SetContent(w.st, path, c)
+		c, ok := f.contentState()
+		if !ok {
+			continue
 		}
+		src, path := pwhere(f.path)
+		if c.State == domain.ContentUniqueSize || c.State == domain.ContentPending {
+			plain = append(plain, plainRow{w.seeded[src].ID(path), c.State})
+			continue
+		}
+		w.seeded[src].SetContent(w.st, path, c)
+	}
+	err := w.st.Write(context.Background(), func(tx *sql.Tx) error {
+		for _, r := range plain {
+			if _, err := tx.Exec(`INSERT INTO file_content (entry_id, source_id, state, size)
+				SELECT id, source_id, ?, size FROM entries WHERE id = ?`, string(r.state), int64(r.id)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		w.t.Fatal(err)
 	}
 	for _, a := range w.archives {
 		src, path := pwhere(a.file.path)
@@ -173,6 +205,10 @@ func (w *pworld) seed() {
 	indextest.RecomputeCoverage(w.t, w.st)
 	// A scan always records the link count; content.Copies reads it.
 	w.exec(w.t, `UPDATE entries SET nlink = 1 WHERE nlink IS NULL AND kind = 'file'`)
+	for _, p := range w.missing {
+		src, path := pwhere(p)
+		w.exec(w.t, `UPDATE entries SET state = 'missing' WHERE id = ?`, int64(w.seeded[src].ID(path)))
+	}
 	w.relate()
 }
 
@@ -361,4 +397,16 @@ func (w *pworld) treemap(ref string) ptreemap {
 	var m ptreemap
 	w.get(w.t, "/api/entries/"+ref+"/treemap?places=1", 200, &m)
 	return m
+}
+
+// bodyOf requests target and returns its raw body, failing on any status
+// but 200.
+func (e *env) bodyOf(t *testing.T, target string) []byte {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	e.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: status %d; body %s", target, rec.Code, rec.Body)
+	}
+	return bytes.Clone(rec.Body.Bytes())
 }
